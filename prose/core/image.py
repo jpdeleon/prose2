@@ -1,62 +1,58 @@
 from astropy.time import Time
 import matplotlib.pyplot as plt
 import numpy as np
-#from .blocks.utils 
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astropy.coordinates import Angle
 from dateutil import parser as dparser
 from astropy.wcs import WCS
-from . import viz, utils, Telescope
-from .utils import gaia_query
+from .. import viz, utils, Telescope
+from ..utils import gaia_query
 from functools import partial
 from matplotlib import gridspec
 from astropy.io import fits
 from datetime import timedelta
 from pathlib import Path
+from .source import PointSource
 
 class Image:
-    r"""Base object containing FITS image data and metadata
-
-    When a FITS path (or header) is provided, keyword values are used to identify and instantiate a :py:class:`~prose.Telescope` object. Image attributes then use this object to retrieve specific image information such as ra, dec, untis... etc
-
-    Parameters
-    ----------
-    fitspath : str or Path, optional
-        file path , by default None
-    data : numpy.ndarray, optional
-        image data, by default None
-    header : dict-like, optional
-        image metadata, by default None 
-
-    Example
-    -------
-
-    .. jupyter-execute::
-
-        from prose.tutorials import image_sample
-
-        # loading and showing an example image
-        image = image_sample("05 38 44.851", "+04 32 47.68")
-        image.show()
-
-    .. jupyter-execute::
-        
-        image.header[0:10] # the 10 first lines
-
-    Once this object is instantiated, its parameters are mapped to the ones of the telescope, detected from the header information. This exposes conveniant attributres, for example:
-
-    .. jupyter-execute::
-
-        print(f"pixel scale : {image.pixel_scale:.2f}\nFOV: {image.fov}\nnight: {image.night_date}\n")
-
-    some of them being directly translated into astropy Quantity or datetime object.
-
-    """
-
     def __init__(self, fitspath=None, data=None, header=None, verbose=True, telescope=None, **kwargs):
-        """
-        Image instanciation
+        r"""Object containing image data and metadata
+
+        When a FITS path (or header) is provided, keyword values are used to identify and instantiate a :py:class:`~prose.Telescope` object. Image attributes then use this object to retrieve specific image information such as ra, dec, untis... etc
+
+        Parameters
+        ----------
+        fitspath : str or Path, optional
+            file path , by default None
+        data : numpy.ndarray, optional
+            image data, by default None
+        header : dict-like, optional
+            image metadata, by default None 
+
+        Example
+        -------
+
+        .. jupyter-execute::
+
+            from prose.tutorials import image_sample
+
+            # loading and showing an example image
+            image = image_sample("05 38 44.851", "+04 32 47.68")
+            image.show()
+
+        .. jupyter-execute::
+            
+            image.header[0:10] # the 10 first lines
+
+        Once this object is instantiated, its parameters are mapped to the ones of the telescope, detected from the header information. This exposes conveniant attributres, for example:
+
+        .. jupyter-execute::
+
+            print(f"pixel scale : {image.pixel_scale:.2f}\nFOV: {image.fov}\nnight: {image.night_date}\n")
+
+        some of them being directly translated into astropy Quantity or datetime object.
+
         """
         self.verbose = verbose
 
@@ -66,7 +62,8 @@ class Image:
             self.data = data
             self.header = header if header is not None else {}
             self.path = None
-
+        
+        self.sources = []
         self.telescope = None
         self.discard = False
         self.__dict__.update(kwargs)
@@ -106,6 +103,7 @@ class Image:
         new_self.data = new_self.data.copy()
         new_self.header = new_self.header.copy()
         new_self.catalogs = self.catalogs.copy()
+        new_self.sources = self.sources.copy()
         if not data:
             del new_self.__dict__["data"]
 
@@ -141,6 +139,43 @@ class Image:
     @wcs.setter
     def wcs(self, new_wcs):
         self.header.update(new_wcs.to_header())
+
+    # backward compatibility
+    # ----------------------
+    # TODO: handle SkyCoords input
+
+    @property
+    def stars_coords(self):
+        """Image sources pixel coordinates
+
+        Returns
+        -------
+        np.ndarray
+            coords 
+        """
+        return np.array([s.coords for s in self.sources])
+
+    @stars_coords.setter
+    def  stars_coords(self, coords):
+        """Set Image sources pixel coordinates
+        """
+        self.sources = np.array([PointSource(coords=s) for s in coords])
+
+    @property 
+    def peaks(self):
+        return np.array([s.peak for s in self.sources])
+
+    @peaks.setter
+    def peaks(self, peaks):
+        """Image sources peak values in ADUs
+
+        Returns
+        -------
+        np.array
+        """
+        for i, p in enumerate(peaks):
+            self.sources[i].peak = p
+    # ----------------------
 
     @property
     def exposure(self):
@@ -301,13 +336,10 @@ class Image:
         cmap="Greys_r", 
         ax=None, 
         figsize=(10,10), 
-        stars=None, 
-        stars_labels=True, 
+        stars=True, 
         zscale=True,
         frame=False,
         contrast=0.1,
-        ms=15,
-        fs=12,
         **kwargs
         ):
         """Show image data
@@ -363,12 +395,8 @@ class Image:
         else:
             _ = ax.imshow(utils.z_scale(self.data, contrast), cmap=cmap, origin="lower", **kwargs)
         
-        if stars is None:
-            stars = "stars_coords" in self.__dict__
-        
-        if stars and self.stars_coords is not None:
-            label = np.arange(len(self.stars_coords)) if stars_labels else None
-            viz.plot_marks(*self.stars_coords.T, label=label, ax=ax, ms=ms, offset=0.5*ms, fontsize=fs)
+        if stars:
+            self.plot_sources()
 
         if frame:
             overlay = ax.get_coords_overlay(self.wcs)
@@ -377,6 +405,22 @@ class Image:
             overlay[1].set_axislabel('Declination (J2000)')
 
         return ax
+
+    def plot_sources(self, ax=None, **kwargs):
+        if len(self.sources) > 0:
+            if ax is None:
+                ax = plt.gca()
+            xlim, ylim = np.array(ax.get_xlim()), np.array(ax.get_ylim())
+            xlim.sort()
+            ylim.sort()
+            x, y = self.stars_coords.T
+            within = np.argwhere(np.logical_and.reduce([xlim[0] < x,  x < xlim[1],  ylim[0] < y,  y < ylim[1]])).flatten()
+            
+            for i in within:
+                self.sources[i].plot(**kwargs)
+
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
 
     def show_cutout(self, star=None, size=200, **kwargs):
         """Show a zoomed cutout around a detected star or coordinates
@@ -399,13 +443,10 @@ class Image:
         else:
             raise ValueError("star type not understood")
 
-        self.show(**kwargs)
+        self.show(stars=False, **kwargs)
         plt.xlim(np.array([-size / 2, size / 2]) + x)
         plt.ylim(np.array([-size / 2, size / 2]) + y)
-        stars = kwargs.get("stars", False)
-        if stars and hasattr(self, "stars_coords"):
-            idxs = np.argwhere(np.max(np.abs(self.stars_coords - [x, y]), axis=1) < size).squeeze()
-            viz.plot_marks(*self.stars_coords[idxs].T, label=idxs)
+        self.plot_sources()
 
     @property
     def skycoord(self):
