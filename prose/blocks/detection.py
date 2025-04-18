@@ -259,7 +259,7 @@ class PointSourceDetection(_SourceDetection):
         Parameters
         ----------
         image : Image
-            The image in which to detect point sources. The image's data is used for 
+            The image in which to detect point sources. The image's data is used for
             detection, and the detected sources are stored back in the image.
 
         Notes

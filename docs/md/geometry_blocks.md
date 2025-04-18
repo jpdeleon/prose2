@@ -6,7 +6,7 @@
 :height: 220px
 ```
 
-The task of the alignment and geometry blocks is to compute and apply geometric transformations to the [Image](prose.Image) `data` and `sources`. For this purpose, an [Image](prose.Image) contains a `transform` attrtibute, that corresponds to a [scikit-image](https://scikit-image.org/) [`AffineTransform`](https://scikit-image.org/docs/stable/api/skimage.transform.html#skimage.transform.AffineTransform). 
+The task of the alignment and geometry blocks is to compute and apply geometric transformations to the [Image](prose.Image) `data` and `sources`. For this purpose, an [Image](prose.Image) contains a `transform` attrtibute, that corresponds to a [scikit-image](https://scikit-image.org/) [`AffineTransform`](https://scikit-image.org/docs/stable/api/skimage.transform.html#skimage.transform.AffineTransform).
 
 ## Transform computation blocks
 

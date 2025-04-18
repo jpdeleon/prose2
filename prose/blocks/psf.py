@@ -291,6 +291,7 @@ class Gaussian2D(_PSFModelBase):
         dict
             parameters dictionary with keys: amplitude, x, y, sigma_x, sigma_y, theta, background
         """
+
         def nll(params):
             ll = np.sum(np.power((self._opt_model(*params) - data), 2))
             return ll
@@ -333,12 +334,19 @@ class Gaussian2D(_PSFModelBase):
         2D array
             model evaluated at the coordinates of the image
         """
+
         def model(height, xo, yo, sx, sy, theta, m):
             dx = self.x - xo
             dy = self.y - yo
-            a = (np.cos(theta) ** 2) / (2 * sx**2) + (np.sin(theta) ** 2) / (2 * sy**2)
-            b = -(np.sin(2 * theta)) / (4 * sx**2) + (np.sin(2 * theta)) / (4 * sy**2)
-            c = (np.sin(theta) ** 2) / (2 * sx**2) + (np.cos(theta) ** 2) / (2 * sy**2)
+            a = (np.cos(theta) ** 2) / (2 * sx**2) + (np.sin(theta) ** 2) / (
+                2 * sy**2
+            )
+            b = -(np.sin(2 * theta)) / (4 * sx**2) + (np.sin(2 * theta)) / (
+                4 * sy**2
+            )
+            c = (np.sin(theta) ** 2) / (2 * sx**2) + (np.cos(theta) ** 2) / (
+                2 * sy**2
+            )
             psf = height * np.exp(-(a * dx**2 + 2 * b * dx * dy + c * dy**2))
             return psf + m
 
@@ -397,6 +405,7 @@ class Moffat2D(_PSFModelBase):
         dict
             parameters dictionary with keys: amplitude, x, y, sigma_x, sigma_y, theta, background, beta
         """
+
         def nll(params):
             ll = np.sum(np.power((self._opt_model(*params) - data), 2))
             return ll

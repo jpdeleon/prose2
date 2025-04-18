@@ -28,7 +28,7 @@ class Telescope:
     """Name taken by the telescope if saved"""
 
     names: tuple = ()
-    """Alternative names that the telescope may take in the fits header values of 
+    """Alternative names that the telescope may take in the fits header values of
     `keyword_telescope`"""
 
     # Keywords

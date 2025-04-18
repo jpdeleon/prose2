@@ -16,7 +16,7 @@ Available blocks
    :nosignatures:
 
    AutoSourceDetection
-   PointSourceDetection   
+   PointSourceDetection
    DAOFindStars
    SEDetection
    TraceDetection

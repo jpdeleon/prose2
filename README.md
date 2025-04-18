@@ -62,7 +62,7 @@ While being run on a single image, a Sequence is designed to be run on list of i
 pip install prose
 ```
 
-For the latest version 
+For the latest version
 
 ```shell
 pip install 'prose @ git+https://github.com/lgrcia/prose'
@@ -95,4 +95,3 @@ archivePrefix = {arXiv},
 ```
 
 and read about how to cite the dependencies of your sequences [here](https://prose.readthedocs.io/en/latest/ipynb/acknowledgement.html).
-

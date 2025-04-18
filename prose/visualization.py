@@ -42,9 +42,9 @@ def plot_marginal_model(data, model, cmap="inferno", c="blueviolet"):
     """
     Plot the data and model marginal projections of a point-spread function (PSF).
 
-    This function creates a three-part subplot visualizing the data and model 
-    of a PSF. The first subplot displays the PSF with contour lines, while 
-    the second and third subplots show the x-axis and y-axis projections of 
+    This function creates a three-part subplot visualizing the data and model
+    of a PSF. The first subplot displays the PSF with contour lines, while
+    the second and third subplots show the x-axis and y-axis projections of
     the data and model, respectively.
 
     Parameters
@@ -105,7 +105,7 @@ def plot_all_cuts(cuts, W=10, cmap="magma", stars=None, stars_in=None):
     stars : list, optional
         List of star annotations, by default None.
     stars_in : list of tuples, optional
-        Each tuple contains indices and coordinates of stars to be annotated 
+        Each tuple contains indices and coordinates of stars to be annotated
         on each cutout, by default None.
 
     Returns

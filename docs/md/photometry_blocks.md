@@ -19,5 +19,5 @@ The task of the photometry blocks is to compute photometric measurements of the 
 
    AperturePhotometry
    AnnulusBackground
-   
+
 ```

@@ -80,7 +80,7 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
 
     If weights are specified, they are used to produce an artificial light curve by which all fluxes are differentiated (see Broeg 2005).
     https://ui.adsabs.harvard.edu/abs/2005AN....326..134B/abstract
-    
+
     `fluxes` must not contain NaNs.
 
     Parameters

@@ -42,7 +42,7 @@ jobs:
 
       - name: Build Package 🐍
         run: poetry build
-      
+
       - name: Dry-run Publish to PyPI 😬
         run: poetry publish --dry-run
 

@@ -14,7 +14,7 @@ sd_hide_title: true
 A Python package to build modular image processing pipelines for Astronomy.
 
 ```{admonition} Where to start?
-:class: tip 
+:class: tip
 🌌 [Install](md/installation.md) prose and read about its [core objects](ipynb/core.ipynb)
 
 📦 Explore the library of pre-implemented [blocks](md/blocks.rst)

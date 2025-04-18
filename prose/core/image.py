@@ -41,7 +41,7 @@ class Image:
     """Image metadata"""
 
     catalogs: Optional[dict] = None
-    """Catalogs associated with the image contained in a dictionary of 
+    """Catalogs associated with the image contained in a dictionary of
     pandas dataframes"""
 
     _sources: Optional[Union[Sources, dict]] = None
