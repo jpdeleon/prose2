@@ -67,6 +67,18 @@ class MedianEPSF(Block):
         self._parallel_friendly = True
 
     def run(self, image):
+        """
+        Compute the median effective PSF from all cutouts.
+
+        Parameters
+        ----------
+        image : Image
+            input image
+
+        Notes
+        -----
+        This block is parallel-friendly.
+        """
         good_cutouts = np.array(
             [c.data for c in image.cutouts if len(c.sources) <= self.max_sources]
         )
@@ -266,6 +278,19 @@ class Gaussian2D(_PSFModelBase):
         super().__init__(reference_image, name, verbose)
 
     def optimize(self, data):
+        """
+        Optimize model parameters to fit `data`.
+
+        Parameters
+        ----------
+        data : 2D array
+            array to be fitted
+
+        Returns
+        -------
+        dict
+            parameters dictionary with keys: amplitude, x, y, sigma_x, sigma_y, theta, background
+        """
         def nll(params):
             ll = np.sum(np.power((self._opt_model(*params) - data), 2))
             return ll
@@ -287,6 +312,27 @@ class Gaussian2D(_PSFModelBase):
         return dict(zip(keys, opt))
 
     def model_function(self):
+        """
+        2D Gaussian profile model function.
+
+        Parameters
+        ----------
+        height : float
+            amplitude of the profile
+        xo, yo : float
+            x and y coordinates of the center of the profile
+        sx, sy : float
+            standard deviations of the major and minor axes of the profile
+        theta : float
+            rotation angle of the profile (in radians)
+        m : float
+            background value
+
+        Returns
+        -------
+        2D array
+            model evaluated at the coordinates of the image
+        """
         def model(height, xo, yo, sx, sy, theta, m):
             dx = self.x - xo
             dy = self.y - yo
@@ -338,6 +384,19 @@ class Moffat2D(_PSFModelBase):
         super().__init__(reference_image, name, verbose)
 
     def optimize(self, data):
+        """
+        Optimize model parameters to fit `data`.
+
+        Parameters
+        ----------
+        data : 2D array
+            array to be fitted
+
+        Returns
+        -------
+        dict
+            parameters dictionary with keys: amplitude, x, y, sigma_x, sigma_y, theta, background, beta
+        """
         def nll(params):
             ll = np.sum(np.power((self._opt_model(*params) - data), 2))
             return ll

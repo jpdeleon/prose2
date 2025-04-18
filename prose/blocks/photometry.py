@@ -36,6 +36,20 @@ class AperturePhotometry(Block):
             self.read.append("fwhm")
 
     def run(self, image: Image):
+        """
+        Perform aperture photometry on the given image and store the results.
+
+        This method calculates the flux of each source within specified aperture
+        radii. The radii can be scaled by the image's FWHM if specified. The
+        calculated fluxes and their corresponding radii are stored in the image's
+        aperture attribute.
+
+        Parameters
+        ----------
+        image : Image
+            The image object containing the data and sources on which to perform
+            the aperture photometry.
+        """
         if self.scale:
             radii = np.array(image.fwhm * self._radii)
         else:
@@ -97,6 +111,19 @@ class AnnulusBackground(_AnnulusPhotometry):
         self.sigma = sigma
 
     def run(self, image: Image):
+        """
+        Estimate background around each source using an annulus aperture.
+
+        Parameters
+        ----------
+        image : Image
+            input image
+
+        Notes
+        -----
+        If `scale` is True, the annulus radii are scaled with the fwhm of the effective PSF.
+        The background is estimated using a sigma-clipped median (sigma={self.sigma}) of the pixel values within the annulus.
+        """
         if self.scale:
             fwhm = image.fwhm
             rin = float(fwhm * self.rin)

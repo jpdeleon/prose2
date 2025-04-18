@@ -39,7 +39,7 @@ default = dict(
     read_noise=9,  # A
     gain=1,  # e-/ADU
     altitude=2000,  # meters
-    diameter=100,  # meters
+    diameter=100,  # cm
     pixel_scale=None,  # arcsec/pixel
     latlong=(None, None),
     saturation=55000,  # ADUs
@@ -47,6 +47,32 @@ default = dict(
     camera_name="Andor ikon-L",
 )
 
+# https://lco.global/observatory/instruments/muscat/
+lco2m_muscat4 = dict(
+    name="LCO-2m/MuSCAT4",
+    names=("FTS/MuSCAT4", "MuSCAT4"),
+    latlong=(-31.273333, 149.071111),  # (latitude, longitude) in degree
+    diameter=200,  # in cm
+    altitude=1116,  # in meters
+    camera_name="MuSCAT4",
+    pixel_scale=0.27,  # arcsec/pixel
+    read_noise=6,  # in ADU
+    gain=1.8,  # in e-/ADU
+    trimming=(0, 0),  # pixels
+)
+
+lco2m_muscat3 = dict(
+    name="LCO-2m/MuSCAT3",
+    names=("FTN/MuSCAT3", "MuSCAT3"),
+    latlong=(20.7075, -156.256111),  # (latitude, longitude) in degree
+    diameter=200,  # in cm
+    altitude=2070,  # in meters
+    camera_name="MuSCAT3",
+    pixel_scale=0.27,  # arcsec/pixel
+    read_noise=6,  # in ADU
+    gain=1.8,  # in e-/ADU
+    trimming=(0, 0),  # pixels
+)
 
 speculoos_south = dict(
     default,
@@ -56,7 +82,7 @@ speculoos_south = dict(
     read_noise=10,  # in ADU
     gain=1.02,  # in e-/ADU
     altitude=2000,  # in meters
-    diameter=100,  # in meters
+    diameter=100,  # in cm
     pixel_scale=0.33,  # arcsec/pixel
     latlong=(-24.6275, -70.4044),  # (latitude, longitude) in degree
 )
@@ -161,6 +187,8 @@ spirit = dict(
 built_in_telescopes = {
     telescope["name"].lower(): telescope
     for telescope in (
+        lco2m_muscat3,
+        lco2m_muscat4,
         callisto,
         io,
         ganymede,

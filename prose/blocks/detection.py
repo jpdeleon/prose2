@@ -58,6 +58,23 @@ class _SourceDetection(Block):
         self.minor_length = minor_length
 
     def clean(self, sources):
+        """Clean the sources list.
+
+        Sort the sources given a function
+        If min_separation is set, remove sources that are closer than this value to the previous one
+        If n is set, keep only the n brightest sources
+        If min_area or minor_length is set, remove sources with lower area or semi-major axis than this value
+
+        Parameters
+        ----------
+        sources : list
+            list of sources to clean
+
+        Returns
+        -------
+        _sources : list
+            cleaned list of sources
+        """
         peaks = np.array([s.peak for s in sources])
         _sources = sources.copy()
 
@@ -108,6 +125,28 @@ class _SourceDetection(Block):
             info(f"threshold = {self.threshold:.2f}")
 
     def regions(self, image: Image, threshold=None):
+        """
+        Identify and return regions in the image data that exceed a specified threshold.
+
+        This function processes the image data to identify connected regions that are above
+        a calculated or specified threshold. Regions are filtered based on their area and
+        major axis length.
+
+        Parameters
+        ----------
+        image : Image
+            The image object containing the data to analyze.
+        threshold : float, optional
+            The detection threshold. If not provided, the function will use the object's
+            default threshold value.
+
+        Returns
+        -------
+        regions : list
+            A list of `regionprops` objects representing the detected regions that meet
+            the specified criteria for area and major axis length.
+        """
+
         flat_data = image.data.flatten()
         median = np.nanmedian(flat_data)
         if threshold is None:
@@ -214,6 +253,20 @@ class PointSourceDetection(_SourceDetection):
         self.minor_length = minor_length
 
     def run(self, image):
+        """
+        Detect point sources in the given image and update the image's sources attribute.
+
+        Parameters
+        ----------
+        image : Image
+            The image in which to detect point sources. The image's data is used for 
+            detection, and the detected sources are stored back in the image.
+
+        Notes
+        -----
+        If `unit_euler` is set to True, only sources with an Euler number of 1 are considered.
+        The detected sources are cleaned and stored as `PointSource` objects.
+        """
         regions = self.regions(image)
         if self.unit_euler:
             idxs = np.flatnonzero([r.euler_number == 1 for r in regions])

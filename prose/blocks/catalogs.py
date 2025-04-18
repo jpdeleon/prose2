@@ -20,6 +20,29 @@ __all__ = ["GaiaCatalog", "TESSCatalog"]
 def image_gaia_query(
     image, limit=3000, correct_pm=True, wcs=True, circular=True, fov=None
 ):
+    """
+    Query the Gaia catalog using the image position and fov.
+
+    Parameters
+    ----------
+    image : prose.Image
+        image for which to query the catalog
+    limit : int
+        maximum number of objects to return, by default 3000
+    correct_pm : bool
+        whether to correct the positions for proper motion, by default True
+    wcs : bool
+        whether to use the image WCS to compute the position, by default True
+    circular : bool
+        whether to use a circular query, by default True
+    fov : tuple or None
+        Field of view to use for the query, by default None
+
+    Returns
+    -------
+    table : astropy.table.Table
+        table containing the queried objects
+    """
     if wcs:
         center = image.wcs.pixel_to_world(*(np.array(image.shape) / 2)[::-1])
     else:

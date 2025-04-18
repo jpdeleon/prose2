@@ -39,6 +39,30 @@ def plot(
 
 
 def plot_marginal_model(data, model, cmap="inferno", c="blueviolet"):
+    """
+    Plot the data and model marginal projections of a point-spread function (PSF).
+
+    This function creates a three-part subplot visualizing the data and model 
+    of a PSF. The first subplot displays the PSF with contour lines, while 
+    the second and third subplots show the x-axis and y-axis projections of 
+    the data and model, respectively.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        The 2D array representing the data of the PSF.
+    model : numpy.ndarray
+        The 2D array representing the model of the PSF.
+    cmap : str, optional
+        The colormap to use for displaying the data, by default 'inferno'.
+    c : str, optional
+        The color to use for the data projections, by default 'blueviolet'.
+
+    Returns
+    -------
+    None
+    """
+
     x, y = np.indices(data.shape)
 
     plt.subplot(131)
@@ -67,6 +91,28 @@ def plot_marginal_model(data, model, cmap="inferno", c="blueviolet"):
 
 
 def plot_all_cuts(cuts, W=10, cmap="magma", stars=None, stars_in=None):
+    """
+    Plots a grid of image cutouts with optional annotations for identified stars.
+
+    Parameters
+    ----------
+    cuts : list of numpy.ndarray
+        A list of 2D arrays representing image cutouts to be plotted.
+    W : int, optional
+        Number of columns in the grid layout, by default 10.
+    cmap : str, optional
+        Colormap to use for displaying the image cutouts, by default 'magma'.
+    stars : list, optional
+        List of star annotations, by default None.
+    stars_in : list of tuples, optional
+        Each tuple contains indices and coordinates of stars to be annotated 
+        on each cutout, by default None.
+
+    Returns
+    -------
+    None
+    """
+
     H = np.ceil(len(cuts) / W).astype(int)
 
     fig, axes = plt.subplots(

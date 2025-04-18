@@ -51,6 +51,18 @@ class Trim(Block):
         self._parallel_friendly = True
 
     def run(self, image):
+        """
+        Trim the image
+
+        Parameters
+        ----------
+        image : Image
+            Image to be trimmed
+
+        Notes
+        -----
+        If trim is not specified, triming is taken from the "overscan" in image metadata
+        """
         trim = self.trim if self.trim is not None else image.metadata["overscan"]
         center = image.shape[::-1] / 2
         shape = image.shape - 2 * np.array(trim)
@@ -98,6 +110,18 @@ class Cutouts(Block):
         self._parallel_friendly = True
 
     def run(self, image: Image):
+        """Create cutouts around all sources
+
+        Parameters
+        ----------
+        image : Image
+            input image
+
+        Notes
+        -----
+        All cutouts are created with the same shape, centered on each source.
+        The cutouts are stored in the `image.cutouts` attribute.
+        """
         image.cutouts = [
             image.cutout(coords, self.shape, wcs=self.wcs, sources=self.sources)
             for coords in image.sources.coords
