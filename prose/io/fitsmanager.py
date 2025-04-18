@@ -514,9 +514,9 @@ class FitsManager:
             if show:
                 dfs.append(
                     self.to_pandas(
-                        f"""SELECT * FROM observations WHERE {sql_exposure} 
+                        f"""SELECT * FROM observations WHERE {sql_exposure}
                     AND {query} AND type = '{type}'
-                    AND date = (SELECT MAX(date) FROM files 
+                    AND date = (SELECT MAX(date) FROM files
                     WHERE {sql_days} AND {query})
                 """
                     )

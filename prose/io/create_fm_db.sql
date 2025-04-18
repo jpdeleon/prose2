@@ -1,14 +1,14 @@
 CREATE TABLE files (
-    date text, 
+    date text,
     path text PRIMARY KEY,
-    telescope text, 
-    filter text, 
-    type text, 
-    target text, 
-    width int, 
-    height int, 
-    jd real, 
-    id int, 
+    telescope text,
+    filter text,
+    type text,
+    target text,
+    width int,
+    height int,
+    jd real,
+    id int,
     exposure real,
     FOREIGN KEY(id) REFERENCES observations(id)
 );
