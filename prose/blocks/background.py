@@ -33,6 +33,21 @@ class PhotutilsBackground2D(Block):
         self.filter_size = filter_size
 
     def run(self, image):
+        """
+        Computes the background of an image using Photutils.
+
+        Parameters
+        ----------
+        image : Image
+            The input image.
+
+        Notes
+        -----
+        The background is computed using the Photutils.Background2D class,
+        with the specified parameters in the constructor (box_size, filter_size,
+        and sigma_clip). The background is then subtracted from the image if
+        subtract is True.
+        """
         sigma_clip = SigmaClip(sigma=3.0)
         self.bkg = Background2D(
             image.data,
@@ -70,6 +85,24 @@ class BackgroundPoly(Block):
         self.binning = binning
 
     def design_matrix(self, shape):
+        """
+        Generate the design matrix of the polynomial background fit
+        Parameters
+        ----------
+        shape : tuple
+            shape of the image
+        Returns
+        -------
+        X : 2D array
+            design matrix of the polynomial background fit
+        Notes
+        -----
+        The design matrix is a 2D array of shape (n pix, n coeffs)
+        The first column is the constant term, the other columns are the
+        coefficients of the polynomial fit.
+        The coefficients are normalized to have zero mean and unit
+        variance.
+        """
         x, y = np.indices(shape)
         X = np.polynomial.polynomial.polyvander2d(
             x.flatten(), y.flatten(), (self.order, self.order)
@@ -79,6 +112,29 @@ class BackgroundPoly(Block):
         return X
 
     def run(self, image):
+        """
+        Computes the background of an image using a polynomial fit.
+
+        Parameters
+        ----------
+        image : Image
+            The input image.
+
+        Notes
+        -----
+        The background is computed in two steps:
+        1. First, the image is binned and sigma-clipped to remove outliers.
+        2. Then, a polynomial fit of order `order` is performed on the
+           binned image. The coefficients of the polynomial fit are computed
+           using a least-squares fit.
+        The background is then computed by evaluating the polynomial fit
+        at the original image coordinates.
+
+        The `iterations` parameter controls the number of iterations of the
+        sigma-clipping and polynomial fit.
+        The `sigclip` parameter controls the threshold for the sigma-clipping.
+        The `binning` parameter controls the binning of the image.
+        """
         # First sigma clipping and binning
         data = image.data.copy()
         mask = (data - np.mean(data)) < self.sigclip * np.std(data)

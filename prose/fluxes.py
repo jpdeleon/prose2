@@ -16,7 +16,8 @@ from prose import utils
 def weights(
     fluxes: np.ndarray, tolerance: float = 1e-3, max_iteration: int = 200, bins: int = 5
 ):
-    """Returns the weights computed using Broeg 2005
+    """Returns the weights computed using Broeg 2005:
+    https://ui.adsabs.harvard.edu/abs/2005AN....326..134B/abstract
 
     Parameters
     ----------
@@ -47,7 +48,8 @@ def weights(
     weights = None
     last_weights = np.zeros(dfluxes.shape[0 : len(dfluxes.shape) - 1])
 
-    # Broeg 2004 algorithm to find weights of comp stars
+    # Broeg 2004 algorithm to find weights of comp stars:
+    # https://ui.adsabs.harvard.edu/abs/2005AN....326..134B/abstract
     # --------------------------------------------------
     while evolution > tolerance and i < max_iteration:
         if i == 0:
@@ -77,6 +79,8 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
     """Returns differential fluxes.
 
     If weights are specified, they are used to produce an artificial light curve by which all fluxes are differentiated (see Broeg 2005).
+    https://ui.adsabs.harvard.edu/abs/2005AN....326..134B/abstract
+    
     `fluxes` must not contain NaNs.
 
     Parameters
@@ -98,7 +102,8 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
         # not to divide flux by itself
         sub = np.expand_dims((~np.eye(fluxes.shape[-2]).astype(bool)).astype(int), 0)
         weighted_fluxes = diff_fluxes * np.expand_dims(weights, -1)
-        # see broeg 2005
+        # see broeg 2005:
+        # https://ui.adsabs.harvard.edu/abs/2005AN....326..134B/abstract
         artificial_light_curve = (sub @ weighted_fluxes) / np.expand_dims(
             weights @ sub[0], -1
         )
@@ -117,6 +122,27 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
 
 
 def auto_diff_1d(fluxes, i=None, errors=None):
+    """
+    Automatic differential photometry on a single light curve.
+
+    Parameters
+    ----------
+    fluxes : np.ndarray
+        fluxes matrix with dimensions (star, flux)
+    i : int, optional
+        index of target star, by default None
+    errors : np.ndarray, optional
+        errors matrix with the same dimensions as fluxes, by default None
+
+    Returns
+    -------
+    np.ndarray
+        Differential fluxes
+    np.ndarray
+        Weights of the comparison stars
+    np.ndarray, optional
+        Differential errors
+    """
     w = weights(fluxes)
 
     # to retain minimal set of comparison stars
@@ -154,6 +180,27 @@ def auto_diff_1d(fluxes, i=None, errors=None):
 
 
 def auto_diff(fluxes: np.array, i: int = None, errors=None):
+    """
+    Differential photometry on an array of fluxes.
+
+    Parameters
+    ----------
+    fluxes : np.array
+        fluxes matrix with dimensions (star, flux)
+    i : int, optional
+        index of the target star
+    errors : np.array, optional
+        errors matrix with dimensions (star, flux)
+
+    Returns
+    -------
+    fluxes : np.array
+        Differential fluxes
+    w : np.array
+        weights
+    errors : np.array, optional
+        Differential errors
+    """
     if errors is not None:
         if fluxes.ndim == 3:
             auto_diffs = [auto_diff_1d(f, i, e) for f, e in zip(fluxes, errors)]
@@ -174,6 +221,28 @@ def auto_diff(fluxes: np.array, i: int = None, errors=None):
 
 
 def optimal_flux(diff_fluxes, method="stddiff", sigma=4):
+    """
+    Compute the optimal flux for a given array of differential fluxes.
+
+    Parameters
+    ----------
+    diff_fluxes : np.array
+        array of differential fluxes
+    method : str, optional
+        method to use to compute the optimal flux. Can be "binned", "stddiff", or "stability".
+    sigma : float, optional
+        number of standard deviations to use to reject outliers.
+
+    Returns
+    -------
+    i : int
+        index of the optimal flux
+
+    Raises
+    ------
+    ValueError
+        if method is not a valid method
+    """
     fluxes = diff_fluxes.copy()
     fluxes = fluxes[
         ...,
@@ -339,7 +408,9 @@ class Fluxes:
         return _new
 
     def autodiff(self):
-        """Automatic differential photometry with Broeg et al. 2005.
+        """Automatic differential photometry with Broeg et al. 2005:
+        https://ui.adsabs.harvard.edu/abs/2005AN....326..134B/abstract
+
         `Fluxes.fluxes` must not contain NaNs.
 
         Returns

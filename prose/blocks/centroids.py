@@ -46,6 +46,25 @@ class _PhotutilsCentroid(Block):
 
     def run(self, image):
         # *%+#@ photutils check (see photutils.centroids.core code...)
+        """
+        Run centroiding on the given image.
+
+        Parameters
+        ----------
+        image : prose.Image
+            the image to be processed
+
+        Notes
+        -----
+        The centroiding is done on the detected sources and the new positions are
+        stored in the `sources` attribute of the image. The sources that are
+        outside the image are ignored.
+
+        The `limit` parameter is used to set the maximum deviation from the
+        initial coordinate. If the deviation is larger than `limit`, the source
+        is kept at its original position.
+
+        """
         in_image = np.all(image.sources.coords < image.shape[::-1] - (1, 1), axis=1)
         in_image = np.logical_and(
             in_image, np.all(image.sources.coords > (0, 0), axis=1)

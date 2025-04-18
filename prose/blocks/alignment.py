@@ -29,6 +29,21 @@ class TransformData(Block):
         self.inverse = inverse
 
     def run(self, image: Image):
+        """
+        Apply the image transformation to its data.
+
+        This method uses the image's transformation matrix to warp the image data.
+        If the `inverse` attribute is set to True, the inverse of the transformation
+        is applied. The transformed data replaces the original data in the image.
+        If a linear algebra error occurs (e.g., due to a singular matrix), the image
+        is marked to be discarded.
+
+        Parameters
+        ----------
+        image : Image
+            The image object whose data is to be transformed.
+        """
+
         try:
             image.data = warp(
                 image.data,
@@ -81,6 +96,26 @@ class AlignReferenceSources(Block):
         self._transform_block = ComputeTransformTwirl(reference)
 
     def run(self, image: Image):
+        """
+        Align the sources of an image to the sources of a reference image.
+
+        This method uses the transformation matrix of the image to align its sources
+        with the sources of a reference image. If the image has not been transformed,
+        the transformation is computed using a helper block. The alignment is performed
+        by applying the inverse transformation to the coordinates of the reference sources.
+        The image may be discarded if the number of matched sources is below a specified
+        tolerance.
+
+        Parameters
+        ----------
+        image : Image
+            The image object whose sources are to be aligned.
+
+        Raises
+        ------
+        AttributeError
+            If the image does not have the necessary attributes.
+        """
         if not image.discard:
             sources = self.reference_sources.copy()
 
@@ -137,6 +172,17 @@ class AlignReferenceWCS(Block):
         self.n = n
 
     def run(self, image: Image):
+        """
+        Compute WCS based on a reference containing a valid WCS.
+
+        To use this block, Image sources must match the sources from the reference (e.g. using AlignReferenceSources),
+        i.e. same sources should be found at a given index in both images.
+
+        Parameters
+        ----------
+        image: Image
+            image to be plate solved
+        """
         ref_skycoords = self.reference.wcs.pixel_to_world(
             *self.reference.sources.coords[0 : self.n].T
         )
