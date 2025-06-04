@@ -187,8 +187,8 @@ spirit = dict(
 built_in_telescopes = {
     telescope["name"].lower(): telescope
     for telescope in (
-        lco2m_muscat3,
-        lco2m_muscat4,
+        #lco2m_muscat3,
+        #lco2m_muscat4,
         callisto,
         io,
         ganymede,
