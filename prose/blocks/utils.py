@@ -11,6 +11,8 @@ from prose.fluxes import Fluxes
 from prose.utils import easy_median
 
 __all__ = [
+    "RejectSaturatedSources",
+    "MaskSaturatedPixels",
     "LimitSources",
     "Apply",
     "SortSources",
@@ -23,6 +25,76 @@ __all__ = [
     "SelectiveStack",
 ]
 
+class MaskSaturatedPixels(Block):
+    def __init__(self, saturation_level=None, name=None):
+        """Mask saturated pixels in the image.
+        
+        Parameters
+        ----------
+        saturation_level : float, optional
+            The level above which a pixel is considered saturated.
+            If None, will use image.saturation_level if available.
+        name : str, optional
+            Name of the block, by default None
+        """
+        super().__init__(name=name)
+        self.saturation_level = saturation_level
+        
+    def run(self, image):
+        # Determine saturation level
+        sat_level = self.saturation_level
+        if sat_level is None and hasattr(image, 'saturation_level'):
+            sat_level = image.saturation_level
+        
+        if sat_level is None:
+            raise ValueError("No saturation level provided or found in image")
+        
+        # Store original data
+        if not hasattr(image, 'original_data'):
+            image.original_data = image.data.copy()
+        
+        # Mask saturated pixels with NaN or median value
+        mask = image.data >= sat_level
+        if mask.any():
+            # Option 1: Replace with NaN
+            # image.data = image.data.copy()
+            # image.data[mask] = np.nan
+            
+            # Option 2: Replace with median (might be better for detection algorithms)
+            median_value = np.nanmedian(image.data)
+            image.data = image.data.copy()
+            image.data[mask] = median_value
+            
+class RejectSaturatedSources(Block):
+    def __init__(self, saturation_level=None, name=None):
+        """Filter out saturated sources from the detected sources.
+        
+        Parameters
+        ----------
+        saturation_level : float, optional
+            The level above which a star is considered saturated.
+            If None, will use image.saturation_level if available.
+        name : str, optional
+            Name of the block, by default None
+        """
+        super().__init__(name=name)
+        self.saturation_level = saturation_level
+        
+    def run(self, image):
+        if len(image.sources) == 0:
+            return
+            
+        # Determine saturation level
+        sat_level = self.saturation_level
+        if sat_level is None and hasattr(image, 'saturation_level'):
+            sat_level = image.saturation_level
+        
+        if sat_level is None:
+            raise ValueError("No saturation level provided or found in image")
+            
+        # Filter out sources with peak values above saturation level
+        non_saturated = [s for s in image.sources if s.peak < sat_level]
+        image.sources = Sources(non_saturated, type=image.sources.type)
 
 # TODO: document and test
 class SortSources(Block):
