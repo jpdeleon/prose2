@@ -2,6 +2,9 @@ import inspect
 import urllib
 from datetime import datetime, timedelta
 from functools import wraps
+from astropy.io import fits
+from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
 
 import astropy.constants as c
 import astropy.units as u
@@ -11,9 +14,136 @@ from astropy.stats import gaussian_sigma_to_fwhm
 from astropy.time import Time
 from astropy.visualization import ZScaleInterval
 from scipy import ndimage
+from astroquery.simbad import Simbad
 
 earth2sun = (c.R_earth / c.R_sun).value
 
+FOV_IN_ARCMIN = {
+    'sinistro_full': 26.5,     # CONFMODE= 'full_frame'
+    'sinistro_2x2': 13,    # CONFMODE= 'central_2k_2x2'
+    'muscat': 6.1,
+    'muscat2': 7.4,
+    'muscat3': 9.1,
+    'muscat4': 9.1
+}
+
+def get_simbad_data(target_coord, inst, fov_arcmin=None):
+    """
+    Query SIMBAD sources around a sky coordinate.
+
+    Parameters:
+        target_coord : SkyCoord
+            Target coordinates
+        inst : str
+            Instrument name
+        fov_arcmin : float or None
+            Field of view in arcminutes
+
+    Returns:
+        pandas.DataFrame : filtered SIMBAD table with objects in radius
+    """
+    url = "https://simbad.cds.unistra.fr/Pages/guide/otypes.htx"
+    Simbad.add_votable_fields("otype")
+
+    if inst.lower() == 'sinistro':
+        inst += '_2x2'
+    fov_default = FOV_IN_ARCMIN.get(inst, 5)
+    fov = fov_arcmin if fov_arcmin else fov_default
+
+    print(f"Querying SIMBAD sources within {fov:.2f} arcmin of ({target_coord.to_string('decimal')})")
+    result = Simbad.query_region(target_coord, radius=fov * u.arcmin)
+    if result is None:
+        print("No sources found.")
+        return None
+    
+    df = result.to_pandas()
+    coords = SkyCoord(ra=df.RA, dec=df.DEC, unit=(u.hourangle, u.deg))
+    # Fixed: Use arcmin units to match the fov parameter
+    mask = coords.separation(target_coord) < fov * u.arcmin
+    print(f"For description of Simad object types, see {url}")
+    return df[mask]
+
+def get_saturation_from_header(h) -> dict:
+    """
+    Only works for LCO data header
+    """
+    sinistro_sites = ['lsc','cpt','coj','tfn','elp']
+    if h['TELID']=='2m0a':
+        url = "https://lco.global/observatory/instruments/muscat/#:~:text=MuSCAT3%20Release%20Notes%20Version%201.3,1.1%20from%20Jan%2029%202024"
+        if h['SITEID']=='coj':
+            inst = 'MuSCAT4'
+            saturation_limits = {
+            'gp': 64_000, #ADU
+            'rp': 64_000,
+            'ip': 46_000,
+            'zs': 64_000,
+            }
+        elif h['SITEID']=='ogg':
+            inst = 'MuSCAT3'
+            saturation_limits = {
+            'gp': int(120_000/1.9),
+            'rp': int(120_000/1.88),
+            'ip': int(82_000/1.8),
+            'zs': int(100_000/2.),
+            }
+        else:
+            raise ValueError("Site ID is neither `coj` nor `ogg`.")
+
+    elif h['TELID']=='1m0a':
+        url = "https://lco.global/observatory/instruments/sinistro/"
+        if h['SITEID'] in sinistro_sites:
+            inst = 'Sinistro'
+            gain = 6.6 if h['CONFMODE'] == 'central_2k_2x2' else 1
+            saturation_limits = {
+                'gp': (340_000/gain),
+                'rp': (340_000/gain),
+                'ip': (340_000/gain),
+                'zs': (340_000/gain),
+            }
+        else:
+            raise ValueError(f"Site ID is not in {sinistro_sites}.")
+    else:
+        raise ValueError("This doesn't look like LCO data. Prose will not work.")
+    saturation = h['SATURATE']
+    max_linearity = h['MAXLIN']
+    print(f"For reference, saturatation in header is {saturation} ADU and max linearity is {max_linearity} ADU.")
+    print(f"See url: {url}")
+    return saturation_limits
+
+def read_filename_per_band(sciences: list, bands: list, target_name: str) -> dict:
+    """
+    Collect FITS files by filter band for a specific target.
+
+    Parameters:
+        sciences (list): List of file paths to FITS files.
+        bands (list): List of filter names to include.
+        target_name (str): Name of the target object to match.
+
+    Returns:
+        dict: A dictionary {band: [file_paths]} of matching FITS files.
+    """
+    data = {b: [] for b in bands}
+
+    def process_file(fp):
+        try:
+            header = fits.getheader(fp, memmap=True)
+            if header['OBJECT'] == target_name:
+                band = header['FILTER']
+                if band in data:
+                    return band, fp
+        except Exception:
+            return None
+        return None
+
+    with ThreadPoolExecutor() as executor:
+        results = list(tqdm(executor.map(process_file, sciences), total=len(sciences)))
+
+    for result in results:
+        if result:
+            band, fp = result
+            data[band].append(fp)
+
+    return data
 
 def remove_sip(dict_like):
     for kw in [

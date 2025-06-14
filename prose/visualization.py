@@ -12,9 +12,223 @@ from matplotlib.ticker import AutoMinorLocator
 from mpl_toolkits import axes_grid1
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes, zoomed_inset_axes
 from skimage.transform import resize
+from astroquery.simbad import Simbad
+from astropy.visualization.wcsaxes import SphericalCircle
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+import matplotlib.patches as mpatches
 
 from prose import utils
 
+FOV_IN_ARCMIN = {
+    'sinistro_full': 26.5,     # CONFMODE= 'full_frame'
+    'sinistro_2x2': 13,    # CONFMODE= 'central_2k_2x2'
+    'muscat': 6.1,
+    'muscat2': 7.4,
+    'muscat3': 9.1,
+    'muscat4': 9.1
+}
+
+
+def plot_fov_simbad(
+    ax,
+    data,
+    target_coord,
+    inst='sinistro',
+    fov_simbad_arcsec=None,
+    text_offset=(0, 0),
+    cmap_marker='hsv',
+    rad_marker=2
+):
+    """
+    Plot SIMBAD objects over an astronomical image.
+
+    Parameters:
+        ax : matplotlib Axes
+            Plot axes
+        data : 2D array
+            Image data
+        target_coord : SkyCoord
+            Target coordinates
+        inst : str
+            Instrument name
+        fov_simbad_arcsec : float or None
+            Field of view in arcseconds
+        text_offset : tuple of float
+            Text label offset
+        cmap_marker : str
+            Colormap for markers
+        rad_marker : float
+            Marker radius in arcsec
+
+    Returns:
+        ax : updated matplotlib Axes
+    """
+    dr, dd = text_offset
+
+    if inst.lower() == 'sinistro':
+        inst += '_2x2'
+    fov_simbad_arcmin = FOV_IN_ARCMIN.get(inst, 5) if fov_simbad_arcsec is None else fov_simbad_arcsec/60
+    simbad_data = utils.get_simbad_data(target_coord, 
+                                  inst, 
+                                  fov_arcmin=fov_simbad_arcmin)
+    if simbad_data is None or len(simbad_data) == 0:
+        print("No SIMBAD data to plot.")
+        return ax
+
+    otypes = list(simbad_data['OTYPE'].unique())
+    color_map = plt.get_cmap(cmap_marker)
+    obj_colors = color_map(np.linspace(0, 1, len(otypes)))
+    color_mapping = {t: obj_colors[i] for i, t in enumerate(otypes)}
+
+    coords = SkyCoord(ra=simbad_data.RA, dec=simbad_data.DEC, unit=(u.hourangle, u.deg))
+    for i, coord in enumerate(coords):
+        obj_type = simbad_data.iloc[i]['OTYPE']
+        ax.add_patch(SphericalCircle(
+            (coord.ra, coord.dec),
+            rad_marker * u.arcsec,
+            edgecolor=color_mapping[obj_type],
+            facecolor="none",
+            lw=1.5,
+            transform=ax.get_transform("fk5"),
+        ))
+        ax.text(
+            coord.ra.deg + dr,
+            coord.dec.deg + dd,
+            obj_type,
+            fontsize=8,
+            color=color_mapping[obj_type],
+            transform=ax.get_transform("fk5"),
+        )
+
+    ax.set_xlim(0, data.shape[1])
+    ax.set_ylim(0, data.shape[0])
+    ax.set_xlabel("RA")
+    ax.set_ylabel("Dec")
+
+    patches = [mpatches.Patch(color=color_mapping[typ], label=typ) for typ in otypes]
+    ax.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc='upper left')
+    return ax
+
+def plot_image_analysis(image, star_id=0):
+    """
+    Plot image analysis showing both the star cutout and PSF analysis.
+    
+    Parameters:
+    -----------
+    image : Image object
+        The image object containing cutouts, epsf, and computed data
+    star_id : int, default=0
+        Index of the star to analyze
+    """
+    fig = plt.figure(figsize=(10,5), constrained_layout=True)
+    
+    # Create two main subfigures: image cutout and PSF analysis
+    subfigs = fig.subfigures(1, 2, wspace=0.07, width_ratios=[1, 1])
+    
+    # Plot the star cutout
+    _plot_star_cutout(subfigs[0], image, star_id)
+    
+    # Plot PSF analysis
+    _plot_psf_analysis(subfigs[1], image)
+    
+    return fig
+
+
+def _plot_star_cutout(subfig, image, star_id):
+    """Plot the star cutout with transformation information."""
+    ax = subfig.subplots(1, 1)
+    
+    # Display the star cutout
+    image.cutouts[star_id].show(ax=ax, cmap="Blues_r", sources=False)
+    
+    # Add center crosshairs with enhanced visibility for GIF
+    height, width = image.cutouts[star_id].shape
+    center_x = width / 2
+    center_y = height / 2
+    
+    # Use thicker, more visible lines for GIF compatibility
+    ax.axvline(center_x, ls='--', c='red', alpha=1.0, linewidth=2, zorder=10)
+    ax.axhline(center_y, ls='--', c='red', alpha=1.0, linewidth=2, zorder=10)
+    
+    # Alternative: use solid lines if dashed lines don't show well in GIF
+    # ax.axvline(center_x, ls='-', c='red', alpha=0.8, linewidth=1.5, zorder=10)
+    # ax.axhline(center_y, ls='-', c='red', alpha=0.8, linewidth=1.5, zorder=10)
+    
+    # Add transformation information
+    dx, dy = image.computed['transform'].translation
+    corner_text(f"dx: {dx:.2f}\ndy: {dy:.2f}", c="w")
+    
+    # Set title with date
+    ax.set_title(image.date.isoformat())
+
+
+def _plot_psf_analysis(subfig, image):
+    """Plot PSF analysis with data vs model comparison."""
+    # Create subplot grid for PSF analysis
+    axes = subfig.subplots(2, 2, gridspec_kw={
+        'width_ratios': [9, 2],
+        'height_ratios': [2, 9],
+        'wspace': 0,
+        'hspace': 0
+    })
+    
+    # Assign axes for clarity
+    ax_main = axes[1, 0]      # Main PSF plot
+    ax_right = axes[1, 1]     # Right profile
+    ax_top = axes[0, 0]       # Top profile
+    axes[0, 1].axis("off")    # Turn off unused subplot
+    
+    # Display PSF
+    image.epsf.show(ax=ax_main, cmap="Blues_r")
+    
+    # Plot profiles
+    _plot_psf_profiles(ax_top, ax_right, image)
+    
+    # Add PSF parameters text
+    _add_psf_parameters_text(ax_main, image)
+
+
+def _plot_psf_profiles(ax_top, ax_right, image):
+    """Plot horizontal and vertical PSF profiles."""
+    x, y = np.indices(image.epsf.shape)
+    params = image.epsf.computed['params']
+    
+    # Data profiles
+    data_horizontal = np.mean(image.epsf.data, axis=0)
+    data_vertical = np.mean(image.epsf.data, axis=1)
+    
+    # Model profiles
+    model_horizontal = np.mean(image.epsf.model(params), axis=0)
+    model_vertical = np.mean(image.epsf.model(params), axis=1)
+    
+    # Top plot (horizontal profile)
+    ax_top.plot(y[0], data_horizontal, c="C0", label="data")
+    ax_top.plot(y[0], model_horizontal, "--", c="k", label="model")
+    ax_top.axis("off")
+    ax_top.legend()
+    
+    # Right plot (vertical profile) - note the axis swap for vertical orientation
+    ax_right.plot(data_vertical, x[:, 0], c="C0", label="data")
+    ax_right.plot(model_vertical, x[:, 0], "--", c="k", label="model")
+    ax_right.axis("off")
+
+
+def _add_psf_parameters_text(ax, image):
+    """Add PSF parameters as text overlay."""
+    params = image.epsf.computed['params']
+    
+    # Extract parameters
+    fwhm_x = params['x']
+    fwhm_y = params['y']
+    angle_deg = params['theta'] / np.pi * 180
+    
+    # Format text
+    text = (f"FWHM x: {fwhm_x:.2f} pix\n"
+            f"FWHM y: {fwhm_y:.2f} pix\n"
+            f"angle: {angle_deg:.2f}°")
+    
+    ax.text(1, 1, text, c="w", fontsize=10)
 
 def plot(
     time,
