@@ -702,9 +702,16 @@ def FITSImage(
     :py:class:`~prose.Image`
     """
     if isinstance(filepath_or_hdu, (str, Path)):
-        values = fits.getdata(filepath_or_hdu).astype(float) if load_data else None
-        header = fits.getheader(filepath_or_hdu)
-        path = filepath_or_hdu
+        #values = fits.getdata(filepath_or_hdu).astype(float) if load_data else None
+        #header = fits.getheader(filepath_or_hdu)
+        with fits.open(filepath_or_hdu) as hdul:
+            if 'SCI' in hdul:
+                hdu = hdul['SCI']
+            else:
+                hdu = hdul[0]
+            values = hdu.data
+            header = hdu.header
+            path = filepath_or_hdu
     elif issubclass(type(filepath_or_hdu), _BaseHDU):
         values = filepath_or_hdu.data
         header = filepath_or_hdu.header
