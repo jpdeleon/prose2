@@ -328,7 +328,7 @@ def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoor
         return aper_radii, rin, rout
     except Exception as exc:  # noqa: BLE001 - heuristic must degrade gracefully
         logger.warning(f"Gaia aperture heuristic failed ({exc}); using fwhm defaults")
-        aper_radii = np.exp(np.linspace(np.log(0.1), np.log(12), 30)) * fwhm
+        aper_radii = np.exp(np.linspace(np.log(0.1), np.log(6), 30)) * fwhm
         rin, rout = 8 * fwhm, 12 * fwhm
         return aper_radii, rin, rout
 
@@ -1000,6 +1000,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         args.annulus is not None or args.aper_unit != "pix"
     ):
         ap.error("--annulus and --aper-unit only apply together with --aper-radii")
+    if args.aper_radii is not None and args.aper_radii.max() > args.annulus[0]:
+        ap.error(
+            f"max aperture radius ({args.aper_radii.max():g}) must be <= "
+            f"inner sky annulus radius ({args.annulus[0]:g})"
+        )
     return args
 
 
