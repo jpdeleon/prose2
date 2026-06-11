@@ -92,7 +92,10 @@ light-travel-time). BJD conversion requires `astroplan`.
 By default the aperture runs from the target FWHM up to the inner sky
 annulus. The sky annulus is nominally 6–10×FWHM but is shifted inward to
 exclude any Gaia source contributing ≥10% of the target flux (Δmag < 2.5),
-and `rout` is clamped to 100 px when the FWHM is large (defocus). To set an
+and `rout` is clamped to 100 px when the FWHM is large (defocus). The Gaia
+result is cached under `~/.cache/prose_photometry/gaia/` (keyed by target
+coordinates); if Gaia is unreachable on a later run the cached result is
+reused, and if no cache exists an FWHM-only annulus is used. To set an
 explicit grid (and skip the Gaia query entirely), use
 `--aper_radii MIN,MAX,DR` together with `--annulus RIN,ROUT`. The grid is
 **inclusive of MAX** (`10,20,2` → `[10, 12, 14, 16, 18, 20]`). `--aper_unit`

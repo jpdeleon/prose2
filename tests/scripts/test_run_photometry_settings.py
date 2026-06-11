@@ -13,6 +13,7 @@ assert on ``SystemExit``.
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from prose.scripts import run_photometry as rp
@@ -273,3 +274,40 @@ def test_bright_contaminant_yields_smaller_aperture_than_faint_neighbour():
     aper_bright = rp._aperture_radii_pix(fwhm, rin_bright)
     aper_faint = rp._aperture_radii_pix(fwhm, rin_faint)
     assert aper_bright.max() < aper_faint.max()
+
+
+# --------------------------- Gaia cache (offline fallback) ---------------------------
+
+
+def _coord(ra=10.12345678, dec=-20.87654321):
+    from astropy.coordinates import SkyCoord
+
+    return SkyCoord(ra, dec, unit="deg")
+
+
+def test_gaia_cache_key_rounds_and_is_hashable():
+    key = rp._gaia_cache_key(_coord(), cutout_pix=200)
+    assert key == (10.12346, -20.87654, 200)  # 5 dp, int cutout
+    assert hash(key)  # usable as a dict key
+
+
+def test_gaia_cache_path_encodes_coord_and_cutout(tmp_path, monkeypatch):
+    monkeypatch.setattr(rp, "GAIA_CACHE_DIR", tmp_path)
+    path = rp._gaia_cache_path(_coord(), cutout_pix=200)
+    assert path.parent == tmp_path
+    assert path.name == "gaia_ra10.12346_dec-20.87654_c200.csv"
+
+
+def test_gaia_cache_save_then_load_roundtrip(tmp_path):
+    df = pd.DataFrame(
+        {"ra": [10.1, 10.2], "dec": [-20.8, -20.9], "phot_g_mean_mag": [12.0, 15.5]}
+    )
+    path = tmp_path / "nested" / "gaia.csv"
+    rp._save_gaia_cache(path, df)  # creates parent dirs
+    assert path.is_file()
+    loaded = rp._load_gaia_cache(path)
+    pd.testing.assert_frame_equal(loaded, df)
+
+
+def test_gaia_cache_load_missing_returns_none(tmp_path):
+    assert rp._load_gaia_cache(tmp_path / "absent.csv") is None
