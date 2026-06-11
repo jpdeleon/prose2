@@ -1095,8 +1095,13 @@ def main(argv=None) -> int:
         if sciences:
             logger.info(
                 f"obslog: frames per band: "
-                f"{ {b: len(sciences[b]) for b in args.bands} }"
+                f"{ {b: len(sciences.get(b, [])) for b in args.bands} }"
             )
+            missing = [b for b in args.bands if b not in sciences]
+            if missing:
+                logger.warning(
+                    f"obslog has no frames for bands: {missing}"
+                )
         else:
             logger.warning(
                 "obslog found but no matching frames; falling back to header scan"
@@ -1117,9 +1122,9 @@ def main(argv=None) -> int:
         nrf = args.test_run_frames
         sciences = {b: fs[:nrf] for b, fs in sciences.items()}
         logger.info(f"test-run: limiting to first {nrf} frames per band")
-    counts = {b: len(sciences[b]) for b in args.bands}
+    counts = {b: len(sciences.get(b, [])) for b in args.bands}
     logger.info(f"frames per band: {counts}")
-    active_bands = [b for b in args.bands if sciences[b]]
+    active_bands = [b for b in args.bands if sciences.get(b)]
     if not active_bands:
         logger.error(f"no frames for target={args.target_name}; aborting")
         return 1
