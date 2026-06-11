@@ -19,12 +19,40 @@ from astroquery.simbad import Simbad
 earth2sun = (c.R_earth / c.R_sun).value
 
 FOV_IN_ARCMIN = {
-    'sinistro_full': 26.5,     # CONFMODE= 'full_frame'
+    'sinistro_full': 26.5, # CONFMODE= 'full_frame'
     'sinistro_2x2': 13,    # CONFMODE= 'central_2k_2x2'
     'muscat': 6.1,
     'muscat2': 7.4,
     'muscat3': 9.1,
     'muscat4': 9.1
+}
+
+PIXSCALES = {
+    'sinistro_full': 0.389, #CONFMODE= 'full_frame'
+    'sinistro_2x2': 0.778, #CONFMODE= 'central_2k_2x2'
+    'muscat': 0.358,
+    'muscat2': 0.44,
+    'muscat3': 0.267,
+    'muscat4': 0.267,
+}
+
+LCO_SITES = {
+    #LCO-1m
+    "LCOGT node at Tenerife": "teide",
+    "LCOGT node at McDonald Observatory": "McDonald",
+    "LCOGT node at Cerro Tololo Inter-American Observatory": "cerro tololo interamerican observatory",
+    #LCO-2m
+    "LCOGT node at Haleakala Observatory" : "Haleakala",
+    "LCOGT node at Siding Spring Observatory": "Siding Spring Observatory",    
+    }
+
+LCO_CODES = {
+    #lco observatory site codes
+    "LCOGT node at Siding Spring Observatory": "coj",
+    "LCOGT node at Haleakala Observatory" : "ogg",
+    "LCOGT node at Cerro Tololo Inter-American Observatory": "lsc",
+    "LCOGT node at Tenerife": "tfn",
+    "LCOGT node at SAAO": "cpt",
 }
 
 def get_simbad_data(target_coord, inst, fov_arcmin=None):
@@ -60,57 +88,56 @@ def get_simbad_data(target_coord, inst, fov_arcmin=None):
     coords = SkyCoord(ra=df.RA, dec=df.DEC, unit=(u.hourangle, u.deg))
     # Fixed: Use arcmin units to match the fov parameter
     mask = coords.separation(target_coord) < fov * u.arcmin
-    print(f"For description of Simad object types, see {url}")
+    print(f"For description of Simbad object types, see\n{url}")
     return df[mask]
 
 def get_saturation_from_header(h) -> dict:
-    """
-    Only works for LCO data header
-    """
-    sinistro_sites = ['lsc','cpt','coj','tfn','elp']
-    if h['TELID']=='2m0a':
-        url = "https://lco.global/observatory/instruments/muscat/#:~:text=MuSCAT3%20Release%20Notes%20Version%201.3,1.1%20from%20Jan%2029%202024"
-        if h['SITEID']=='coj':
-            inst = 'MuSCAT4'
-            saturation_limits = {
-            'gp': 64_000, #ADU
-            'rp': 64_000,
-            'ip': 46_000,
-            'zs': 64_000,
-            }
-        elif h['SITEID']=='ogg':
-            inst = 'MuSCAT3'
-            saturation_limits = {
-            'gp': int(120_000/1.9),
-            'rp': int(120_000/1.88),
-            'ip': int(82_000/1.8),
-            'zs': int(100_000/2.),
-            }
+    """Only works for LCO data header"""
+    gain = h['GAIN']
+    # 2m0a telescopes (MuSCAT)
+    if h['TELID'] == '2m0a':
+        is_narrow = h['filter'].endswith('_narrow')
+        nb_names = ['g_narrow','Na_D','i_narrow','z_narrow']
+        bb_names = ['gp','rp','ip','zs']
+        sat_m3 = [120_000/1.9, int(120_000/1.88), int(82_000/1.8), int(100_000/2.0)]
+        sat_m4 = [64_000, 64_000, 46_000, 64_000]
+        url = "https://lco.global/observatory/instruments/muscat/"
+        
+        if h['SITEID'] == 'coj':  # MuSCAT4
+            if is_narrow:
+                saturation_limits = {b: s for b,s in zip(nb_names,sat_m4)}  
+            else: 
+                saturation_limits = {b: s for b,s in zip(bb_names,sat_m4)}
+        elif h['SITEID'] == 'ogg':  # MuSCAT3
+            if is_narrow:
+                saturation_limits = {b: s for b,s in zip(nb_names,sat_m3)}  
+            else: 
+                saturation_limits = {b: s for b,s in zip(bb_names,sat_m3)}
         else:
-            raise ValueError("Site ID is neither `coj` nor `ogg`.")
-
-    elif h['TELID']=='1m0a':
+            raise ValueError("Site ID must be 'coj' or 'ogg' for 2m0a telescopes")
+    
+    # 1m0a telescopes (Sinistro)
+    elif h['TELID'] == '1m0a':
+        sinistro_sites = ['lsc', 'cpt', 'coj', 'tfn', 'elp']
+        if h['SITEID'] not in sinistro_sites:
+            raise ValueError(f"Site ID must be one of {sinistro_sites} for 1m0a telescopes")
+        
         url = "https://lco.global/observatory/instruments/sinistro/"
-        if h['SITEID'] in sinistro_sites:
-            inst = 'Sinistro'
-            gain = 6.6 if h['CONFMODE'] == 'central_2k_2x2' else 1
-            saturation_limits = {
-                'gp': (340_000/gain),
-                'rp': (340_000/gain),
-                'ip': (340_000/gain),
-                'zs': (340_000/gain),
-            }
-        else:
-            raise ValueError(f"Site ID is not in {sinistro_sites}.")
+        gain = 6.6 if h['CONFMODE'] == 'central_2k_2x2' else 1
+        base_limit = 340_000 / gain
+        saturation_limits = {'gp': base_limit, 'rp': base_limit, 'ip': base_limit, 'zs': base_limit}
+    
     else:
-        raise ValueError("This doesn't look like LCO data. Prose will not work.")
-    saturation = h['SATURATE']
-    max_linearity = h['MAXLIN']
-    print(f"For reference, saturatation in header is {saturation} ADU and max linearity is {max_linearity} ADU.")
-    print(f"See url: {url}")
+        raise ValueError("This doesn't look like LCO data. Function only works with LCO telescopes.")
+    
+    # Print reference info
+    unit = 'e-' if gain==1 else 'ADU'
+    print(f"Header saturation: {h['SATURATE']:,} [{unit}], Max linearity: {h['MAXLIN']:,} [{unit}]")
+    print(f"Reference: {url}")
+    
     return saturation_limits
 
-def read_filename_per_band(sciences: list, bands: list, target_name: str) -> dict:
+def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: int=0) -> dict:
     """
     Collect FITS files by filter band for a specific target.
 
@@ -126,7 +153,9 @@ def read_filename_per_band(sciences: list, bands: list, target_name: str) -> dic
 
     def process_file(fp):
         try:
-            header = fits.getheader(fp, memmap=True)
+            header = fits.getheader(fp, memmap=True, ext=ext)
+            #with fits.open(fp, memmap=True) as hdul:
+            #    header = hdul['SCI'].header
             if header['OBJECT'] == target_name:
                 band = header['FILTER']
                 if band in data:

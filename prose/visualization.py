@@ -37,6 +37,7 @@ def plot_fov_simbad(
     inst='sinistro',
     fov_simbad_arcsec=None,
     text_offset=(0, 0),
+    text_fontsize=16,
     cmap_marker='hsv',
     rad_marker=2
 ):
@@ -96,7 +97,7 @@ def plot_fov_simbad(
             coord.ra.deg + dr,
             coord.dec.deg + dd,
             obj_type,
-            fontsize=8,
+            fontsize=text_fontsize,
             color=color_mapping[obj_type],
             transform=ax.get_transform("fk5"),
         )
