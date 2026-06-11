@@ -37,22 +37,23 @@ PIXSCALES = {
 }
 
 LCO_SITES = {
-    #LCO-1m
+    # astroplan observatory site codes
+    # LCO-1m
+    "LCOGT node at SAAO": "saao",
     "LCOGT node at Tenerife": "teide",
     "LCOGT node at McDonald Observatory": "McDonald",
     "LCOGT node at Cerro Tololo Inter-American Observatory": "cerro tololo interamerican observatory",
-    #LCO-2m
-    "LCOGT node at Haleakala Observatory" : "Haleakala",
-    "LCOGT node at Siding Spring Observatory": "Siding Spring Observatory",    
-    }
+    # LCO-2m
+    "LCOGT node at Haleakala Observatory": "Haleakala",
+    "LCOGT node at Siding Spring Observatory": "Siding Spring Observatory",
+}
 
 LCO_CODES = {
     #lco observatory site codes
     "LCOGT node at Siding Spring Observatory": "coj",
-    "LCOGT node at Haleakala Observatory" : "ogg",
     "LCOGT node at Cerro Tololo Inter-American Observatory": "lsc",
-    "LCOGT node at Tenerife": "tfn",
     "LCOGT node at SAAO": "cpt",
+    "LCOGT node at Tenerife": "tfn",
 }
 
 _simbad_cache: dict = {}
@@ -145,6 +146,27 @@ def get_saturation_from_header(h) -> dict:
     
     return saturation_limits
 
+# common FITS header FILTER value -> canonical band name aliases
+_FILTER_ALIASES: dict[str, str] = {
+    "gp": "gp",
+    "g": "gp",
+    "g_narrow": "gp",
+    "g_wide": "gp",
+    "rp": "rp",
+    "r": "rp",
+    "rp*diffuser": "rp",
+    "r_narrow": "rp",
+    "ip": "ip",
+    "i": "ip",
+    "i_narrow": "ip",
+    "zs": "zs",
+    "z": "zs",
+    "zp": "zs",
+    "z_narrow": "zs",
+    "zp*diffuser": "zs",
+}
+
+
 def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: int=0) -> dict:
     """
     Collect FITS files by filter band for a specific target.
@@ -157,16 +179,14 @@ def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: i
     Returns:
         dict: A dictionary {band: [file_paths]} of matching FITS files.
     """
-    data = {b: [] for b in bands}
 
     def process_file(fp):
         try:
             header = fits.getheader(fp, memmap=True, ext=ext)
-            #with fits.open(fp, memmap=True) as hdul:
-            #    header = hdul['SCI'].header
-            if header['OBJECT'] == target_name:
-                band = header['FILTER']
-                if band in data:
+            if str(header.get("OBJECT", "")).strip() == target_name:
+                raw = str(header.get("FILTER", "")).strip()
+                band = _FILTER_ALIASES.get(raw)
+                if band is not None and band in bands:
                     return band, fp
         except Exception:
             return None
@@ -175,6 +195,7 @@ def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: i
     with ThreadPoolExecutor() as executor:
         results = list(tqdm(executor.map(process_file, sciences), total=len(sciences)))
 
+    data = {b: [] for b in bands}
     for result in results:
         if result:
             band, fp = result
