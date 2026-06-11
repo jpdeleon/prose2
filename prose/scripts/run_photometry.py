@@ -49,7 +49,6 @@ TODO:
 * do not hardcode PIXEL_SCALE and SATURATED, instead read it from header of ref img
 * overplot simbad objects into reference frame using prose.utils.get_simbad_data
 * add --calibrated flag which checks if data was calibrated by BANZAI already or pipeline needs to start from scratch
-* add text in *_systematics plot using format f"{syst} (std: {np.std(data):.2f})"
 * add cutout plots to see zoomed comparison stars. Label which is target
 * cleanup and fix notebooks
 * add the ability to ingest single-band sinistro dataset
@@ -686,10 +685,11 @@ def plot_systematics(band_results, path: Path) -> None:
         diff = band_results[band]["diff"]
         t = np.asarray(diff.time)
         for i, name in enumerate(signals):
-            y = np.asarray(diff.df[name], dtype=float).copy()
-            denom = np.std(y) or 1e-12
-            y = (y - np.mean(y)) / denom + 8 * i
-            ax.text(t.max(), np.mean(y) + 4, name, ha="right")
+            raw = np.asarray(diff.df[name], dtype=float).copy()
+            std_val = np.std(raw)
+            denom = std_val or 1e-12
+            y = (raw - np.mean(raw)) / denom + 8 * i
+            ax.text(t.max(), np.mean(y) + 4, f"{name} (std: {std_val:.2f})", ha="right")
             ax.plot(t, y, ".", c="0.8" if name != "flux" else "k")
         ax.set_xlabel("time (JD)")
         ax.set_title(band)
