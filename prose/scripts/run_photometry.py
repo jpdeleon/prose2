@@ -331,6 +331,12 @@ def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoor
         logger.warning(f"Gaia aperture heuristic failed ({exc}); using fwhm defaults")
         aper_radii = np.exp(np.linspace(np.log(0.1), np.log(6), 30)) * fwhm
         rin, rout = 8 * fwhm, 12 * fwhm
+        if rout > 100:
+            rin, rout = 80, 100
+            logger.warning(f"clamping sky annulus to ({rin}, {rout})")
+        aper_radii = aper_radii[aper_radii < rin]
+        if len(aper_radii) == 0:
+            aper_radii = np.array([rin - 1])
         return aper_radii, rin, rout
 
 
@@ -610,7 +616,7 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
     ra_pix, dec_pix = ref.wcs.wcs_world2pix(
         [[target_coord.ra.deg, target_coord.dec.deg]], 0
     )[0]
-    ax.scatter(ra_pix, dec_pix, s=120, ec="r", fc="none")
+    ax.scatter(ra_pix, dec_pix, s=120, ec="r", fc="none", zorder=10)
     ax.annotate(
         "Target",
         (ra_pix, dec_pix),
@@ -618,8 +624,9 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
         textcoords="offset points",
         fontsize=8,
         color="r",
+        zorder=10,
     )
-    ref.sources.plot(ax=ax)
+    ref.sources.plot(ax=ax, c="yellow")
     ax.set_title(f"{r['band']} reference", y=1.08)
 
     simbad = get_simbad_data(target_coord, instrument)
@@ -807,7 +814,7 @@ def plot_stacks(
         c = ref.cutout(ref.sources[r["target_index"]].coords, GAIA_CUTOUT)
         center = np.array(c.data.shape)[::-1] / 2
         axes[row, 0].imshow(_zscale(c.data), cmap="Greys_r", origin="lower")
-        axes[row, 0].set_title(f"{band} target")
+        axes[row, 0].set_title(f"target zoom ({band})")
         axes[row, 0].axis("off")
 
         radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
@@ -857,7 +864,7 @@ def make_gif(files, path: Path, stride: int) -> None:
         plt.close(fig)
         buf.seek(0)
         frames.append(imageio.imread(buf))
-    imageio.mimsave(path, frames, fps=FPS)
+    imageio.mimsave(path, frames, fps=FPS, loop=0)
     logger.info(f"wrote {path}")
 
 
@@ -1021,6 +1028,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         action="store_true",
         help="Log INFO messages to the console (default: warnings and errors "
         "only; the log file always records INFO).",
+    )
+    ap.add_argument(
+        "--plot_gaia_sources",
+        action="store_true",
+        default=False,
+        help="Mark Gaia source positions in aperture and stack zoom plots.",
     )
     ap.add_argument(
         "--overwrite",
