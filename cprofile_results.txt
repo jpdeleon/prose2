@@ -1,0 +1,93 @@
+cProfile Results: run_photometry --test_run
+=============================================
+Date: 2026-06-12
+Env: conda env `prose` (python 3.10); `uv run` does not work (no [project] table)
+Command:
+  conda run -n prose python -m cProfile -o /tmp/photometry_profile.prof \
+      -m prose.scripts.run_photometry \
+        --target_name TOI-6715 \
+        --data_dir /data/MuSCAT4/250416 \
+        --results_dir /tmp/profile_test \
+        --test_run --overwrite \
+        --bands gp rp ip zs
+
+Total: 61.7s CPU  (40 images: 4 bands x 10 frames each; all 4 bands reduced OK)
+Profile: /tmp/photometry_profile.prof
+Calls: 32.1M (31.3M primitive)
+
+
+Top-Level Breakdown (cumulative time, by run_photometry.py function)
+--------------------------------------------------------------------
+
+  Time (s)  % total  Function                  Calls  Key observation
+  --------  -------  ------------------------   -----  -----------------------------------------------
+   20.7      34%     make_gif                      4   biggest single cost: 40 frame PNGs via matplotlib
+   14.4      23%     _savefig (all plot_* PNGs)   15   shared figure->PNG render path
+   12.6      20%     run_band                      4   actual photometry (ref build + parallel phot)
+    7.2      12%     plot_alignment                4   skimage.warp + 2 imshow overlays per band
+    5.4       9%     plot_ref_image                4   WCS projection + SIMBAD overlay + savefig
+    3.6       6%     build_reference               4   star detection + EPSF + astrometry
+    2.4       4%     plot_stacks                   1   per-band target cutout + radial profile
+    1.9       3%     plot_apertures                4
+    1.7       3%     compute_bjd_tdb               4   light-travel + ~1s SSL handshake (network)
+    0.9       2%     plot_lightcurves              1
+    0.9       1%     plot_covariates               1
+
+  NOTE: matplotlib savefig across ALL figures = 30.9s (50% of total), 55 calls.
+        Plotting/GIF rendering ~= 75% of runtime; the science (run_band) ~= 20%.
+
+
+Where the CPU actually burns (tottime / self time)
+---------------------------------------------------
+
+  Self (s)  Calls   Where                                    Note
+  --------  ------  ---------------------------------------  --------------------------------------------
+   11.0      272    matplotlib._image.resample               imshow image resampling (the #1 hot spot)
+    7.3      153    _thread.lock.acquire                     SequenceParallel workers WAITING (not CPU)
+    2.4      446    ImagingEncoder.encode                    PNG compression via PIL
+    1.5     3172    io.BufferedReader.read                   FITS / file reads
+    1.4     243k    numpy.ufunc.reduce                       array stats (mean/std/clip across pipeline)
+    0.9      21k    posix.stat                               import + path probing
+    0.7        2    _ssl.read / do_handshake                 MAST / SIMBAD network round-trips
+    0.6       68    ZScaleInterval.get_limits                z-scaling for every image shown
+
+
+Bottleneck #1: make_gif (20.7s, 34%)
+-------------------------------------
+Each frame is rendered through a full matplotlib Figure (imshow + text + grid)
+then savefig->PNG->imageio.imread. With --test_run stride=1 that is 10 frames
+x 4 bands = 40 heavyweight renders. This is the largest single lever.
+  - Fix A: bypass matplotlib entirely. zscale-normalize the array to uint8 and
+    imageio.mimsave the frames directly (no Figure/savefig). ~5-10x faster.
+  - Fix B: if matplotlib stays, drop dpi (80->50), reuse one Figure/AxesImage
+    via set_data() instead of new fig per frame, and downsample large frames.
+  - Fix C: --no_gif already exists; consider making GIF opt-IN for routine runs.
+
+Bottleneck #2: matplotlib resample (11.0s self, inside savefig)
+---------------------------------------------------------------
+imshow resamples full-resolution CCD arrays to the figure raster on every plot
+(ref, alignment, stacks, gif). Levers:
+  - downsample image data before imshow (the figures are only a few hundred px),
+  - pass interpolation="none" / interpolation_stage="data" where appropriate,
+  - smaller figsize / lower dpi for diagnostic PNGs.
+
+Bottleneck #3: run_band parallel wait (7.3s in lock.acquire)
+------------------------------------------------------------
+The 7.3s in _thread.lock.acquire is the main process WAITING on SequenceParallel
+worker processes, not CPU work. For --test_run (only 10 frames/band) the
+fork+IPC overhead is a large fraction of the band cost; for full-length runs
+the parallelism pays off. Not a real bottleneck for production-size datasets.
+
+compute_bjd_tdb dropped to 1.7s (was 10.1s in the 2026-06-11 profile) -- the
+earlier cost was barycorrpy; the default astropy light-travel path is cheap
+aside from a ~1s TLS handshake for the MAST object resolve.
+
+
+Takeaway
+--------
+This pipeline is plotting-bound, not compute-bound: ~75% of wall time is
+matplotlib rendering (GIF + diagnostic PNGs), ~20% is the photometry itself.
+Highest-ROI optimizations, in order:
+  1. Rewrite make_gif to skip matplotlib (direct uint8 frames).        ~ -15s
+  2. Downsample/shrink imshow inputs in plot_* + lower diagnostic dpi.  ~ -8s
+  3. Make GIF opt-in (or default --no_gif) for batch reductions.

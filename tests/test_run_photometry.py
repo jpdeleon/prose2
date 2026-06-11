@@ -64,6 +64,23 @@ def test_radial_profile_peaks_at_center():
     assert prof[1:].sum() == pytest.approx(0.0)
 
 
+def test_gif_frame_returns_uint8_rgb():
+    rng = np.random.default_rng(0)
+    data = rng.normal(1000, 50, size=(40, 30))
+    frame = rp._gif_frame(data, label="2025-04-16T00:00:00")
+    assert frame.dtype == np.uint8
+    assert frame.ndim == 3 and frame.shape[2] == 3  # RGB
+    # no downsampling below the max-size threshold; rows flipped, cols kept
+    assert frame.shape[:2] == (40, 30)
+
+
+def test_gif_frame_downsamples_large_image_preserving_aspect():
+    data = np.zeros((1000, 500))
+    frame = rp._gif_frame(data, max_px=100)
+    assert max(frame.shape[:2]) == 100  # longest side clamped to max_px
+    assert frame.shape[:2] == (100, 50)  # aspect ratio preserved
+
+
 class _FakeDiff:
     """Minimal stand-in for a differential ``Fluxes`` object."""
 

@@ -81,10 +81,10 @@ which is the correct choice for MuSCAT3/4 where every band is a separate
 camera. Pass `--ref_band gp` to instead align all bands to one band's frame.
 
 Key options: `--ref_band`, `--refid` (reference-frame index per band),
-`--gif_stride`,
-`--no_gif`, `--test_run` (first 10 frames per band), and `--use_barycorrpy`
-(otherwise BJD-TDB uses astropy light-travel-time). BJD conversion requires
-`astroplan`.
+`--gif` (render a per-band quick-look GIF; off by default since GIF rendering
+is the slowest stage) with `--gif_stride`, `--test_run` (first 10 frames per
+band), and `--use_barycorrpy` (otherwise BJD-TDB uses astropy
+light-travel-time). BJD conversion requires `astroplan`.
 
 ### Custom aperture grid
 

@@ -54,7 +54,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
 import logging
 import sys
 import time as time_module
@@ -106,6 +105,7 @@ DEFAULT_BANDS = ["gp", "rp", "ip", "zs"]
 DEFAULT_GIF_STRIDE = 100
 TEST_RUN_FRAMES = 10  # frames per band used by --test_run
 FPS = 5
+GIF_MAX_PX = 512  # max GIF frame dimension [pix]; larger frames are downsampled
 
 # reference-image / detection defaults (mirror the template notebook)
 MAX_NUM_STARS = 10  # nth brightest stars to keep
@@ -840,30 +840,43 @@ def plot_stacks(
 # --------------------------- GIF ---------------------------
 
 
+def _gif_frame(
+    data: np.ndarray, label: str = "", max_px: int = GIF_MAX_PX
+) -> np.ndarray:
+    """Build one 8-bit RGB GIF frame from image data, matplotlib-free.
+
+    The array is z-scaled to 0-255, flipped vertically to match matplotlib's
+    ``origin="lower"`` display convention, downsampled so its longest side is
+    ``max_px``, and stamped with ``label`` (e.g. ``DATE-OBS``) via PIL. This
+    avoids the per-frame Figure/savefig round-trip that dominated runtime
+    (see ``cprofile_results.txt``).
+    """
+    from PIL import Image, ImageDraw
+
+    arr = (_zscale(data) * 255).astype(np.uint8)
+    arr = np.flipud(arr)  # mimic matplotlib origin="lower"
+    frame = Image.fromarray(arr, mode="L").convert("RGB")
+    longest = max(frame.size)
+    if longest > max_px:
+        scale = max_px / longest
+        frame = frame.resize(
+            (max(1, round(frame.width * scale)), max(1, round(frame.height * scale))),
+            Image.BILINEAR,
+        )
+    if label:
+        ImageDraw.Draw(frame).text((5, 5), label, fill=(255, 255, 255))
+    return np.asarray(frame)
+
+
 def make_gif(files, path: Path, stride: int) -> None:
+    """Render a quick-look GIF per band without matplotlib."""
     sampled = files[:: max(1, stride)]
     if not sampled:
         return
     frames = []
     for fp in tqdm(sampled, desc=f"gif:{path.name}"):
         img = FITSImage(fp)
-        fig, ax = plt.subplots(figsize=(4, 4), constrained_layout=True)
-        ax.imshow(_zscale(img.data), cmap="Greys_r", origin="lower")
-        ax.text(
-            0.05,
-            0.05,
-            img.header.get("DATE-OBS", ""),
-            color="white",
-            transform=ax.transAxes,
-        )
-        ax.grid(True, alpha=0.3, color="white")
-        ax.set_xlabel("x (pixels)")
-        ax.set_ylabel("y (pixels)")
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=80, bbox_inches="tight")
-        plt.close(fig)
-        buf.seek(0)
-        frames.append(imageio.imread(buf))
+        frames.append(_gif_frame(img.data, img.header.get("DATE-OBS", "")))
     imageio.mimsave(path, frames, fps=FPS, loop=0)
     logger.info(f"wrote {path}")
 
@@ -957,7 +970,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument("--glob", default="*.fits", help="FITS glob pattern.")
     ap.add_argument("--gif_stride", type=int, default=DEFAULT_GIF_STRIDE)
-    ap.add_argument("--no_gif", dest="make_gif", action="store_false", default=True)
+    ap.add_argument(
+        "--gif",
+        dest="make_gif",
+        action="store_true",
+        default=False,
+        help="Render a quick-look GIF per band (off by default; GIF rendering "
+        "is the slowest stage for batch reductions).",
+    )
     ap.add_argument(
         "--use_barycorrpy",
         action="store_true",
@@ -1099,9 +1119,7 @@ def main(argv=None) -> int:
             )
             missing = [b for b in args.bands if b not in sciences]
             if missing:
-                logger.warning(
-                    f"obslog has no frames for bands: {missing}"
-                )
+                logger.warning(f"obslog has no frames for bands: {missing}")
         else:
             logger.warning(
                 "obslog found but no matching frames; falling back to header scan"
