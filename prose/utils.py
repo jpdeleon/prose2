@@ -55,6 +55,8 @@ LCO_CODES = {
     "LCOGT node at SAAO": "cpt",
 }
 
+_simbad_cache: dict = {}
+
 def get_simbad_data(target_coord, inst, fov_arcmin=None):
     """
     Query SIMBAD sources around a sky coordinate.
@@ -78,18 +80,24 @@ def get_simbad_data(target_coord, inst, fov_arcmin=None):
     fov_default = FOV_IN_ARCMIN.get(inst, 5)
     fov = fov_arcmin if fov_arcmin else fov_default
 
+    cache_key = (target_coord.ra.deg, target_coord.dec.deg, inst, fov)
+    if cache_key in _simbad_cache:
+        return _simbad_cache[cache_key]
+
     print(f"Querying SIMBAD sources within {fov:.2f} arcmin of ({target_coord.to_string('decimal')})")
     result = Simbad.query_region(target_coord, radius=fov * u.arcmin)
     if result is None:
         print("No sources found.")
+        _simbad_cache[cache_key] = None
         return None
     
     df = result.to_pandas()
     coords = SkyCoord(ra=df.RA, dec=df.DEC, unit=(u.hourangle, u.deg))
-    # Fixed: Use arcmin units to match the fov parameter
     mask = coords.separation(target_coord) < fov * u.arcmin
+    result_df = df[mask]
+    _simbad_cache[cache_key] = result_df
     print(f"For description of Simbad object types, see\n{url}")
-    return df[mask]
+    return result_df
 
 def get_saturation_from_header(h) -> dict:
     """Only works for LCO data header"""
