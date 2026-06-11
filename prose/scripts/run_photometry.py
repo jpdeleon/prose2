@@ -26,7 +26,7 @@ structural reference; the reduction itself is pure ``prose``)::
     {target}_{inst}_{band}_{date}.gif
     {target}_{inst}_{band}_{date}.csv
     {target}_{inst}_{date}_lightcurves.png
-    {target}_{inst}_{date}_systematics.png
+    {target}_{inst}_{date}_covariates.png
     {target}_{inst}_{date}_stacks.png
     {target}_{inst}_{date}.npz
     {iso-timestamp}.log
@@ -57,6 +57,7 @@ import csv
 import io
 import logging
 import sys
+import time as time_module
 from datetime import datetime
 from pathlib import Path
 
@@ -356,7 +357,12 @@ def build_reference(
     """
     ref = FITSImage(ref_file)
     instrument = get_instrument(ref.header)
-    pixel_scale = float(ref.header.get("PIXSCALE", PIXSCALES.get(instrument, 0.267)))
+    if instrument == "sinistro":
+        confmode = str(ref.header.get("CONFMODE", ""))
+        pix_key = "sinistro_2x2" if "2x2" in confmode else "sinistro_full"
+    else:
+        pix_key = instrument
+    pixel_scale = float(ref.header.get("PIXSCALE", PIXSCALES.get(pix_key, 0.267)))
     band_key = ref.header.get("FILTER", "")
     try:
         sat_all = get_saturation_from_header(ref.header)
@@ -605,8 +611,16 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
         [[target_coord.ra.deg, target_coord.dec.deg]], 0
     )[0]
     ax.scatter(ra_pix, dec_pix, s=120, ec="r", fc="none")
+    ax.annotate(
+        "Target",
+        (ra_pix, dec_pix),
+        xytext=(8, 8),
+        textcoords="offset points",
+        fontsize=8,
+        color="r",
+    )
     ref.sources.plot(ax=ax)
-    ax.set_title(f"{r['band']} reference", y=1.05)
+    ax.set_title(f"{r['band']} reference", y=1.08)
 
     simbad = get_simbad_data(target_coord, instrument)
     if simbad is not None and not simbad.empty:
@@ -651,6 +665,9 @@ def plot_alignment(
     r,
     other_file,
     path: Path,
+    target_name: str,
+    instrument: str,
+    date: str,
     ccd_trim_size_yx: tuple[int, int] = CCD_TRIM_SIZE_YX,
     max_num_stars: int = MAX_NUM_STARS,
     min_star_separation: float = MIN_STAR_SEPARATION,
@@ -690,7 +707,7 @@ def plot_alignment(
         ax.imshow(_zscale(img), cmap="Reds_r", origin="lower", alpha=0.5)
         ax.set_title(title)
         ax.axis("off")
-    fig.suptitle(f"{r['band']} alignment")
+    fig.suptitle(f"{target_name} | {instrument} | {date}")
     _savefig(fig, path)
 
 
@@ -705,7 +722,12 @@ def _binned(time, flux, bin_size_days: float = BIN_SIZE_DAYS):
 
 
 def plot_lightcurves(
-    band_results, path: Path, bin_size_days: float = BIN_SIZE_DAYS
+    band_results,
+    path: Path,
+    target_name: str,
+    instrument: str,
+    date: str,
+    bin_size_days: float = BIN_SIZE_DAYS,
 ) -> None:
     bands = list(band_results.keys())
     fig, axes = plt.subplots(
@@ -716,19 +738,23 @@ def plot_lightcurves(
         constrained_layout=True,
     )
     axes = np.atleast_1d(axes)
+    t0 = int(np.asarray(band_results[bands[0]]["diff"].time)[0])
     for ax, band in zip(axes, bands):
         c = band_color(band)
         diff = band_results[band]["diff"]
-        t, f = np.asarray(diff.time), np.asarray(diff.flux)
+        t, f = np.asarray(diff.time) - t0, np.asarray(diff.flux)
         ax.plot(t, f, ".", c=c, alpha=0.5)
         bt, bf, be = _binned(t, f, bin_size_days=bin_size_days)
         ax.errorbar(bt, bf, yerr=be, fmt=".", c=c)
         ax.set_ylabel(f"{band}\nDiff. flux")
-    axes[-1].set_xlabel("time (JD)")
+    axes[-1].set_xlabel(f"time (JD) - {t0}")
+    fig.suptitle(f"{target_name} | {instrument} | {date}")
     _savefig(fig, path)
 
 
-def plot_systematics(band_results, path: Path) -> None:
+def plot_covariates(
+    band_results, path: Path, target_name: str, instrument: str, date: str
+) -> None:
     bands = list(band_results.keys())
     fig, axes = plt.subplots(
         1, len(bands), figsize=(4 * len(bands), 7), sharey=True, constrained_layout=True
@@ -739,6 +765,8 @@ def plot_systematics(band_results, path: Path) -> None:
         bc = band_color(band)
         diff = band_results[band]["diff"]
         t = np.asarray(diff.time)
+        t0 = int(t[0])
+        t = t - t0
         for i, name in enumerate(signals):
             raw = np.asarray(diff.df[name], dtype=float).copy()
             std_val = np.std(raw)
@@ -746,8 +774,11 @@ def plot_systematics(band_results, path: Path) -> None:
             y = (raw - np.mean(raw)) / denom + 8 * i
             ax.text(t.max(), np.mean(y) + 4, f"{name} (std: {std_val:.2f})", ha="right")
             ax.plot(t, y, ".", c=bc if name == "flux" else "0.8")
-        ax.set_xlabel("time (JD)")
+        ax.set_xlabel(f"time (JD) - {t0}")
         ax.set_title(band)
+        ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+    fig.suptitle(f"{target_name} | {instrument} | {date}")
     _savefig(fig, path)
 
 
@@ -759,7 +790,9 @@ def _radial_profile(data, center):
     return tbin / np.maximum(nr, 1)
 
 
-def plot_stacks(band_results, path: Path) -> None:
+def plot_stacks(
+    band_results, path: Path, target_name: str, instrument: str, date: str
+) -> None:
     """Per-band target cutout (from the reference image) plus radial profile."""
     bands = list(band_results.keys())
     fig, axes = plt.subplots(
@@ -793,6 +826,7 @@ def plot_stacks(band_results, path: Path) -> None:
         axes[row, 1].set_xlabel("radius (pixels)")
         axes[row, 1].set_ylabel("flux (ADU)")
         axes[row, 1].legend()
+    fig.suptitle(f"{target_name} | {instrument} | {date}")
     _savefig(fig, path)
 
 
@@ -1027,6 +1061,7 @@ def main(argv=None) -> int:
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
     setup_logger(args.results_dir, verbose=args.verbose)
+    t0 = time_module.time()
 
     sciences = {}
     inst_obslog = args.data_dir.parent.name.lower()
@@ -1160,6 +1195,9 @@ def main(argv=None) -> int:
             r,
             r["files"][-1],
             args.results_dir / f"{stem}_alignment.png",
+            args.target_name,
+            instrument,
+            date,
             ccd_trim_size_yx=args.ccd_trim_size_yx,
             max_num_stars=args.max_num_stars,
             min_star_separation=args.min_star_separation,
@@ -1173,13 +1211,29 @@ def main(argv=None) -> int:
     plot_lightcurves(
         band_results,
         args.results_dir / f"{stem_multi}_lightcurves.png",
+        args.target_name,
+        instrument,
+        date,
         bin_size_days=bin_size_days,
     )
-    plot_systematics(band_results, args.results_dir / f"{stem_multi}_systematics.png")
-    plot_stacks(band_results, args.results_dir / f"{stem_multi}_stacks.png")
+    plot_covariates(
+        band_results,
+        args.results_dir / f"{stem_multi}_covariates.png",
+        args.target_name,
+        instrument,
+        date,
+    )
+    plot_stacks(
+        band_results,
+        args.results_dir / f"{stem_multi}_stacks.png",
+        args.target_name,
+        instrument,
+        date,
+    )
     save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz")
 
-    logger.info("done")
+    elapsed = time_module.time() - t0
+    logger.info(f"done  ({elapsed:.0f}s elapsed)")
     return 0
 
 

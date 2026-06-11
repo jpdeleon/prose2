@@ -53,8 +53,9 @@ image.epsf.params
 While being run on a single image, a Sequence is designed to be run on list of images (paths) and provides the architecture to build powerful pipelines. For more details check [Quickstart](https://prose.readthedocs.io/en/latest/ipynb/quickstart.html) and [What is a pipeline?](https://prose.readthedocs.io/en/latest/ipynb/core.html)
 
 ## Example Datasets
-* broadband griz: /data/MuSCAT4/250416, 250512
-* narrowband griz: 
+* sinistro: 250523
+* muscat4 (broadband): 250416, 250512
+* muscat3 (narrowband): 
 
 ## End-to-end photometry script (LCO MuSCAT3/4)
 
@@ -65,15 +66,14 @@ single target, it groups frames per band, builds per-band reference images,
 identifies the target, sizes apertures from the Gaia nearest neighbour, runs
 parallel aperture photometry, performs automatic differential photometry,
 converts GJD-UTC to BJD-TDB, and writes per-band CSV/PNG/GIF products plus
-multi-band `lightcurves`, `systematics`, `stacks` plots, an `.npz` archive,
+multi-band `lightcurves`, `covariates`, `stacks` plots, an `.npz` archive,
 and a timestamped log.
 
 ```shell
 python -m prose.scripts.run_photometry \
     --target_name TOI-6715 \
     --data_dir /data/MuSCAT4/250416 \
-    --results_dir ./TOI-6715_250416 \
-    --bands gp rp ip zs --ref_band gp
+    --results_dir output 
 ```
 
 By default (no `--ref_band`) each band self-references its own first frame,
