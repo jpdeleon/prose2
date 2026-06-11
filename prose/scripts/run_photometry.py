@@ -9,7 +9,8 @@ frames for a single target, it:
 1. groups frames per photometric band for the requested target,
 2. builds a per-band reference image and detects sources,
 3. identifies the target via WCS / catalog cross-match,
-4. sets aperture radii from the Gaia nearest-neighbour separation,
+4. sizes the sky annulus to avoid Gaia contaminants (>=10% of target flux)
+   and sets aperture radii from the target FWHM up to that annulus,
 5. runs aperture photometry in parallel (``prose.SequenceParallel``),
 6. performs automatic differential photometry (Broeg et al. 2005),
 7. converts GJD-UTC to BJD-TDB, and
@@ -114,10 +115,13 @@ CCD_TRIM_SIZE_YX = (10, 10)  # trim image edges [pix]
 MIN_STAR_AREA = 100  # min detected-source area [pix]
 MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
 
-# Gaia aperture-radii heuristic
+# Gaia aperture-radii / sky-annulus heuristic
 APER_STEP_PIX = 2  # spacing of aperture radii [pix]
-ANNULUS_GAP_PIX = 10  # gap between max aperture and inner annulus [pix]
-ANNULUS_WIDTH_PIX = 20  # annulus width (rout - rin) [pix]
+ANNULUS_INNER_FWHM = 6  # nominal inner sky-annulus radius [FWHM]
+ANNULUS_OUTER_FWHM = 10  # nominal outer sky-annulus radius [FWHM]
+ANNULUS_MAX_PIX = 100  # clamp rout when FWHM is large (defocus) [pix]
+CONTAM_DMAG = 2.5  # neighbour contaminates if Gmag - target < this (>=10% target flux)
+CONTAM_MARGIN_PIX = 2  # keep annulus/aperture this far inside a contaminant [pix]
 GAIA_CUTOUT = (200, 200)  # cutout around target for the Gaia query [pix]
 
 # differential-photometry cleaning
@@ -296,48 +300,91 @@ def find_target_index(ref: FITSImage, target_coord: SkyCoord) -> int:
     return int(target_coord.match_to_catalog_sky(stars_radec)[0])
 
 
-def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoord):
-    """Set aperture radii from the Gaia nearest-neighbour separation.
+def _contaminant_seps(
+    seps: np.ndarray, mags: np.ndarray, target_mag: float
+) -> np.ndarray:
+    """Separations [pix] of neighbours that contaminate the target.
 
-    Returns ``(aper_radii, rin, rout)``. Falls back to fwhm-scaled default
-    radii (and an annulus derived from the FWHM) if the Gaia query fails or
-    the field is too sparse.
+    A neighbour contaminates when it contributes at least ~10% of the target
+    flux, i.e. ``mag - target_mag < CONTAM_DMAG``. ``NaN`` magnitudes are
+    treated as non-contaminating (too faint / unmeasured). The result is sorted
+    ascending so callers can take the nearest contaminant first.
+    """
+    seps = np.asarray(seps, dtype=float)
+    mags = np.asarray(mags, dtype=float)
+    is_contaminant = (mags - target_mag) < CONTAM_DMAG  # NaN -> False
+    contam = np.sort(seps[is_contaminant & np.isfinite(seps)])
+    return contam
+
+
+def _sky_annulus_pix(fwhm: float, contam_seps: np.ndarray) -> tuple[float, float]:
+    """Inner/outer sky-annulus radii [pix] that avoid enclosing a contaminant.
+
+    The annulus is nominally ``ANNULUS_INNER_FWHM``-``ANNULUS_OUTER_FWHM`` times
+    the FWHM, with ``rout`` clamped to ``ANNULUS_MAX_PIX`` when the FWHM is large
+    (defocused). If a contaminant falls within the nominal ring, the ring is
+    shifted inward to sit just inside the nearest such source.
+    """
+    width = (ANNULUS_OUTER_FWHM - ANNULUS_INNER_FWHM) * fwhm
+    rout = min(ANNULUS_OUTER_FWHM * fwhm, ANNULUS_MAX_PIX)
+    intruding = contam_seps[contam_seps < rout + CONTAM_MARGIN_PIX]
+    if len(intruding):
+        rout = float(intruding.min()) - CONTAM_MARGIN_PIX
+    rin = rout - width
+    # keep the ring physical: positive inner radius above the minimum aperture
+    rin = max(rin, fwhm + APER_STEP_PIX)
+    rout = max(rout, rin + fwhm)
+    return rin, rout
+
+
+def _aperture_radii_pix(fwhm: float, rin: float) -> np.ndarray:
+    """Aperture-radii grid [pix] from the target FWHM up to the inner annulus.
+
+    Spaced by ``APER_STEP_PIX`` and always non-empty (a single ``[fwhm]`` radius
+    when ``rin`` leaves no room).
+    """
+    radii = np.arange(fwhm, rin, APER_STEP_PIX)
+    if len(radii) == 0:
+        radii = np.array([fwhm])
+    return radii
+
+
+def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoord):
+    """Size the sky annulus and aperture radii from Gaia contamination.
+
+    The minimum aperture is the target FWHM and the maximum is the inner
+    sky-annulus radius; the annulus is placed to exclude any Gaia source
+    contributing >=10% of the target flux (``CONTAM_DMAG``). When the Gaia query
+    fails the same helpers run with no contaminants, giving an FWHM-only annulus.
+
+    Returns ``(aper_radii, rin, rout)`` in pixels.
     """
     fwhm = float(ref.fwhm)
-    aper_rad_min = max(1.0, round(fwhm))
     try:
-        c = ref.cutout(ref.sources[target_index].coords, GAIA_CUTOUT)
-        c = catalogs.GaiaCatalog(mode="replace")(c)
-        df = c.catalogs["gaia"].copy()
-        gaia_coords = SkyCoord(df.ra, df.dec, unit="deg")
-        df["sep_arcsec"] = target_coord.separation(gaia_coords).arcsec
         pixscale = float(ref.header.get("PIXSCALE", ref.telescope.pixel_scale))
-        df["sep_pix"] = (df["sep_arcsec"] / pixscale).round()
-        df = df.sort_values(by="sep_arcsec").reset_index(drop=True)
-        aper_rad_max = float(df.iloc[1].sep_pix)  # nearest neighbour (row 0 = target)
-        if not np.isfinite(aper_rad_max) or aper_rad_max <= aper_rad_min:
-            raise ValueError(
-                f"nearest-neighbour radius {aper_rad_max} <= min {aper_rad_min}"
-            )
-        aper_radii = np.arange(aper_rad_min, aper_rad_max, APER_STEP_PIX)
-        rin = aper_rad_max + ANNULUS_GAP_PIX
-        rout = rin + ANNULUS_WIDTH_PIX
-        logger.info(
-            f"Gaia apertures: {len(aper_radii)} radii in "
-            f"[{aper_rad_min:.0f}, {aper_rad_max:.0f}] px, annulus ({rin:.0f}, {rout:.0f})"
-        )
-        return aper_radii, rin, rout
+        c = ref.cutout(ref.sources[target_index].coords, GAIA_CUTOUT)
+        c.fov = np.array(c.shape) * pixscale * u.arcsec  # required before Gaia query
+        c = catalogs.GaiaCatalog(mode="replace")(c)
+        df = c.catalogs["gaia"]
+        gaia_coords = SkyCoord(df.ra.values, df.dec.values, unit="deg")
+        sep_pix = target_coord.separation(gaia_coords).arcsec / pixscale
+        mags = df.phot_g_mean_mag.values
+        order = np.argsort(sep_pix)  # nearest first; row 0 = the target itself
+        target_mag = float(mags[order][0])
+        contam = _contaminant_seps(sep_pix[order][1:], mags[order][1:], target_mag)
     except Exception as exc:  # noqa: BLE001 - heuristic must degrade gracefully
-        logger.warning(f"Gaia aperture heuristic failed ({exc}); using fwhm defaults")
-        aper_radii = np.exp(np.linspace(np.log(0.1), np.log(6), 30)) * fwhm
-        rin, rout = 8 * fwhm, 12 * fwhm
-        if rout > 100:
-            rin, rout = 80, 100
-            logger.warning(f"clamping sky annulus to ({rin}, {rout})")
-        aper_radii = aper_radii[aper_radii < rin]
-        if len(aper_radii) == 0:
-            aper_radii = np.array([rin - 1])
-        return aper_radii, rin, rout
+        logger.warning(
+            f"Gaia contamination query failed ({exc}); using FWHM-only geometry"
+        )
+        contam = np.array([])
+
+    rin, rout = _sky_annulus_pix(fwhm, contam)
+    aper_radii = _aperture_radii_pix(fwhm, rin)
+    logger.info(
+        f"apertures: {len(aper_radii)} radii in [{fwhm:.0f}, {rin:.0f}] px, "
+        f"annulus ({rin:.0f}, {rout:.0f}) px, {len(contam)} contaminants (>=10% flux)"
+    )
+    return aper_radii, rin, rout
 
 
 def build_reference(

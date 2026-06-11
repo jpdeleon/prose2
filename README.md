@@ -63,7 +63,8 @@ While being run on a single image, a Sequence is designed to be run on list of i
 demonstrated in `notebooks/prose_muscat34_template.ipynb` as a command-line
 tool. Given a directory of calibrated (BANZAI-reduced) science frames for a
 single target, it groups frames per band, builds per-band reference images,
-identifies the target, sizes apertures from the Gaia nearest neighbour, runs
+identifies the target, sizes the sky annulus and apertures from Gaia
+contamination, runs
 parallel aperture photometry, performs automatic differential photometry,
 converts GJD-UTC to BJD-TDB, and writes per-band CSV/PNG/GIF products plus
 multi-band `lightcurves`, `covariates`, `stacks` plots, an `.npz` archive,
@@ -88,8 +89,11 @@ light-travel-time). BJD conversion requires `astroplan`.
 
 ### Custom aperture grid
 
-By default aperture radii are sized from the Gaia nearest-neighbour
-separation. To set an explicit grid (and skip the Gaia query entirely), use
+By default the aperture runs from the target FWHM up to the inner sky
+annulus. The sky annulus is nominally 6–10×FWHM but is shifted inward to
+exclude any Gaia source contributing ≥10% of the target flux (Δmag < 2.5),
+and `rout` is clamped to 100 px when the FWHM is large (defocus). To set an
+explicit grid (and skip the Gaia query entirely), use
 `--aper_radii MIN,MAX,DR` together with `--annulus RIN,ROUT`. The grid is
 **inclusive of MAX** (`10,20,2` → `[10, 12, 14, 16, 18, 20]`). `--aper_unit`
 selects the unit for both flags:
