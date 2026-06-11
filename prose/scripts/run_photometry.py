@@ -617,7 +617,7 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
             np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
         ).T
         ax.scatter(x_pix, y_pix, marker="D", s=40, ec="cyan", fc="none", lw=1)
-        for xi, yi, label in zip(x_pix, y_pix, simbad.MAIN_ID):
+        for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
             ax.annotate(
                 label,
                 (xi, yi),

@@ -52,6 +52,61 @@ image.epsf.params
 
 While being run on a single image, a Sequence is designed to be run on list of images (paths) and provides the architecture to build powerful pipelines. For more details check [Quickstart](https://prose.readthedocs.io/en/latest/ipynb/quickstart.html) and [What is a pipeline?](https://prose.readthedocs.io/en/latest/ipynb/core.html)
 
+## Example Datasets
+* broadband griz: /data/MuSCAT4/250416, 250512
+* narrowband griz: 
+
+## End-to-end photometry script (LCO MuSCAT3/4)
+
+`prose/scripts/run_photometry.py` runs the full multi-band reduction
+demonstrated in `notebooks/prose_muscat34_template.ipynb` as a command-line
+tool. Given a directory of calibrated (BANZAI-reduced) science frames for a
+single target, it groups frames per band, builds per-band reference images,
+identifies the target, sizes apertures from the Gaia nearest neighbour, runs
+parallel aperture photometry, performs automatic differential photometry,
+converts GJD-UTC to BJD-TDB, and writes per-band CSV/PNG/GIF products plus
+multi-band `lightcurves`, `systematics`, `stacks` plots, an `.npz` archive,
+and a timestamped log.
+
+```shell
+python -m prose.scripts.run_photometry \
+    --target_name TOI-6715 \
+    --data_dir /data/MuSCAT4/250416 \
+    --results-dir ./TOI-6715_250416 \
+    --bands gp rp ip zs --ref_band gp
+```
+
+By default (no `--ref_band`) each band self-references its own first frame,
+which is the correct choice for MuSCAT3/4 where every band is a separate
+camera. Pass `--ref_band gp` to instead align all bands to one band's frame.
+
+Key options: `--ref_band`, `--refid` (reference-frame index per band),
+`--gif_stride`,
+`--no-gif`, `--test-run` (first 10 frames per band), and `--use_barycorrpy`
+(otherwise BJD-TDB uses astropy light-travel-time). BJD conversion requires
+`astroplan`.
+
+### Custom aperture grid
+
+By default aperture radii are sized from the Gaia nearest-neighbour
+separation. To set an explicit grid (and skip the Gaia query entirely), use
+`--aper-radii MIN,MAX,DR` together with `--annulus RIN,ROUT`. The grid is
+**inclusive of MAX** (`10,20,2` → `[10, 12, 14, 16, 18, 20]`). `--aper-unit`
+selects the unit for both flags:
+
+```shell
+# radii in pixels
+python -m prose.scripts.run_photometry ... \
+    --aper-radii 10,40,3 --annulus 44,52 --aper-unit pix
+
+# radii in units of the per-image FWHM
+python -m prose.scripts.run_photometry ... \
+    --aper-radii 1,5,0.5 --annulus 6,8 --aper-unit fwhm
+```
+
+`--annulus` is required whenever `--aper-radii` is given, and `--annulus` /
+`--aper-unit` only apply together with `--aper-radii`.
+
 ## Installation
 
 ### latest
