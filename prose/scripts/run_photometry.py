@@ -43,20 +43,17 @@ Example
 
 
 TODO: 
-* make sure the text, labels, titles in figure do not overlap; use constrained_layout?
-* overplot simbad objects into reference frame using prose.utils.get_simbad_data
 * add --calibrated flag which checks if data was calibrated by BANZAI already or pipeline needs to start from scratch
 * add cutout plots to see zoomed comparison stars. Label which is target
 * cleanup and fix notebooks
 * add the ability to ingest single-band sinistro dataset
 * why prose is superior in-memory multiprocessing but not eloy?
-* what is the purpose of .npz file?
-* re-arrange by placing bjd_tdb, flux and flux_err at the leftmost columns of *.csv
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import io
 import logging
 import sys
@@ -601,7 +598,7 @@ def photometry_df(diff: Fluxes, bjd: np.ndarray) -> pd.DataFrame:
 
 def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
     ref = r["ref"]
-    fig = plt.figure(figsize=(7, 7))
+    fig = plt.figure(figsize=(7, 7), constrained_layout=True)
     ax = fig.add_subplot(111, projection=ref.wcs)
     ref.show(ax=ax, frame=True)
     ra_pix, dec_pix = ref.wcs.wcs_world2pix(
@@ -613,14 +610,22 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
 
     simbad = get_simbad_data(target_coord, instrument)
     if simbad is not None and not simbad.empty:
-        simbad_coords = SkyCoord(ra=simbad.RA, dec=simbad.DEC, unit=(u.hourangle, u.deg))
+        simbad_coords = SkyCoord(
+            ra=simbad.RA, dec=simbad.DEC, unit=(u.hourangle, u.deg)
+        )
         x_pix, y_pix = ref.wcs.wcs_world2pix(
             np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
         ).T
         ax.scatter(x_pix, y_pix, marker="D", s=40, ec="cyan", fc="none", lw=1)
         for xi, yi, label in zip(x_pix, y_pix, simbad.MAIN_ID):
-            ax.annotate(label, (xi, yi), xytext=(5, 5),
-                        textcoords="offset points", fontsize=5, color="cyan")
+            ax.annotate(
+                label,
+                (xi, yi),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=5,
+                color="cyan",
+            )
 
     _savefig(fig, path)
 
@@ -630,7 +635,7 @@ def plot_apertures(r, path: Path) -> None:
     coords = ref.sources[r["target_index"]].coords
     c = ref.cutout(coords, GAIA_CUTOUT)
     radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
-    fig, ax = plt.subplots(figsize=(6, 6))
+    fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
     c.show(ax=ax, zscale=True, sources=False)
     for radius in radii_pix:
         c.sources[0].plot(radius, label=False, c="r")
@@ -675,14 +680,15 @@ def plot_alignment(
         logger.warning(f"[{r['band']}] alignment plot failed: {exc}")
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(6, 3), sharex=True, sharey=True)
+    fig, axes = plt.subplots(
+        1, 2, figsize=(6, 3), sharex=True, sharey=True, constrained_layout=True
+    )
     for ax, img, title in zip(axes, (raw, aligned), ("raw", "aligned")):
         ax.imshow(_zscale(ref.data), cmap="Greys_r", origin="lower")
         ax.imshow(_zscale(img), cmap="Reds_r", origin="lower", alpha=0.5)
         ax.set_title(title)
         ax.axis("off")
     fig.suptitle(f"{r['band']} alignment")
-    fig.tight_layout()
     _savefig(fig, path)
 
 
@@ -700,7 +706,13 @@ def plot_lightcurves(
     band_results, path: Path, bin_size_days: float = BIN_SIZE_DAYS
 ) -> None:
     bands = list(band_results.keys())
-    fig, axes = plt.subplots(len(bands), 1, figsize=(8, 2.4 * len(bands)), sharex=True)
+    fig, axes = plt.subplots(
+        len(bands),
+        1,
+        figsize=(8, 2.4 * len(bands)),
+        sharex=True,
+        constrained_layout=True,
+    )
     axes = np.atleast_1d(axes)
     for ax, band in zip(axes, bands):
         c = band_color(band)
@@ -711,13 +723,14 @@ def plot_lightcurves(
         ax.errorbar(bt, bf, yerr=be, fmt=".", c=c)
         ax.set_ylabel(f"{band}\nDiff. flux")
     axes[-1].set_xlabel("time (JD)")
-    fig.tight_layout()
     _savefig(fig, path)
 
 
 def plot_systematics(band_results, path: Path) -> None:
     bands = list(band_results.keys())
-    fig, axes = plt.subplots(1, len(bands), figsize=(4 * len(bands), 7), sharey=True)
+    fig, axes = plt.subplots(
+        1, len(bands), figsize=(4 * len(bands), 7), sharey=True, constrained_layout=True
+    )
     axes = np.atleast_1d(axes)
     signals = ["flux", "fwhm", "airmass", "bkg", "dx", "dy"]
     for ax, band in zip(axes, bands):
@@ -733,7 +746,6 @@ def plot_systematics(band_results, path: Path) -> None:
             ax.plot(t, y, ".", c=bc if name == "flux" else "0.8")
         ax.set_xlabel("time (JD)")
         ax.set_title(band)
-    fig.tight_layout()
     _savefig(fig, path)
 
 
@@ -748,7 +760,9 @@ def _radial_profile(data, center):
 def plot_stacks(band_results, path: Path) -> None:
     """Per-band target cutout (from the reference image) plus radial profile."""
     bands = list(band_results.keys())
-    fig, axes = plt.subplots(len(bands), 2, figsize=(7, 3 * len(bands)))
+    fig, axes = plt.subplots(
+        len(bands), 2, figsize=(7, 3 * len(bands)), constrained_layout=True
+    )
     axes = np.atleast_2d(axes)
     for row, band in enumerate(bands):
         bc = band_color(band)
@@ -777,7 +791,6 @@ def plot_stacks(band_results, path: Path) -> None:
         axes[row, 1].set_xlabel("radius (pixels)")
         axes[row, 1].set_ylabel("flux (ADU)")
         axes[row, 1].legend()
-    fig.tight_layout()
     _savefig(fig, path)
 
 
@@ -791,7 +804,7 @@ def make_gif(files, path: Path, stride: int) -> None:
     frames = []
     for fp in tqdm(sampled, desc=f"gif:{path.name}"):
         img = FITSImage(fp)
-        fig, ax = plt.subplots(figsize=(4, 4))
+        fig, ax = plt.subplots(figsize=(4, 4), constrained_layout=True)
         ax.imshow(_zscale(img.data), cmap="Greys_r", origin="lower")
         ax.text(
             0.05,
@@ -803,7 +816,6 @@ def make_gif(files, path: Path, stride: int) -> None:
         ax.grid(True, alpha=0.3, color="white")
         ax.set_xlabel("x (pixels)")
         ax.set_ylabel("y (pixels)")
-        fig.tight_layout()
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=80, bbox_inches="tight")
         plt.close(fig)
@@ -1009,15 +1021,43 @@ def main(argv=None) -> int:
     args.results_dir.mkdir(parents=True, exist_ok=True)
     setup_logger(args.results_dir, verbose=args.verbose)
 
-    files = sorted(args.data_dir.glob(args.glob))
-    if not files:
-        files = sorted(args.data_dir.rglob(args.glob))
-    logger.info(f"found {len(files)} FITS files in {args.data_dir}")
-    if not files:
-        logger.error("no FITS files found; aborting")
-        return 1
+    sciences = {}
+    inst_obslog = args.data_dir.parent.name.lower()
+    obslog_dir = Path(f"/ut2/muscat/obslog/{inst_obslog}/{args.data_dir.name}")
+    if obslog_dir.is_dir():
+        logger.info(f"reading obslog: {obslog_dir}")
+        for ccd_csv in sorted(obslog_dir.glob("obslog-*-ccd?.csv")):
+            with open(ccd_csv) as f:
+                for row in csv.DictReader(f):
+                    if (
+                        row["OBJECT"] != args.target_name
+                        or row["FILTER"] not in args.bands
+                    ):
+                        continue
+                    fp = args.data_dir / f"{row['FRAME']}.fits"
+                    if fp.is_file():
+                        sciences.setdefault(row["FILTER"], []).append(str(fp))
+        if sciences:
+            logger.info(
+                f"obslog: frames per band: "
+                f"{ {b: len(sciences[b]) for b in args.bands} }"
+            )
+        else:
+            logger.warning(
+                "obslog found but no matching frames; falling back to header scan"
+            )
+            sciences = {}
 
-    sciences = read_filename_per_band(files, args.bands, args.target_name)
+    if not sciences:
+        files = sorted(args.data_dir.glob(args.glob))
+        if not files:
+            files = sorted(args.data_dir.rglob(args.glob))
+        logger.info(f"found {len(files)} FITS files in {args.data_dir}")
+        if not files:
+            logger.error("no FITS files found; aborting")
+            return 1
+        sciences = read_filename_per_band(files, args.bands, args.target_name)
+
     if args.test_run:
         nrf = args.test_run_frames
         sciences = {b: fs[:nrf] for b, fs in sciences.items()}
@@ -1105,7 +1145,9 @@ def main(argv=None) -> int:
         photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
         logger.info(f"wrote {csv_path}")
 
-        plot_ref_image(r, target_coord, instrument, args.results_dir / f"{stem}_ref.png")
+        plot_ref_image(
+            r, target_coord, instrument, args.results_dir / f"{stem}_ref.png"
+        )
         plot_apertures(r, args.results_dir / f"{stem}_apertures.png")
         plot_alignment(
             r,
