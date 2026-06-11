@@ -43,7 +43,6 @@ Example
 
 
 TODO: 
-* add grid in gif
 * make sure the text, labels, titles in figure do not overlap; use constrained_layout?
 * add a color map: {g: blue, r: green, i: yellow, z: red} and use it time series plots
 * aside from g,r,iz, add narrow bands: g_narrow, NaD, i_narrow, z_narrow which has same color map
@@ -760,7 +759,9 @@ def make_gif(files, path: Path, stride: int) -> None:
             color="white",
             transform=ax.transAxes,
         )
-        ax.axis("off")
+        ax.grid(True, alpha=0.3, color="white")
+        ax.set_xlabel("x (pixels)")
+        ax.set_ylabel("y (pixels)")
         fig.tight_layout()
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=80, bbox_inches="tight")
