@@ -69,3 +69,7 @@ docs/md/template.py
 ## Pycharm
 *.xml
 .idea
+
+## profiling artifacts
+cprofile_results.txt
+*.prof
