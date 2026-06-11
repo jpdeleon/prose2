@@ -21,12 +21,12 @@ import matplotlib.patches as mpatches
 from prose import utils
 
 FOV_IN_ARCMIN = {
-    'sinistro_full': 26.5,     # CONFMODE= 'full_frame'
-    'sinistro_2x2': 13,    # CONFMODE= 'central_2k_2x2'
-    'muscat': 6.1,
-    'muscat2': 7.4,
-    'muscat3': 9.1,
-    'muscat4': 9.1
+    "sinistro_full": 26.5,  # CONFMODE= 'full_frame'
+    "sinistro_2x2": 13,  # CONFMODE= 'central_2k_2x2'
+    "muscat": 6.1,
+    "muscat2": 7.4,
+    "muscat3": 9.1,
+    "muscat4": 9.1,
 }
 
 
@@ -34,12 +34,12 @@ def plot_fov_simbad(
     ax,
     data,
     target_coord,
-    inst='sinistro',
+    inst="sinistro",
     fov_simbad_arcsec=None,
     text_offset=(0, 0),
     text_fontsize=16,
-    cmap_marker='hsv',
-    rad_marker=2
+    cmap_marker="hsv",
+    rad_marker=2,
 ):
     """
     Plot SIMBAD objects over an astronomical image.
@@ -67,32 +67,38 @@ def plot_fov_simbad(
     """
     dr, dd = text_offset
 
-    if inst.lower() == 'sinistro':
-        inst += '_2x2'
-    fov_simbad_arcmin = FOV_IN_ARCMIN.get(inst, 5) if fov_simbad_arcsec is None else fov_simbad_arcsec/60
-    simbad_data = utils.get_simbad_data(target_coord, 
-                                  inst, 
-                                  fov_arcmin=fov_simbad_arcmin)
+    if inst.lower() == "sinistro":
+        inst += "_2x2"
+    fov_simbad_arcmin = (
+        FOV_IN_ARCMIN.get(inst, 5)
+        if fov_simbad_arcsec is None
+        else fov_simbad_arcsec / 60
+    )
+    simbad_data = utils.get_simbad_data(
+        target_coord, inst, fov_arcmin=fov_simbad_arcmin
+    )
     if simbad_data is None or len(simbad_data) == 0:
         print("No SIMBAD data to plot.")
         return ax
 
-    otypes = list(simbad_data['OTYPE'].unique())
+    otypes = list(simbad_data["OTYPE"].unique())
     color_map = plt.get_cmap(cmap_marker)
     obj_colors = color_map(np.linspace(0, 1, len(otypes)))
     color_mapping = {t: obj_colors[i] for i, t in enumerate(otypes)}
 
     coords = SkyCoord(ra=simbad_data.RA, dec=simbad_data.DEC, unit=(u.hourangle, u.deg))
     for i, coord in enumerate(coords):
-        obj_type = simbad_data.iloc[i]['OTYPE']
-        ax.add_patch(SphericalCircle(
-            (coord.ra, coord.dec),
-            rad_marker * u.arcsec,
-            edgecolor=color_mapping[obj_type],
-            facecolor="none",
-            lw=1.5,
-            transform=ax.get_transform("fk5"),
-        ))
+        obj_type = simbad_data.iloc[i]["OTYPE"]
+        ax.add_patch(
+            SphericalCircle(
+                (coord.ra, coord.dec),
+                rad_marker * u.arcsec,
+                edgecolor=color_mapping[obj_type],
+                facecolor="none",
+                lw=1.5,
+                transform=ax.get_transform("fk5"),
+            )
+        )
         ax.text(
             coord.ra.deg + dr,
             coord.dec.deg + dd,
@@ -108,13 +114,14 @@ def plot_fov_simbad(
     ax.set_ylabel("Dec")
 
     patches = [mpatches.Patch(color=color_mapping[typ], label=typ) for typ in otypes]
-    ax.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc="upper left")
     return ax
+
 
 def plot_image_analysis(image, star_id=0):
     """
     Plot image analysis showing both the star cutout and PSF analysis.
-    
+
     Parameters:
     -----------
     image : Image object
@@ -122,44 +129,44 @@ def plot_image_analysis(image, star_id=0):
     star_id : int, default=0
         Index of the star to analyze
     """
-    fig = plt.figure(figsize=(10,5), constrained_layout=True)
-    
+    fig = plt.figure(figsize=(10, 5), constrained_layout=True)
+
     # Create two main subfigures: image cutout and PSF analysis
     subfigs = fig.subfigures(1, 2, wspace=0.07, width_ratios=[1, 1])
-    
+
     # Plot the star cutout
     _plot_star_cutout(subfigs[0], image, star_id)
-    
+
     # Plot PSF analysis
     _plot_psf_analysis(subfigs[1], image)
-    
+
     return fig
 
 
 def _plot_star_cutout(subfig, image, star_id):
     """Plot the star cutout with transformation information."""
     ax = subfig.subplots(1, 1)
-    
+
     # Display the star cutout
     image.cutouts[star_id].show(ax=ax, cmap="Blues_r", sources=False)
-    
+
     # Add center crosshairs with enhanced visibility for GIF
     height, width = image.cutouts[star_id].shape
     center_x = width / 2
     center_y = height / 2
-    
+
     # Use thicker, more visible lines for GIF compatibility
-    ax.axvline(center_x, ls='--', c='red', alpha=1.0, linewidth=2, zorder=10)
-    ax.axhline(center_y, ls='--', c='red', alpha=1.0, linewidth=2, zorder=10)
-    
+    ax.axvline(center_x, ls="--", c="red", alpha=1.0, linewidth=2, zorder=10)
+    ax.axhline(center_y, ls="--", c="red", alpha=1.0, linewidth=2, zorder=10)
+
     # Alternative: use solid lines if dashed lines don't show well in GIF
     # ax.axvline(center_x, ls='-', c='red', alpha=0.8, linewidth=1.5, zorder=10)
     # ax.axhline(center_y, ls='-', c='red', alpha=0.8, linewidth=1.5, zorder=10)
-    
+
     # Add transformation information
-    dx, dy = image.computed['transform'].translation
+    dx, dy = image.computed["transform"].translation
     corner_text(f"dx: {dx:.2f}\ndy: {dy:.2f}", c="w")
-    
+
     # Set title with date
     ax.set_title(image.date.isoformat())
 
@@ -167,25 +174,29 @@ def _plot_star_cutout(subfig, image, star_id):
 def _plot_psf_analysis(subfig, image):
     """Plot PSF analysis with data vs model comparison."""
     # Create subplot grid for PSF analysis
-    axes = subfig.subplots(2, 2, gridspec_kw={
-        'width_ratios': [9, 2],
-        'height_ratios': [2, 9],
-        'wspace': 0,
-        'hspace': 0
-    })
-    
+    axes = subfig.subplots(
+        2,
+        2,
+        gridspec_kw={
+            "width_ratios": [9, 2],
+            "height_ratios": [2, 9],
+            "wspace": 0,
+            "hspace": 0,
+        },
+    )
+
     # Assign axes for clarity
-    ax_main = axes[1, 0]      # Main PSF plot
-    ax_right = axes[1, 1]     # Right profile
-    ax_top = axes[0, 0]       # Top profile
-    axes[0, 1].axis("off")    # Turn off unused subplot
-    
+    ax_main = axes[1, 0]  # Main PSF plot
+    ax_right = axes[1, 1]  # Right profile
+    ax_top = axes[0, 0]  # Top profile
+    axes[0, 1].axis("off")  # Turn off unused subplot
+
     # Display PSF
     image.epsf.show(ax=ax_main, cmap="Blues_r")
-    
+
     # Plot profiles
     _plot_psf_profiles(ax_top, ax_right, image)
-    
+
     # Add PSF parameters text
     _add_psf_parameters_text(ax_main, image)
 
@@ -193,22 +204,22 @@ def _plot_psf_analysis(subfig, image):
 def _plot_psf_profiles(ax_top, ax_right, image):
     """Plot horizontal and vertical PSF profiles."""
     x, y = np.indices(image.epsf.shape)
-    params = image.epsf.computed['params']
-    
+    params = image.epsf.computed["params"]
+
     # Data profiles
     data_horizontal = np.mean(image.epsf.data, axis=0)
     data_vertical = np.mean(image.epsf.data, axis=1)
-    
+
     # Model profiles
     model_horizontal = np.mean(image.epsf.model(params), axis=0)
     model_vertical = np.mean(image.epsf.model(params), axis=1)
-    
+
     # Top plot (horizontal profile)
     ax_top.plot(y[0], data_horizontal, c="C0", label="data")
     ax_top.plot(y[0], model_horizontal, "--", c="k", label="model")
     ax_top.axis("off")
     ax_top.legend()
-    
+
     # Right plot (vertical profile) - note the axis swap for vertical orientation
     ax_right.plot(data_vertical, x[:, 0], c="C0", label="data")
     ax_right.plot(model_vertical, x[:, 0], "--", c="k", label="model")
@@ -217,19 +228,20 @@ def _plot_psf_profiles(ax_top, ax_right, image):
 
 def _add_psf_parameters_text(ax, image):
     """Add PSF parameters as text overlay."""
-    params = image.epsf.computed['params']
-    
+    params = image.epsf.computed["params"]
+
     # Extract parameters
-    fwhm_x = params['x']
-    fwhm_y = params['y']
-    angle_deg = params['theta'] / np.pi * 180
-    
+    fwhm_x = params["x"]
+    fwhm_y = params["y"]
+    angle_deg = params["theta"] / np.pi * 180
+
     # Format text
-    text = (f"FWHM x: {fwhm_x:.2f} pix\n"
-            f"FWHM y: {fwhm_y:.2f} pix\n"
-            f"angle: {angle_deg:.2f}°")
-    
+    text = (
+        f"FWHM x: {fwhm_x:.2f} pix\nFWHM y: {fwhm_y:.2f} pix\nangle: {angle_deg:.2f}°"
+    )
+
     ax.text(1, 1, text, c="w", fontsize=10)
+
 
 def plot(
     time,
@@ -253,7 +265,7 @@ def plot(
         )
 
 
-def plot_marginal_model(data, model, cmap="inferno", c="blueviolet"):
+def plot_marginal_model(data, model, cmap="inferno", c="blueviolet", suptitle=None):
     """
     Plot the data and model marginal projections of a point-spread function (PSF).
 
@@ -272,6 +284,8 @@ def plot_marginal_model(data, model, cmap="inferno", c="blueviolet"):
         The colormap to use for displaying the data, by default 'inferno'.
     c : str, optional
         The color to use for the data projections, by default 'blueviolet'.
+    suptitle : str, optional
+        Suptitle for the figure.
 
     Returns
     -------
@@ -302,10 +316,12 @@ def plot_marginal_model(data, model, cmap="inferno", c="blueviolet"):
     plt.ylim(data.min() * 0.98, np.mean(data, axis=1).max() * 1.02)
     plt.title("PSF y-axis projected", loc="left")
     plt.grid(color="whitesmoke")
+    if suptitle:
+        plt.gcf().suptitle(suptitle)
     plt.tight_layout()
 
 
-def plot_all_cuts(cuts, W=10, cmap="magma", stars=None, stars_in=None):
+def plot_all_cuts(cuts, W=10, cmap="magma", stars=None, stars_in=None, suptitle=None):
     """
     Plots a grid of image cutouts with optional annotations for identified stars.
 
@@ -357,6 +373,8 @@ def plot_all_cuts(cuts, W=10, cmap="magma", stars=None, stars_in=None):
                     ax.plot(*stars_in[i][1][j], "x", c="C0")
         else:
             ax.axis("off")
+    if suptitle:
+        fig.suptitle(suptitle)
 
 
 class AnchoredHScaleBar(matplotlib.offsetbox.AnchoredOffsetbox):
@@ -420,6 +438,7 @@ def multiplot(
     size=None,
     labels=None,
     force_width=True,
+    suptitle=None,
 ):
     """Plot multiple x, y with some shared axis
 
@@ -443,6 +462,8 @@ def multiplot(
         bin size, by default 0.005
     force_width : bool, optional
         whether to occupy all width, by default True
+    suptitle : str, optional
+        Suptitle for the figure.
     """
 
     if size is None:
@@ -507,6 +528,8 @@ def multiplot(
         else:
             ax.axis("off")
 
+    if suptitle:
+        fig.suptitle(suptitle)
     plt.tight_layout()
 
 
@@ -1212,24 +1235,24 @@ def corner_text(
     )
 
 
-def plot_systematics_signal(
+def plot_covariates_signal(
     x,
     y,
-    systematics,
+    covariates,
     signal=None,
     ylim=None,
     offset=None,
     figsize=(6, 7),
     signal_label=None,
 ):
-    """Plot a systematics and signal model over data. systematics + signal is plotted on top, signal alone on detrended
+    """Plot a covariates and signal model over data. covariates + signal is plotted on top, signal alone on detrended
     data on bottom
 
     Parameters
     ----------
     x : np.ndarray
     y : np.ndarray
-    systematics : np.ndarray
+    covariates : np.ndarray
     signal : np.ndarray
     ylim : tuple, optional
         ylim of the plot, by default None, using the dispersion of y
@@ -1261,14 +1284,14 @@ def plot_systematics_signal(
     plot(x, y, label="data", binlabel="binned data (7.2 min)")
     plt.plot(
         x,
-        systematics + signal,
+        covariates + signal,
         c="C0",
-        label=f"systematics {'+ signal' if has_signal else ''} model",
+        label=f"covariates {'+ signal' if has_signal else ''} model",
     )
     if has_signal:
         plt.plot(x, signal + 1.0 - offset, label=signal_label, c="k")
     plt.text(plt.xlim()[1] + 0.005, 1, "RAW", rotation=270, va="center")
-    plot(x, y - systematics + 1.0 - offset)
+    plot(x, y - covariates + 1.0 - offset)
     plt.text(plt.xlim()[1] + 0.005, 1 - offset, "DETRENDED", rotation=270, va="center")
     plt.ylim(ylim)
 
