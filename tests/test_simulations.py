@@ -1,10 +1,9 @@
-import shutil
-
 from prose import FITSImage, FitsManager, Telescope
 from prose.simulations import ObservationSimulation
 
 
-def test_additional_keywords(destination="./fits"):
+def test_additional_keywords(tmp_path):
+    destination = str(tmp_path)
     obs = ObservationSimulation(600, Telescope.from_name("A"))
     obs.set_psf((3.5, 3.5), 45, 4)
     obs.add_stars(10, [0, 1])
@@ -15,5 +14,3 @@ def test_additional_keywords(destination="./fits"):
         im = FITSImage(image)
         assert im.header["POINT"] == "30, 40"
         assert im.header["SITE"] == "112, 30"
-
-    shutil.rmtree(destination)
