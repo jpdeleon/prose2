@@ -72,7 +72,7 @@ and a timestamped log.
 python -m prose.scripts.run_photometry \
     --target_name TOI-6715 \
     --data_dir /data/MuSCAT4/250416 \
-    --results-dir ./TOI-6715_250416 \
+    --results_dir ./TOI-6715_250416 \
     --bands gp rp ip zs --ref_band gp
 ```
 
@@ -82,7 +82,7 @@ camera. Pass `--ref_band gp` to instead align all bands to one band's frame.
 
 Key options: `--ref_band`, `--refid` (reference-frame index per band),
 `--gif_stride`,
-`--no-gif`, `--test-run` (first 10 frames per band), and `--use_barycorrpy`
+`--no_gif`, `--test_run` (first 10 frames per band), and `--use_barycorrpy`
 (otherwise BJD-TDB uses astropy light-travel-time). BJD conversion requires
 `astroplan`.
 
@@ -90,22 +90,22 @@ Key options: `--ref_band`, `--refid` (reference-frame index per band),
 
 By default aperture radii are sized from the Gaia nearest-neighbour
 separation. To set an explicit grid (and skip the Gaia query entirely), use
-`--aper-radii MIN,MAX,DR` together with `--annulus RIN,ROUT`. The grid is
-**inclusive of MAX** (`10,20,2` → `[10, 12, 14, 16, 18, 20]`). `--aper-unit`
+`--aper_radii MIN,MAX,DR` together with `--annulus RIN,ROUT`. The grid is
+**inclusive of MAX** (`10,20,2` → `[10, 12, 14, 16, 18, 20]`). `--aper_unit`
 selects the unit for both flags:
 
 ```shell
 # radii in pixels
 python -m prose.scripts.run_photometry ... \
-    --aper-radii 10,40,3 --annulus 44,52 --aper-unit pix
+    --aper_radii 10,40,3 --annulus 44,52 --aper_unit pix
 
 # radii in units of the per-image FWHM
 python -m prose.scripts.run_photometry ... \
-    --aper-radii 1,5,0.5 --annulus 6,8 --aper-unit fwhm
+    --aper_radii 1,5,0.5 --annulus 6,8 --aper_unit fwhm
 ```
 
-`--annulus` is required whenever `--aper-radii` is given, and `--annulus` /
-`--aper-unit` only apply together with `--aper-radii`.
+`--annulus` is required whenever `--aper_radii` is given, and `--annulus` /
+`--aper_unit` only apply together with `--aper_radii`.
 
 ## Installation
 

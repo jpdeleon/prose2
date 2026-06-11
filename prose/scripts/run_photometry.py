@@ -38,7 +38,7 @@ Example
     python -m prose.scripts.run_photometry \
         --target_name TOI-6715 \
         --data_dir /data/MuSCAT4/250416 \
-        --results-dir ./TOI-6715_250416 \
+        --results_dir ./TOI-6715_250416 \
         --bands gp rp ip zs --ref_band gp
 
 
@@ -103,7 +103,7 @@ INSTRUMENT_MAP: dict[tuple[str, str], str] = {
 
 DEFAULT_BANDS = ["gp", "rp", "ip", "zs"]
 DEFAULT_GIF_STRIDE = 100
-TEST_RUN_FRAMES = 10  # frames per band used by --test-run
+TEST_RUN_FRAMES = 10  # frames per band used by --test_run
 FPS = 5
 
 # reference-image / detection defaults (mirror the template notebook)
@@ -206,13 +206,13 @@ def parse_aper_grid(s: str) -> np.ndarray:
         lo, hi, dr = (float(x) for x in s.split(","))
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
-            f"--aper-radii expects 'MIN,MAX,DR', got {s!r}"
+            f"--aper_radii expects 'MIN,MAX,DR', got {s!r}"
         ) from exc
     if dr <= 0:
-        raise argparse.ArgumentTypeError(f"--aper-radii step DR must be > 0, got {dr}")
+        raise argparse.ArgumentTypeError(f"--aper_radii step DR must be > 0, got {dr}")
     if hi < lo:
         raise argparse.ArgumentTypeError(
-            f"--aper-radii MAX ({hi}) must be >= MIN ({lo})"
+            f"--aper_radii MAX ({hi}) must be >= MIN ({lo})"
         )
     n = int(round((hi - lo) / dr))  # inclusive endpoint
     return lo + dr * np.arange(n + 1)
@@ -239,17 +239,17 @@ def parse_trim(s: str) -> tuple[int, int]:
         y, x = (int(v) for v in s.split(","))
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
-            f"--ccd-trim expects 'Y,X', got {s!r}"
+            f"--ccd_trim expects 'Y,X', got {s!r}"
         ) from exc
     if y < 0 or x < 0:
-        raise argparse.ArgumentTypeError(f"--ccd-trim values must be >= 0, got {s!r}")
+        raise argparse.ArgumentTypeError(f"--ccd_trim values must be >= 0, got {s!r}")
     return y, x
 
 
 def aper_radii_pix(r: dict):
     """Aperture radii / annulus in pixels for plotting.
 
-    When the reduction used ``--aper-unit fwhm`` (``r["scale"]`` is True) the
+    When the reduction used ``--aper_unit fwhm`` (``r["scale"]`` is True) the
     stored radii are FWHM multiples; multiply by the reference FWHM to draw
     them in pixel coordinates.
     """
@@ -610,22 +610,24 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
 
     simbad = get_simbad_data(target_coord, instrument)
     if simbad is not None and not simbad.empty:
-        simbad_coords = SkyCoord(
-            ra=simbad.RA, dec=simbad.DEC, unit=(u.hourangle, u.deg)
-        )
-        x_pix, y_pix = ref.wcs.wcs_world2pix(
-            np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
-        ).T
-        ax.scatter(x_pix, y_pix, marker="D", s=40, ec="cyan", fc="none", lw=1)
-        for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
-            ax.annotate(
-                label,
-                (xi, yi),
-                xytext=(5, 5),
-                textcoords="offset points",
-                fontsize=5,
-                color="cyan",
+        simbad = simbad[simbad.OTYPE != "Star"]
+        if not simbad.empty:
+            simbad_coords = SkyCoord(
+                ra=simbad.RA, dec=simbad.DEC, unit=(u.hourangle, u.deg)
             )
+            x_pix, y_pix = ref.wcs.wcs_world2pix(
+                np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
+            ).T
+            ax.scatter(x_pix, y_pix, marker="D", s=40, ec="cyan", fc="none", lw=1)
+            for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
+                ax.annotate(
+                    label,
+                    (xi, yi),
+                    xytext=(5, 5),
+                    textcoords="offset points",
+                    fontsize=5,
+                    color="cyan",
+                )
 
     _savefig(fig, path)
 
@@ -868,7 +870,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Directory of calibrated FITS frames (globbed recursively).",
     )
     ap.add_argument(
-        "--results-dir",
+        "--results_dir",
         dest="results_dir",
         required=True,
         type=Path,
@@ -890,7 +892,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         "self-reference, middle frame when --ref_band is set).",
     )
     ap.add_argument(
-        "--aper-radii",
+        "--aper_radii",
         dest="aper_radii",
         type=parse_aper_grid,
         default=None,
@@ -901,41 +903,41 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--annulus",
         type=parse_pair,
         default=None,
-        help="Background annulus 'RIN,ROUT' in the same unit as --aper-radii. "
-        "Required when --aper-radii is given.",
+        help="Background annulus 'RIN,ROUT' in the same unit as --aper_radii. "
+        "Required when --aper_radii is given.",
     )
     ap.add_argument(
-        "--aper-unit",
+        "--aper_unit",
         dest="aper_unit",
         choices=["pix", "fwhm"],
         default="pix",
-        help="Unit for --aper-radii/--annulus: 'pix' (default) or 'fwhm' "
+        help="Unit for --aper_radii/--annulus: 'pix' (default) or 'fwhm' "
         "(radii scaled by each image's FWHM).",
     )
     ap.add_argument("--glob", default="*.fits", help="FITS glob pattern.")
     ap.add_argument("--gif_stride", type=int, default=DEFAULT_GIF_STRIDE)
-    ap.add_argument("--no-gif", dest="make_gif", action="store_false", default=True)
+    ap.add_argument("--no_gif", dest="make_gif", action="store_false", default=True)
     ap.add_argument(
         "--use_barycorrpy",
         action="store_true",
         help="Use barycorrpy for BJD-TDB (default: astropy light-travel).",
     )
     ap.add_argument(
-        "--test-run",
+        "--test_run",
         dest="test_run",
         action="store_true",
         help=f"Quick smoke test: use only the first {TEST_RUN_FRAMES} frames "
         "of each band.",
     )
     ap.add_argument(
-        "--test-run-frames",
+        "--test_run_frames",
         type=int,
         default=TEST_RUN_FRAMES,
         dest="test_run_frames",
         help=f"Number of frames per band in test-run mode (default: {TEST_RUN_FRAMES}).",
     )
     ap.add_argument(
-        "--min-star-separation",
+        "--min_star_separation",
         type=float,
         default=MIN_STAR_SEPARATION,
         dest="min_star_separation",
@@ -943,7 +945,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(default: %(default)s).",
     )
     ap.add_argument(
-        "--max-num-stars",
+        "--max_num_stars",
         type=int,
         default=MAX_NUM_STARS,
         dest="max_num_stars",
@@ -951,29 +953,29 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(default: %(default)s).",
     )
     ap.add_argument(
-        "--n-stars-align",
+        "--n_stars_align",
         type=int,
         default=None,
         dest="n_stars_align",
         help="Number of stars used for image alignment (default: same as "
-        "--max-num-stars).",
+        "--max_num_stars).",
     )
     ap.add_argument(
-        "--cutout-size",
+        "--cutout_size",
         type=int,
         default=CUTOUT_SIZE,
         dest="cutout_size",
         help="Side length in pixels of star cutouts (default: %(default)s).",
     )
     ap.add_argument(
-        "--ccd-trim",
+        "--ccd_trim",
         type=parse_trim,
         default=CCD_TRIM_SIZE_YX,
         dest="ccd_trim_size_yx",
         help="CCD edge trim 'Y,X' in pixels (default: %(default)s).",
     )
     ap.add_argument(
-        "--bin-size-minutes",
+        "--bin_size_minutes",
         type=float,
         default=BIN_SIZE_DAYS * 24 * 60,
         dest="bin_size_minutes",
@@ -989,17 +991,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing products in --results-dir (default: abort if "
+        help="Overwrite existing products in --results_dir (default: abort if "
         "the directory already contains outputs).",
     )
     args = ap.parse_args(argv)
 
     if args.aper_radii is not None and args.annulus is None:
-        ap.error("--annulus RIN,ROUT is required when --aper-radii is given")
+        ap.error("--annulus RIN,ROUT is required when --aper_radii is given")
     if args.aper_radii is None and (
         args.annulus is not None or args.aper_unit != "pix"
     ):
-        ap.error("--annulus and --aper-unit only apply together with --aper-radii")
+        ap.error("--annulus and --aper_unit only apply together with --aper_radii")
     if args.aper_radii is not None and args.aper_radii.max() > args.annulus[0]:
         ap.error(
             f"max aperture radius ({args.aper_radii.max():g}) must be <= "
