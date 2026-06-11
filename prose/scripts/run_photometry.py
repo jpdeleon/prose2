@@ -51,7 +51,7 @@ TODO:
 * add the ability to ingest single-band sinistro dataset
 * why prose is superior in-memory multiprocessing but not eloy?
 * what is the purpose of .npz file?
-* place tdb_bjd, flux and flux_err at the leftmost columns of *.csv
+* re-arrange by placing bjd_tdb, flux and flux_err at the leftmost columns of *.csv
 """
 
 from __future__ import annotations
@@ -71,6 +71,7 @@ import imageio.v2 as imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 from astropy.visualization import ZScaleInterval
@@ -84,6 +85,7 @@ from prose.utils import (
     LCO_SITES,
     PIXSCALES,
     get_saturation_from_header,
+    get_simbad_data,
     read_filename_per_band,
 )
 
@@ -587,13 +589,17 @@ def photometry_df(diff: Fluxes, bjd: np.ndarray) -> pd.DataFrame:
     df = diff.df.copy()
     df["BJD_TDB"] = bjd
     df["Flux_Err"] = diff.error
-    return df.rename(CSV_RENAME, axis=1)
+    df = df.rename(CSV_RENAME, axis=1)
+    cols = df.columns.tolist()
+    left = ["BJD_TDB", "Flux", "Flux_Err"]
+    rest = [c for c in cols if c not in left]
+    return df[left + rest]
 
 
 # --------------------------- plots ---------------------------
 
 
-def plot_ref_image(r, target_coord, path: Path) -> None:
+def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
     ref = r["ref"]
     fig = plt.figure(figsize=(7, 7))
     ax = fig.add_subplot(111, projection=ref.wcs)
@@ -604,6 +610,18 @@ def plot_ref_image(r, target_coord, path: Path) -> None:
     ax.scatter(ra_pix, dec_pix, s=120, ec="r", fc="none")
     ref.sources.plot(ax=ax)
     ax.set_title(f"{r['band']} reference", y=1.05)
+
+    simbad = get_simbad_data(target_coord, instrument)
+    if simbad is not None and not simbad.empty:
+        simbad_coords = SkyCoord(ra=simbad.RA, dec=simbad.DEC, unit=(u.hourangle, u.deg))
+        x_pix, y_pix = ref.wcs.wcs_world2pix(
+            np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
+        ).T
+        ax.scatter(x_pix, y_pix, marker="D", s=40, ec="cyan", fc="none", lw=1)
+        for xi, yi, label in zip(x_pix, y_pix, simbad.MAIN_ID):
+            ax.annotate(label, (xi, yi), xytext=(5, 5),
+                        textcoords="offset points", fontsize=5, color="cyan")
+
     _savefig(fig, path)
 
 
@@ -1087,7 +1105,7 @@ def main(argv=None) -> int:
         photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
         logger.info(f"wrote {csv_path}")
 
-        plot_ref_image(r, target_coord, args.results_dir / f"{stem}_ref.png")
+        plot_ref_image(r, target_coord, instrument, args.results_dir / f"{stem}_ref.png")
         plot_apertures(r, args.results_dir / f"{stem}_apertures.png")
         plot_alignment(
             r,
