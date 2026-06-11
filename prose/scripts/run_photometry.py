@@ -44,8 +44,6 @@ Example
 
 TODO: 
 * make sure the text, labels, titles in figure do not overlap; use constrained_layout?
-* add a color map: {g: blue, r: green, i: yellow, z: red} and use it time series plots
-* aside from g,r,iz, add narrow bands: g_narrow, NaD, i_narrow, z_narrow which has same color map
 * do not hardcode PIXEL_SCALE and SATURATED, instead read it from header of ref img
 * overplot simbad objects into reference frame using prose.utils.get_simbad_data
 * add --calibrated flag which checks if data was calibrated by BANZAI already or pipeline needs to start from scratch
@@ -130,6 +128,16 @@ BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
 # GJD->BJD sanity bound (light travel time should be well under this)
 MAX_TIME_OFFSET_MIN = 2 * 8.4
+
+# band color map
+BAND_COLORS = {"g": "blue", "r": "green", "i": "orange", "z": "red"}
+
+
+def band_color(band: str) -> str:
+    if band == "NaD":
+        return BAND_COLORS["r"]
+    return BAND_COLORS.get(band[0], "k")
+
 
 logger = logging.getLogger("prose_run_photometry")
 
@@ -665,11 +673,12 @@ def plot_lightcurves(
     fig, axes = plt.subplots(len(bands), 1, figsize=(8, 2.4 * len(bands)), sharex=True)
     axes = np.atleast_1d(axes)
     for ax, band in zip(axes, bands):
+        c = band_color(band)
         diff = band_results[band]["diff"]
         t, f = np.asarray(diff.time), np.asarray(diff.flux)
-        ax.plot(t, f, ".", c="0.8")
+        ax.plot(t, f, ".", c=c, alpha=0.5)
         bt, bf, be = _binned(t, f, bin_size_days=bin_size_days)
-        ax.errorbar(bt, bf, yerr=be, fmt=".", c="k")
+        ax.errorbar(bt, bf, yerr=be, fmt=".", c=c)
         ax.set_ylabel(f"{band}\nDiff. flux")
     axes[-1].set_xlabel("time (JD)")
     fig.tight_layout()
@@ -682,6 +691,7 @@ def plot_systematics(band_results, path: Path) -> None:
     axes = np.atleast_1d(axes)
     signals = ["flux", "fwhm", "airmass", "bkg", "dx", "dy"]
     for ax, band in zip(axes, bands):
+        bc = band_color(band)
         diff = band_results[band]["diff"]
         t = np.asarray(diff.time)
         for i, name in enumerate(signals):
@@ -690,7 +700,7 @@ def plot_systematics(band_results, path: Path) -> None:
             denom = std_val or 1e-12
             y = (raw - np.mean(raw)) / denom + 8 * i
             ax.text(t.max(), np.mean(y) + 4, f"{name} (std: {std_val:.2f})", ha="right")
-            ax.plot(t, y, ".", c="0.8" if name != "flux" else "k")
+            ax.plot(t, y, ".", c=bc if name == "flux" else "0.8")
         ax.set_xlabel("time (JD)")
         ax.set_title(band)
     fig.tight_layout()
@@ -711,6 +721,7 @@ def plot_stacks(band_results, path: Path) -> None:
     fig, axes = plt.subplots(len(bands), 2, figsize=(7, 3 * len(bands)))
     axes = np.atleast_2d(axes)
     for row, band in enumerate(bands):
+        bc = band_color(band)
         r = band_results[band]
         ref = r["ref"]
         diff = r["diff"]
@@ -722,8 +733,8 @@ def plot_stacks(band_results, path: Path) -> None:
 
         radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
         prof = _radial_profile(c.data, center)
-        axes[row, 1].plot(prof, ".", c="0.8", ms=6)
-        axes[row, 1].plot(prof, c="k")
+        axes[row, 1].plot(prof, ".", c=bc, ms=6)
+        axes[row, 1].plot(prof, c=bc)
         best = float(radii_pix[min(int(diff.aperture), len(radii_pix) - 1)])
         axes[row, 1].axvline(best, color="r", alpha=0.6, label=f"best: r={best:.0f}")
         axes[row, 0].add_artist(plt.Circle(tuple(center), best, color="r", fill=False))
