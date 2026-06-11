@@ -44,7 +44,6 @@ Example
 
 TODO: 
 * make sure the text, labels, titles in figure do not overlap; use constrained_layout?
-* do not hardcode PIXEL_SCALE and SATURATED, instead read it from header of ref img
 * overplot simbad objects into reference frame using prose.utils.get_simbad_data
 * add --calibrated flag which checks if data was calibrated by BANZAI already or pipeline needs to start from scratch
 * add cutout plots to see zoomed comparison stars. Label which is target
@@ -312,7 +311,8 @@ def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoor
         df = c.catalogs["gaia"].copy()
         gaia_coords = SkyCoord(df.ra, df.dec, unit="deg")
         df["sep_arcsec"] = target_coord.separation(gaia_coords).arcsec
-        df["sep_pix"] = (df["sep_arcsec"] / ref.header["PIXSCALE"]).round()
+        pixscale = float(ref.header.get("PIXSCALE", ref.telescope.pixel_scale))
+        df["sep_pix"] = (df["sep_arcsec"] / pixscale).round()
         df = df.sort_values(by="sep_arcsec").reset_index(drop=True)
         aper_rad_max = float(df.iloc[1].sep_pix)  # nearest neighbour (row 0 = target)
         if not np.isfinite(aper_rad_max) or aper_rad_max <= aper_rad_min:
@@ -336,8 +336,6 @@ def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoor
 
 def build_reference(
     ref_file,
-    saturation,
-    pixel_scale,
     target_coord,
     aper_radii=None,
     rin=None,
@@ -350,12 +348,27 @@ def build_reference(
 ):
     """Build the reference image, target index and aperture geometry.
 
+    PIXSCALE and saturation are read from the reference image header
+    (not hardcoded or taken from a probe frame).
+
     If ``aper_radii`` is provided, the explicit grid (and ``rin``/``rout``) is
     used and the Gaia heuristic is skipped. ``scale`` selects pixel
     (``False``) vs FWHM (``True``) units for the photometry blocks.
     """
-    telescope = Telescope(saturation=saturation, pixel_scale=pixel_scale)
-    ref = FITSImage(ref_file, telescope=telescope)
+    ref = FITSImage(ref_file)
+    instrument = get_instrument(ref.header)
+    pixel_scale = float(ref.header.get("PIXSCALE", PIXSCALES.get(instrument, 0.267)))
+    band_key = ref.header.get("FILTER", "")
+    try:
+        sat_all = get_saturation_from_header(ref.header)
+        saturation = sat_all.get(band_key) if isinstance(sat_all, dict) else None
+    except Exception:  # noqa: BLE001
+        saturation = None
+    ref.telescope = Telescope(saturation=saturation, pixel_scale=pixel_scale)
+    logger.info(
+        f"{Path(ref_file).name}: PIXSCALE={pixel_scale} "
+        f"saturation={saturation} instrument={instrument}"
+    )
     reference_sequence(
         ccd_trim_size_yx=ccd_trim_size_yx,
         max_num_stars=max_num_stars,
@@ -438,8 +451,6 @@ def run_band(
     band,
     files,
     ref_file,
-    saturation,
-    pixel_scale,
     target_coord,
     aper_radii=None,
     rin=None,
@@ -451,12 +462,13 @@ def run_band(
     cutout_size: int = CUTOUT_SIZE,
     n_stars_align: int | None = None,
 ):
-    """Full reduction for a single band. Returns a result dict or ``None``."""
+    """Full reduction for a single band. Returns a result dict or ``None``.
+    PIXSCALE and saturation are read from the reference image header
+    inside ``build_reference``.
+    """
     logger.info(f"[{band}] {len(files)} frames; building reference")
     reference = build_reference(
         ref_file,
-        saturation,
-        pixel_scale,
         target_coord,
         aper_radii=aper_radii,
         rin=rin,
@@ -999,15 +1011,13 @@ def main(argv=None) -> int:
         logger.error(f"no frames for target={args.target_name}; aborting")
         return 1
 
-    # header metadata for naming, saturation, pixel scale, time conversion
+    # header metadata for naming, time conversion
     probe = FITSImage(sciences[active_bands[0]][0]).header
     instrument = get_instrument(probe)
     date = date_from_header(probe)
-    pixel_scale = float(probe.get("PIXSCALE", PIXSCALES.get(instrument, 0.267)))
-    saturation_limits = get_saturation_from_header(probe)
     logger.info(
         f"target={args.target_name} inst={instrument} date={date} "
-        f"pixel_scale={pixel_scale} site={probe.get('SITE')}"
+        f"site={probe.get('SITE')}"
     )
 
     target_coord = Mast().resolve_object(args.target_name)
@@ -1045,8 +1055,6 @@ def main(argv=None) -> int:
                 band,
                 band_files,
                 ref_files[refid],
-                saturation_limits.get(band),
-                pixel_scale,
                 target_coord,
                 aper_radii=args.aper_radii,
                 rin=arin,
