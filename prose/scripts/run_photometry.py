@@ -82,9 +82,12 @@ from prose.core.sequence import SequenceParallel
 from prose.utils import (
     LCO_SITES,
     PIXSCALES,
+    coord_cache_path,
     get_saturation_from_header,
     get_simbad_data,
+    load_cached_df,
     read_filename_per_band,
+    save_cached_df,
 )
 
 # --------------------------- constants / defaults ---------------------------
@@ -123,9 +126,6 @@ ANNULUS_MAX_PIX = 100  # clamp rout when FWHM is large (defocus) [pix]
 CONTAM_DMAG = 2.5  # neighbour contaminates if Gmag - target < this (>=10% target flux)
 CONTAM_MARGIN_PIX = 2  # keep annulus/aperture this far inside a contaminant [pix]
 GAIA_CUTOUT = (200, 200)  # cutout around target for the Gaia query [pix]
-# persistent Gaia cache: refreshed on every successful online query and read
-# only when a live query fails (offline fallback for future reruns)
-GAIA_CACHE_DIR = Path.home() / ".cache" / "prose_photometry" / "gaia"
 
 # differential-photometry cleaning
 SIGMA_BKG = 3
@@ -356,61 +356,25 @@ def _aperture_radii_pix(fwhm: float, rin: float) -> np.ndarray:
 _gaia_cache: dict = {}
 
 
-def _gaia_cache_key(target_coord: SkyCoord, cutout_pix: int) -> tuple:
-    """Stable cache key from target coordinates (5 dp ~ 0.4") and cutout size."""
-    return (
-        round(float(target_coord.ra.deg), 5),
-        round(float(target_coord.dec.deg), 5),
-        int(cutout_pix),
-    )
-
-
-def _gaia_cache_path(target_coord: SkyCoord, cutout_pix: int) -> Path:
-    ra, dec, cut = _gaia_cache_key(target_coord, cutout_pix)
-    return GAIA_CACHE_DIR / f"gaia_ra{ra:.5f}_dec{dec:+.5f}_c{cut}.csv"
-
-
-def _load_gaia_cache(path: Path):
-    """Load a cached Gaia DataFrame, or ``None`` if absent/unreadable."""
-    if not path.is_file():
-        return None
-    try:
-        return pd.read_csv(path)
-    except Exception as exc:  # noqa: BLE001 - a bad cache must not be fatal
-        logger.warning(f"could not read Gaia cache {path}: {exc}")
-        return None
-
-
-def _save_gaia_cache(path: Path, df: pd.DataFrame) -> None:
-    """Persist a Gaia DataFrame for offline reruns (best effort)."""
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(path, index=False)
-        logger.info(f"cached Gaia result -> {path}")
-    except Exception as exc:  # noqa: BLE001 - caching is best effort
-        logger.warning(f"could not write Gaia cache {path}: {exc}")
-
-
 def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
     """Gaia catalog DataFrame around the target, querying live and refreshing the
-    on-disk cache; if the live query fails, fall back to a previous run's cached
-    result. Returns ``None`` when neither is available. Queried once per process
-    and reused across the run's bands.
+    on-disk cache (``CACHE_DIR/gaia``); if the live query fails, fall back to a
+    previous run's cached result. Returns ``None`` when neither is available.
+    Queried once per process and reused across the run's bands.
     """
-    cutout_pix = GAIA_CUTOUT[0]
-    key = _gaia_cache_key(target_coord, cutout_pix)
-    if key in _gaia_cache:  # same target, another band of this run
-        return _gaia_cache[key]
+    cache_path = coord_cache_path("gaia", target_coord, GAIA_CUTOUT[0])
+    if cache_path in _gaia_cache:  # same target, another band of this run
+        return _gaia_cache[cache_path]
 
-    cache_path = _gaia_cache_path(target_coord, cutout_pix)
     try:
         c = ref.cutout(ref.sources[target_index].coords, GAIA_CUTOUT)
         c.fov = np.array(c.shape) * pixscale * u.arcsec  # required before Gaia query
         c = catalogs.GaiaCatalog(mode="replace")(c)
         df = c.catalogs["gaia"]
-        _save_gaia_cache(cache_path, df)  # refresh cache whenever online
+        if save_cached_df(cache_path, df):  # refresh cache whenever online
+            logger.info(f"cached Gaia result -> {cache_path}")
     except Exception as exc:  # noqa: BLE001 - degrade to cache then FWHM-only
-        df = _load_gaia_cache(cache_path)
+        df = load_cached_df(cache_path)
         if df is not None:
             logger.warning(
                 f"Gaia query unavailable ({exc}); using cached result {cache_path}"
@@ -419,7 +383,7 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
             logger.warning(
                 f"Gaia query unavailable ({exc}) and no cache; using FWHM-only geometry"
             )
-    _gaia_cache[key] = df  # store even None to avoid re-querying per band
+    _gaia_cache[cache_path] = df  # store even None to avoid re-querying per band
     return df
 
 

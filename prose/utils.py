@@ -2,6 +2,7 @@ import inspect
 import urllib
 from datetime import datetime, timedelta
 from functools import wraps
+from pathlib import Path
 from astropy.io import fits
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
@@ -9,6 +10,7 @@ from tqdm import tqdm
 import astropy.constants as c
 import astropy.units as u
 import numpy as np
+import pandas as pd
 from astropy.coordinates import SkyCoord
 from astropy.stats import gaussian_sigma_to_fwhm
 from astropy.time import Time
@@ -56,11 +58,59 @@ LCO_CODES = {
     "LCOGT node at Tenerife": "tfn",
 }
 
+# persistent, coordinate-keyed catalog cache shared by the Gaia and SIMBAD
+# queries: results are written under CACHE_DIR/<subdir> and reused when a live
+# query is unavailable (offline fallback for future reruns).
+CACHE_DIR = Path.home() / ".cache" / "prose_photometry"
+
+
+def coord_cache_path(subdir, target_coord, *key_parts, ext="csv"):
+    """Path to a coordinate-keyed cache file under ``CACHE_DIR/subdir``.
+
+    The filename encodes RA/Dec (5 dp ~ 0.4") plus any extra ``key_parts``
+    (e.g. cutout size, instrument, field of view) so distinct queries of the
+    same target do not collide.
+    """
+    ra = round(float(target_coord.ra.deg), 5)
+    dec = round(float(target_coord.dec.deg), 5)
+    name = f"ra{ra:.5f}_dec{dec:+.5f}"
+    suffix = "_".join(str(k) for k in key_parts)
+    if suffix:
+        name += f"_{suffix}"
+    return CACHE_DIR / subdir / f"{name}.{ext}"
+
+
+def load_cached_df(path):
+    """Load a cached DataFrame, or ``None`` if the file is absent/unreadable."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    try:
+        return pd.read_csv(path)
+    except Exception:  # noqa: BLE001 - a bad cache must not be fatal
+        return None
+
+
+def save_cached_df(path, df):
+    """Persist a DataFrame to the cache (best effort). Returns success."""
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(path, index=False)
+        return True
+    except Exception:  # noqa: BLE001 - caching is best effort
+        return False
+
+
 _simbad_cache: dict = {}
 
 def get_simbad_data(target_coord, inst, fov_arcmin=None):
     """
     Query SIMBAD sources around a sky coordinate.
+
+    The result is cached in memory (per process) and on disk
+    (``CACHE_DIR/simbad``). When the live query fails the cached result from a
+    previous run is reused; a genuine "no sources" answer is not cached to disk.
 
     Parameters:
         target_coord : SkyCoord
@@ -81,23 +131,31 @@ def get_simbad_data(target_coord, inst, fov_arcmin=None):
     fov_default = FOV_IN_ARCMIN.get(inst, 5)
     fov = fov_arcmin if fov_arcmin else fov_default
 
-    cache_key = (target_coord.ra.deg, target_coord.dec.deg, inst, fov)
+    cache_key = (round(target_coord.ra.deg, 5), round(target_coord.dec.deg, 5), inst, fov)
     if cache_key in _simbad_cache:
         return _simbad_cache[cache_key]
 
-    print(f"Querying SIMBAD sources within {fov:.2f} arcmin of ({target_coord.to_string('decimal')})")
-    result = Simbad.query_region(target_coord, radius=fov * u.arcmin)
-    if result is None:
-        print("No sources found.")
-        _simbad_cache[cache_key] = None
-        return None
-    
-    df = result.to_pandas()
-    coords = SkyCoord(ra=df.RA, dec=df.DEC, unit=(u.hourangle, u.deg))
-    mask = coords.separation(target_coord) < fov * u.arcmin
-    result_df = df[mask]
+    cache_path = coord_cache_path("simbad", target_coord, inst, f"{fov:g}")
+    try:
+        print(f"Querying SIMBAD sources within {fov:.2f} arcmin of ({target_coord.to_string('decimal')})")
+        result = Simbad.query_region(target_coord, radius=fov * u.arcmin)
+        if result is None:
+            print("No sources found.")
+            result_df = None
+        else:
+            df = result.to_pandas()
+            coords = SkyCoord(ra=df.RA, dec=df.DEC, unit=(u.hourangle, u.deg))
+            result_df = df[coords.separation(target_coord) < fov * u.arcmin]
+            save_cached_df(cache_path, result_df)  # refresh cache whenever online
+            print(f"For description of Simbad object types, see\n{url}")
+    except Exception as exc:  # noqa: BLE001 - degrade to cached result when offline
+        result_df = load_cached_df(cache_path)
+        if result_df is not None:
+            print(f"SIMBAD query unavailable ({exc}); using cached result {cache_path}")
+        else:
+            print(f"SIMBAD query unavailable ({exc}); no cache available")
+
     _simbad_cache[cache_key] = result_df
-    print(f"For description of Simbad object types, see\n{url}")
     return result_df
 
 def get_saturation_from_header(h) -> dict:
