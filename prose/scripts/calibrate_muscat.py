@@ -1,9 +1,9 @@
-"""Calibrate raw MuSCAT2 data using darks and flats per band.
+"""Calibrate raw MuSCAT data using darks and flats per band.
 
 Given a raw data directory containing DARK, FLAT, and OBJECT frames
 (identified from FITS ``OBJECT`` keyword), this script:
 
-1. Groups calibration and science frames per CCD/band (g, r, i, z_s)
+1. Groups calibration and science frames per CCD/band (g, r, z_s)
 2. Builds master dark and master flat for each band
 3. Calibrates all science frames (master-dark subtraction, flat division)
 4. Optionally solves WCS astrometry (via twirl + Gaia) per band
@@ -13,15 +13,15 @@ Example
 -------
 ::
 
-    python -m prose.scripts.calibrate_muscat2 \\
-        --data_dir /data/MuSCAT2/250310 \\
-        --target TOI00663.02 \\
-        --output_dir /data/MuSCAT2/250310_calibrated
+    python -m prose.scripts.calibrate_muscat \\
+        --data_dir /data/MuSCAT/220131 \\
+        --target TOI126 \\
+        --output_dir /data/MuSCAT2/220131_calibrated
 
     python -m prose.scripts.calibrate_muscat2 \\
-        --data_dir /data/MuSCAT2/250310 \\
-        --target TOI00663.02 \\
-        --output_dir /data/MuSCAT2/250310_calibrated \\
+        --data_dir /data/MuSCAT/220131 \\
+        --target TOI126 \\
+        --output_dir /data/MuSCAT/220131_calibrated \\
         --solve-wcs
 """
 
@@ -43,18 +43,18 @@ from prose.console_utils import info
 
 logger = logging.getLogger("calibrate_muscat2")
 
-CCD_BANDS = {0: "g", 1: "r", 2: "i", 3: "z_s"}
+CCD_BANDS = {0: "g", 1: "r", 2: "z_s"}
 
 
 def find_files(data_dir: Path) -> tuple[dict, dict]:
     """Scan FITS headers and return ``(darks, flats)`` per CCD.
 
-    Each returned dict maps CCD index (0-3) to a list of file paths.
+    Each returned dict maps CCD index (0-2) to a list of file paths.
     """
     darks: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
     flats: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
 
-    files = sorted(data_dir.glob("MCT2?_*.fits"))
+    files = sorted(data_dir.glob("MSCT?_*.fits"))
     for fp in files:
         prefix = fp.stem.split("_")[0]
         ccd = int(prefix[4])
@@ -73,7 +73,7 @@ def find_files(data_dir: Path) -> tuple[dict, dict]:
 def find_science_files(data_dir: Path, target: str) -> dict[int, list[str]]:
     """Scan FITS headers and return science files per CCD for *target*."""
     sciences: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
-    files = sorted(data_dir.glob("MCT2?_*.fits"))
+    files = sorted(data_dir.glob("MSCT?_*.fits"))
     for fp in files:
         prefix = fp.stem.split("_")[0]
         ccd = int(prefix[4])
@@ -241,12 +241,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--data_dir",
         type=Path,
         required=True,
-        help="Raw MuSCAT2 data directory (contains MCT2?_*.fits files)",
+        help="Raw MuSCAT2 data directory (contains MSCT?_*.fits files)",
     )
     ap.add_argument(
         "--target",
         default=None,
-        help="Object name (e.g. TOI00663.02). If omitted, only master calibration "
+        help="Object name (e.g. TOI126). If omitted, only master calibration "
         "frames are built.",
     )
     ap.add_argument(
@@ -281,8 +281,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error(f"data_dir not found: {args.data_dir}")
         return 1
 
-    assert any(args.data_dir.glob("MCT2[0-3]_*.fits")), (
-        f"data_dir {args.data_dir} contains no MuSCAT2 files matching MCT2[0-3]_*.fits. "
+    assert any(args.data_dir.glob("MSCT[0-2]_*.fits")), (
+        f"data_dir {args.data_dir} contains no MuSCAT2 files matching MSCT[0-2]_*.fits. "
         "This script only supports MuSCAT2 data."
     )
 
