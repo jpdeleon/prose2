@@ -1,4 +1,3 @@
-import inspect
 from time import time
 from typing import Union
 
@@ -69,10 +68,10 @@ class Block(object):
         for _require in self.read:
             if _require == "sources":
                 if len(image.sources) == 0:
-                    raise AttributeError(f"Image must have sources (0 found)")
+                    raise AttributeError("Image must have sources (0 found)")
             elif _require == "wcs":
                 if not image.plate_solved:
-                    raise AttributeError(f"Image must have valid WCS")
+                    raise AttributeError("Image must have valid WCS")
             if not hasattr(image, _require) and not hasattr(image.computed, _require):
                 raise AttributeError(
                     f"[{self.__class__.__name__}] Image must have attribute '{_require}'"
@@ -161,6 +160,6 @@ def is_tested(block_class: Union[Block, str]) -> bool:
     elif issubclass(block_class, Block):
         block_name = block_class.__name__
     else:
-        raise TypeError(f"block must be a Block subclass or a string")
+        raise TypeError("block must be a Block subclass or a string")
     result = pytest.main(["-q", "-k", block_name])
     return result == 0

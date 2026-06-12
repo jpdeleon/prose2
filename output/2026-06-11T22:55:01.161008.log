@@ -1,0 +1,57 @@
+2026-06-11 22:55:01,165 - INFO: log file: output/2026-06-11T22:55:01.161008.log
+2026-06-11 22:55:01,173 - INFO: reading obslog: /ut2/muscat/obslog/muscat4/250512
+2026-06-11 22:55:11,781 - INFO: obslog: frames per band: {'gp': 467, 'rp': 1071, 'ip': 1071, 'zs': 1788}
+2026-06-11 22:55:11,782 - INFO: frames per band: {'gp': 467, 'rp': 1071, 'ip': 1071, 'zs': 1788}
+2026-06-11 22:55:11,962 - INFO: target=TOI-6715 inst=muscat4 date=250512 site=LCOGT node at Siding Spring Observatory
+2026-06-11 22:55:13,166 - INFO: target radec: <SkyCoord (ICRS): (ra, dec) in deg
+    (159.15814614, -64.79827588)>
+2026-06-11 22:55:13,166 - INFO: reference: per-band self-reference (first frame of each band)
+2026-06-11 22:55:13,166 - INFO: [gp] 467 frames; building reference
+2026-06-11 22:55:13,220 - INFO: coj2m002-ep06-20250512-0056-e91.fits: PIXSCALE=0.267 saturation=64000 instrument=muscat4
+2026-06-11 22:55:14,288 - WARNING: Gaia aperture heuristic failed ([GaiaCatalog] Image has no 'fov'); using fwhm defaults
+2026-06-11 22:55:14,289 - INFO: reference coj2m002-ep06-20250512-0056-e91.fits: FWHM 8.60 px, target idx 3
+2026-06-11 22:56:36,739 - INFO: [gp] reduction complete: 461 points
+2026-06-11 22:56:36,740 - INFO: [rp] 1071 frames; building reference
+2026-06-11 22:56:36,781 - INFO: coj2m002-ep07-20250512-0057-e91.fits: PIXSCALE=0.267 saturation=64000 instrument=muscat4
+2026-06-11 22:56:37,666 - WARNING: Gaia aperture heuristic failed ([GaiaCatalog] Image has no 'fov'); using fwhm defaults
+2026-06-11 22:56:37,667 - INFO: reference coj2m002-ep07-20250512-0057-e91.fits: FWHM 7.60 px, target idx 3
+2026-06-11 22:59:46,246 - INFO: [rp] reduction complete: 1042 points
+2026-06-11 22:59:46,247 - INFO: [ip] 1071 frames; building reference
+2026-06-11 22:59:46,297 - INFO: coj2m002-ep08-20250512-0056-e91.fits: PIXSCALE=0.267 saturation=46000 instrument=muscat4
+2026-06-11 22:59:46,938 - WARNING: Gaia aperture heuristic failed ([GaiaCatalog] Image has no 'fov'); using fwhm defaults
+2026-06-11 22:59:46,938 - INFO: reference coj2m002-ep08-20250512-0056-e91.fits: FWHM 7.02 px, target idx 3
+2026-06-11 23:02:49,969 - INFO: [ip] reduction complete: 1024 points
+2026-06-11 23:02:49,972 - INFO: [zs] 1788 frames; building reference
+2026-06-11 23:02:50,035 - INFO: coj2m002-ep09-20250512-0056-e91.fits: PIXSCALE=0.267 saturation=64000 instrument=muscat4
+2026-06-11 23:02:51,246 - WARNING: Gaia aperture heuristic failed ([GaiaCatalog] Image has no 'fov'); using fwhm defaults
+2026-06-11 23:02:51,247 - INFO: reference coj2m002-ep09-20250512-0056-e91.fits: FWHM 7.54 px, target idx 6
+2026-06-11 23:07:59,375 - INFO: [zs] reduction complete: 1691 points
+2026-06-11 23:08:04,056 - INFO: GJD-TDB offset 4.71 min
+2026-06-11 23:08:04,099 - INFO: wrote output/TOI-6715_muscat4_gp_250512.csv
+2026-06-11 23:08:08,573 - INFO: wrote output/TOI-6715_muscat4_gp_250512_ref.png
+2026-06-11 23:08:08,991 - INFO: wrote output/TOI-6715_muscat4_gp_250512_apertures.png
+2026-06-11 23:08:11,493 - INFO: wrote output/TOI-6715_muscat4_gp_250512_alignment.png
+2026-06-11 23:08:16,178 - INFO: wrote output/TOI-6715_muscat4_gp_250512.gif
+2026-06-11 23:08:16,372 - INFO: GJD-TDB offset 4.71 min
+2026-06-11 23:08:16,419 - INFO: wrote output/TOI-6715_muscat4_rp_250512.csv
+2026-06-11 23:08:18,833 - INFO: wrote output/TOI-6715_muscat4_rp_250512_ref.png
+2026-06-11 23:08:19,165 - INFO: wrote output/TOI-6715_muscat4_rp_250512_apertures.png
+2026-06-11 23:08:21,722 - INFO: wrote output/TOI-6715_muscat4_rp_250512_alignment.png
+2026-06-11 23:08:32,479 - INFO: wrote output/TOI-6715_muscat4_rp_250512.gif
+2026-06-11 23:08:32,635 - INFO: GJD-TDB offset 4.71 min
+2026-06-11 23:08:32,680 - INFO: wrote output/TOI-6715_muscat4_ip_250512.csv
+2026-06-11 23:08:36,483 - INFO: wrote output/TOI-6715_muscat4_ip_250512_ref.png
+2026-06-11 23:08:37,197 - INFO: wrote output/TOI-6715_muscat4_ip_250512_apertures.png
+2026-06-11 23:08:40,610 - INFO: wrote output/TOI-6715_muscat4_ip_250512_alignment.png
+2026-06-11 23:08:54,058 - INFO: wrote output/TOI-6715_muscat4_ip_250512.gif
+2026-06-11 23:08:54,450 - INFO: GJD-TDB offset 4.71 min
+2026-06-11 23:08:54,553 - INFO: wrote output/TOI-6715_muscat4_zs_250512.csv
+2026-06-11 23:08:57,262 - INFO: wrote output/TOI-6715_muscat4_zs_250512_ref.png
+2026-06-11 23:08:57,582 - INFO: wrote output/TOI-6715_muscat4_zs_250512_apertures.png
+2026-06-11 23:08:59,435 - INFO: wrote output/TOI-6715_muscat4_zs_250512_alignment.png
+2026-06-11 23:09:15,709 - INFO: wrote output/TOI-6715_muscat4_zs_250512.gif
+2026-06-11 23:09:16,611 - INFO: wrote output/TOI-6715_muscat4_250512_lightcurves.png
+2026-06-11 23:09:17,330 - INFO: wrote output/TOI-6715_muscat4_250512_systematics.png
+2026-06-11 23:09:18,738 - INFO: wrote output/TOI-6715_muscat4_250512_stacks.png
+2026-06-11 23:09:18,766 - INFO: wrote output/TOI-6715_muscat4_250512.npz
+2026-06-11 23:09:18,767 - INFO: done  (858s elapsed)

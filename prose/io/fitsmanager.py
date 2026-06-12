@@ -1,5 +1,4 @@
 import sqlite3
-import sys
 from functools import partial
 from pathlib import Path
 
@@ -180,7 +179,7 @@ class FitsManager:
 
         # or IGNORE to handle the unique constraint
         self.cur.execute(
-            f"INSERT or IGNORE INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT or IGNORE INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 date,
                 path,
@@ -327,7 +326,7 @@ class FitsManager:
                 if not verbose_new:
                     f"{len(files_to_scan)} new files to scan"
         else:
-            raise AssertionError(f"No files provided")
+            raise AssertionError("No files provided")
 
     def observations(self, hide_exposure=True, **kwargs):
         """return a pandas DataFrame of observations given some metadata constraints in the form of wildcards

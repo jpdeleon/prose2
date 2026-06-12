@@ -120,7 +120,7 @@ def test_Del():
     im.a = 3
 
     blocks.Del("a", "data").run(im)
-    assert not "a" in im.computed
+    assert "a" not in im.computed
     assert im.data is None
 
 

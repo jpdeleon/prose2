@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy import units as u
 from astropy.io import fits
-from astropy.io.fits import Header
 from astropy.nddata import NDData
 from astropy.table import Table
 from astropy.time import Time
@@ -275,7 +274,7 @@ class ObservationSimulation:
                     "DATE-OBS": date,
                     "IMAGETYP": "dark",
                 },
-                path.join(destination, f"fake-dark.fits"),
+                path.join(destination, "fake-dark.fits"),
                 **kwargs,
             )
 
@@ -287,7 +286,7 @@ class ObservationSimulation:
                     "DATE-OBS": date,
                     "IMAGETYP": "bias",
                 },
-                path.join(destination, f"fake-C001-bias.fits"),
+                path.join(destination, "fake-C001-bias.fits"),
                 **kwargs,
             )
 

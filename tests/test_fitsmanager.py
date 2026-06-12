@@ -1,4 +1,3 @@
-from astropy.io.fits import Header
 
 from prose import FitsManager, Image, Telescope
 
