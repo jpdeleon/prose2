@@ -16,9 +16,9 @@ Example
     python -m prose.scripts.calibrate_muscat \\
         --data_dir /data/MuSCAT/220131 \\
         --target TOI126 \\
-        --output_dir /data/MuSCAT2/220131_calibrated
+        --output_dir /data/MuSCAT/220131_calibrated
 
-    python -m prose.scripts.calibrate_muscat2 \\
+    python -m prose.scripts.calibrate_muscat \\
         --data_dir /data/MuSCAT/220131 \\
         --target TOI126 \\
         --output_dir /data/MuSCAT/220131_calibrated \\
@@ -40,10 +40,31 @@ from tqdm import tqdm
 
 from prose import FITSImage, blocks
 from prose.console_utils import info
+from prose.core.sequence import SequenceParallel
 
-logger = logging.getLogger("calibrate_muscat2")
+logger = logging.getLogger("calibrate_muscat")
 
-CCD_BANDS = {0: "g", 1: "r", 2: "z_s"}
+CCD_BANDS = {0: "gp", 1: "rp", 2: "zs"}
+
+
+class SaveCalibratedFITS(blocks.Block):
+    def __init__(self, output_dir, wcs=None, **kwargs):
+        super().__init__(**kwargs)
+        self.output_dir = output_dir
+        self.wcs = wcs
+        self._parallel_friendly = True
+
+    def run(self, image):
+        fp = image.metadata.get("path")
+        if fp is None:
+            return
+        out_path = self.output_dir / f"{Path(fp).stem}_calibrated.fits"
+        hdu = fits.PrimaryHDU(image.data.astype(np.float32))
+        hdu.header = image.header
+        hdu.header["CALSTAGE"] = "calibrated"
+        if self.wcs is not None:
+            hdu.header.update(self.wcs.to_header())
+        hdu.writeto(out_path, overwrite=True)
 
 
 def find_files(data_dir: Path) -> tuple[dict, dict]:
@@ -97,8 +118,12 @@ def _solve_wcs(image) -> object | None:
     from prose.blocks.detection import PointSourceDetection
     from twirl.geometry import sparsify
 
-    detection = PointSourceDetection()
-    detection.run(image)
+    try:
+        detection = PointSourceDetection()
+        detection.run(image)
+    except Exception as e:
+        logger.warning(f"WCS: source detection failed ({e})")
+        return None
 
     if len(image.sources) < 5:
         logger.warning(f"WCS: too few sources ({len(image.sources)}); skipping")
@@ -106,14 +131,24 @@ def _solve_wcs(image) -> object | None:
 
     pixel_coords = image.sources.coords.copy()
 
-    radius = image.fov.min() / 12
-    stars = (
-        sparsify(
-            pixel_coords * image.pixel_scale.to("arcmin").value,
-            radius.to("arcmin").value,
+    try:
+        radius = image.fov.min() / 12
+    except Exception as e:
+        logger.warning(f"WCS: cannot compute FOV ({e}); skipping")
+        return None
+
+    stars: np.ndarray | None = None
+    try:
+        stars = (
+            sparsify(
+                pixel_coords * image.pixel_scale.to("arcmin").value,
+                radius.to("arcmin").value,
+            )
+            / image.pixel_scale.to("arcmin").value
         )
-        / image.pixel_scale.to("arcmin").value
-    )
+    except Exception as e:
+        logger.warning(f"WCS: sparsify failed ({e})")
+        return None
 
     try:
         table = image_gaia_query(
@@ -130,7 +165,11 @@ def _solve_wcs(image) -> object | None:
         logger.warning(f"WCS: too few Gaia stars ({len(gaias)}); skipping")
         return None
 
-    sparse_gaias = sparsify(gaias, radius.to("deg").value)
+    try:
+        sparse_gaias = sparsify(gaias, radius.to("deg").value)
+    except Exception as e:
+        logger.warning(f"WCS: sparsify failed for Gaia stars ({e})")
+        return None
     sparse_gaias = sparse_gaias[:30]
 
     try:
@@ -202,6 +241,7 @@ def calibrate_band(
     calib = blocks.Calibration(
         darks=darks,
         flats=flats,
+        shared=True,
         verbose=True,
     )
 
@@ -216,32 +256,48 @@ def calibrate_band(
         else:
             info(f"[{band}] WCS solving failed; continuing without astrometry")
 
-    for i, fp in enumerate(tqdm(sciences, desc=f"[{band}] calibrating")):
-        if solve_wcs and wcs is not None and i == 0:
-            image = first
-        else:
-            image = FITSImage(fp)
-            calib.run(image)
+    seq = SequenceParallel(
+        [
+            calib,
+            SaveCalibratedFITS(output_dir, wcs=wcs),
+        ],
+        name=f"[{band}] calibrating",
+    )
 
-        out_path = output_dir / f"{Path(fp).stem}_calibrated.fits"
-        hdu = fits.PrimaryHDU(image.data.astype(np.float32))
-        hdu.header = image.header
-        hdu.header["CALSTAGE"] = "calibrated"
-        if wcs is not None:
-            hdu.header.update(wcs.to_header())
-        hdu.writeto(out_path, overwrite=True)
+    seq.run(sciences)
 
     info(f"[{band}] done  ({len(sciences)} frames -> {output_dir})")
-    return calib.master_dark, calib.master_flat
+
+    md = (
+        calib.master_dark
+        if hasattr(calib, "master_dark")
+        else np.array(
+            np.memmap(
+                "__dark.array", dtype="float32", mode="r", shape=calib.shapes["dark"]
+            )
+        )
+    )
+    mf = (
+        calib.master_flat
+        if hasattr(calib, "master_flat")
+        else np.array(
+            np.memmap(
+                "__flat.array", dtype="float32", mode="r", shape=calib.shapes["flat"]
+            )
+        )
+    )
+
+    return md, mf
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
         "--data_dir",
+        "--data-dir",
         type=Path,
         required=True,
-        help="Raw MuSCAT2 data directory (contains MSCT?_*.fits files)",
+        help="Raw MuSCAT data directory (contains MSCT?_*.fits files)",
     )
     ap.add_argument(
         "--target",
@@ -251,17 +307,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--output_dir",
+        "--output-dir",
         type=Path,
         required=True,
         help="Output directory for calibrated FITS files",
     )
     ap.add_argument(
+        "--test_run",
         "--test-run",
         action="store_true",
         help="Run on first 10 frames (darks, flats, sciences) per band for quick validation",
     )
     ap.add_argument("--verbose", action="store_true", help="Log to console")
     ap.add_argument(
+        "--solve_wcs",
         "--solve-wcs",
         action="store_true",
         help="Solve WCS astrometry via twirl + Gaia (requires network access). "
@@ -282,8 +341,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     assert any(args.data_dir.glob("MSCT[0-2]_*.fits")), (
-        f"data_dir {args.data_dir} contains no MuSCAT2 files matching MSCT[0-2]_*.fits. "
-        "This script only supports MuSCAT2 data."
+        f"data_dir {args.data_dir} contains no MuSCAT files matching MSCT[0-2]_*.fits. "
+        "This script only supports MuSCAT data."
     )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)

@@ -80,7 +80,7 @@ from tqdm import tqdm
 from prose import FITSImage, Fluxes, Sequence, Telescope, blocks
 from prose.blocks import catalogs
 from prose.core.sequence import SequenceParallel
-from prose.scripts import calibrate_muscat2
+from prose.scripts import calibrate_muscat, calibrate_muscat2
 from prose.utils import (
     LCO_SITES,
     PIXSCALES,
@@ -97,6 +97,14 @@ from prose.utils import (
 # ignore if using BANZAI-reduced fits files
 CAL_OBJECT_MAP = {"bias": "BIAS", "dark": "DARK", "flat": "FLAT"}
 
+# Fallback observatory site (astropy/astroplan site registry name) for
+# instruments whose headers lack an LCO ``SITE`` keyword. Used for BJD-TDB
+# barycentric correction when no site can be read from the header.
+INSTRUMENT_SITES: dict[str, str] = {
+    "muscat": "OAO",  # Okayama Astrophysical Observatory, Japan
+    "muscat2": "teide",  # Teide Observatory (TCS 1.52m), Tenerife
+}
+
 INSTRUMENT_MAP: dict[tuple[str, str], str] = {
     ("ep06", "coj2m002"): "muscat4",
     ("ep07", "coj2m002"): "muscat4",
@@ -110,13 +118,13 @@ INSTRUMENT_MAP: dict[tuple[str, str], str] = {
 
 # Instrument-specific filter alias maps (INSTRUME header keyword -> canonical band name)
 INSTRUMENT_FILTER_ALIASES: dict[str, dict[str, str]] = {
-    "muscat": {"g": "g", "r": "r", "z_s": "z_s"},  # only 3 bands, no i
+    "muscat": {"g": "gp", "r": "rp", "z_s": "zs"},  # only 3 bands, no i
     "muscat2": {
-        "g": "g",
-        "r": "r",
-        "i": "i",
-        "z_s": "z_s",
-    },  # has 4 bands, no p in filter name
+        "g": "gp",
+        "r": "rp",
+        "i": "ip",
+        "z_s": "zs",
+    },  # standardized to p names
 }
 
 DEFAULT_BROAD_BANDS = ["gp", "rp", "ip", "zs"]
@@ -150,6 +158,10 @@ BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
 # GJD->BJD sanity bound (light travel time should be well under this)
 MAX_TIME_OFFSET_MIN = 2 * 8.4
+
+# JD = MJD + this offset. Some instruments (e.g. MuSCAT2/TCS, keyword MJD-STRT)
+# report their time axis in MJD; prose flags this via Telescope.jd_scale == "mjd".
+MJD_TO_JD = 2_400_000.5
 
 # band color map
 BAND_COLORS = {"g": "blue", "r": "green", "i": "orange", "z": "red"}
@@ -221,9 +233,22 @@ def _resolve_band(raw_filter: str, instrument: str, bands: list[str]) -> str | N
 
 
 def date_from_header(header) -> str:
-    """Return YYMMDD from the ``DAY-OBS`` or ``DATE-OBS`` keyword (e.g. 20250416 -> 250416)."""
-    raw = str(header.get("DAY-OBS", header.get("DATE-OBS", "")))
-    return raw.replace("-", "")[2:]
+    """Return YYMMDD from the ``DAY-OBS`` or ``DATE-OBS`` keyword.
+
+    Handles both compact LCO-style values (``20250416``) and dashed
+    ``DATE-OBS`` values that may be non-zero-padded and carry a time component
+    (e.g. MuSCAT2 ``2020-3-5`` -> ``200305``).
+    """
+    raw = str(header.get("DAY-OBS", header.get("DATE-OBS", ""))).strip()
+    # keep only the date portion if a time is appended (T or whitespace separated)
+    date_part = raw.replace("T", " ").split()[0] if raw else ""
+    if "-" in date_part:
+        try:
+            year, month, day = (int(p) for p in date_part.split("-")[:3])
+            return f"{year % 100:02d}{month:02d}{day:02d}"
+        except ValueError:
+            return date_part.replace("-", "")[2:]
+    return date_part[2:]
 
 
 def build_stem(target: str, inst: str, date: str, band: str | None = None) -> str:
@@ -337,9 +362,18 @@ def reference_sequence(
 
 
 def find_target_index(ref: FITSImage, target_coord: SkyCoord) -> int:
-    coords = np.array([s.coords for s in ref.sources])
-    stars_radec = ref.wcs.pixel_to_world(*coords.T)
-    return int(target_coord.match_to_catalog_sky(stars_radec)[0])
+    try:
+        wcs = ref.wcs
+        if wcs is not None and hasattr(wcs, "pixel_to_world"):
+            coords = np.array([s.coords for s in ref.sources])
+            stars_radec = wcs.pixel_to_world(*coords.T)
+            return int(target_coord.match_to_catalog_sky(stars_radec)[0])
+    except Exception as e:
+        logger.warning(
+            f"WCS-based target cross-match failed ({e}); use --tID for manual override"
+        )
+    logger.warning("defaulting to source 0 (brightest); verify with --tID")
+    return 0
 
 
 def _contaminant_seps(
@@ -504,7 +538,8 @@ def build_reference(
         saturation = sat_all.get(band_key) if isinstance(sat_all, dict) else None
     except Exception:  # noqa: BLE001
         saturation = None
-    ref.telescope = Telescope(saturation=saturation, pixel_scale=pixel_scale)
+    ref.telescope.saturation = saturation
+    ref.telescope.pixel_scale = pixel_scale
     logger.info(
         f"{Path(ref_file).name}: PIXSCALE={pixel_scale} "
         f"saturation={saturation} instrument={instrument}"
@@ -561,30 +596,45 @@ def photometry_sequence(
     """Parallel per-image photometry sequence (mirrors the notebook)."""
     if n_stars_align is None:
         n_stars_align = max_num_stars
-    return SequenceParallel(
-        blocks=[
-            blocks.Trim(ccd_trim_size_yx),
-            blocks.PointSourceDetection(
-                n=max_num_stars,
-                min_area=MIN_STAR_AREA,
-                min_separation=min_star_separation,
-            ),
-            blocks.Cutouts(shape=cutout_size),
-            blocks.MedianEPSF(),
-            blocks.Gaussian2D(ref),
-            blocks.ComputeTransformTwirl(ref, n=n_stars_align),
-            blocks.AlignReferenceSources(ref),
+    blocks_list = [
+        blocks.Trim(ccd_trim_size_yx),
+        blocks.PointSourceDetection(
+            n=max_num_stars,
+            min_area=MIN_STAR_AREA,
+            min_separation=min_star_separation,
+        ),
+        blocks.Cutouts(shape=cutout_size),
+        blocks.MedianEPSF(),
+        blocks.Gaussian2D(ref),
+    ]
+    if n_stars_align >= 3:
+        blocks_list.append(blocks.ComputeTransformTwirl(ref, n=n_stars_align))
+        blocks_list.append(blocks.AlignReferenceSources(ref))
+    blocks_list.extend(
+        [
             blocks.CentroidQuadratic(),
             blocks.AperturePhotometry(aper_radii, scale=scale),
             blocks.AnnulusBackground(rin=rin, rout=rout, scale=scale),
             blocks.Del("data", "cutouts"),
-        ],
+        ]
+    )
+
+    return SequenceParallel(
+        blocks=blocks_list,
         data_blocks=[
             blocks.GetFluxes(
                 "fwhm",
-                airmass=lambda im: im.header["AIRMASS"],
-                dx=lambda im: im.transform.translation[0],
-                dy=lambda im: im.transform.translation[1],
+                airmass=lambda im: im.header.get("AIRMASS", float("nan")),
+                dx=lambda im: (
+                    im.transform.translation[0]
+                    if hasattr(im, "transform") and im.transform is not None
+                    else float("nan")
+                ),
+                dy=lambda im: (
+                    im.transform.translation[1]
+                    if hasattr(im, "transform") and im.transform is not None
+                    else float("nan")
+                ),
                 peak=lambda im: im.sources[0].peak,
             ),
         ],
@@ -638,17 +688,26 @@ def run_band(
         max_num_stars=max_num_stars,
         min_star_separation=min_star_separation,
         cutout_size=cutout_size,
-        n_stars_align=n_stars_align,
+        n_stars_align=min(n_stars_align, len(ref.sources))
+        if n_stars_align
+        else len(ref.sources),
     )
     phot.run(files)
 
     fluxes: Fluxes = phot.data[0].fluxes
+    if fluxes is None:
+        logger.warning(f"[{band}] no valid frames (all discarded); skipping")
+        return None
     fluxes.target = reference["target_index"]
 
     diff = differential_photometry(fluxes, reference["target_index"], cids=cids)
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
         return None
+
+    # normalize the time axis to JD (e.g. MuSCAT2/TCS reports MJD) so that BJD
+    # correction, CSV export, and plots all operate on a true Julian Date.
+    diff.time = normalize_time_to_jd(diff.time, ref.telescope.jd_scale)
 
     logger.info(f"[{band}] reduction complete: {len(diff.time)} points")
     return dict(
@@ -694,24 +753,68 @@ def differential_photometry(
 # --------------------------- time conversion ---------------------------
 
 
-def compute_bjd_tdb(diff: Fluxes, header, target_coord: SkyCoord, use_barycorrpy: bool):
-    """Convert the GJD-UTC time axis to BJD-TDB."""
+def normalize_time_to_jd(time: np.ndarray, jd_scale: str | None) -> np.ndarray:
+    """Return the time axis in JD, converting from MJD when needed.
+
+    prose stores each frame's time verbatim from ``Telescope.keyword_jd`` and
+    records the scale in ``Telescope.jd_scale``. MuSCAT2/TCS reports MJD
+    (keyword ``MJD-STRT``), so its axis must be shifted by :data:`MJD_TO_JD`
+    before any JD-based time handling (BJD correction, CSV export, plots).
+    """
+    t = np.asarray(time, dtype=float)
+    if jd_scale is not None and jd_scale.lower() == "mjd":
+        return t + MJD_TO_JD
+    return t
+
+
+def compute_bjd_tdb(
+    diff: Fluxes,
+    header,
+    target_coord: SkyCoord,
+    use_barycorrpy: bool,
+    instrument: str | None = None,
+):
+    """Convert the GJD-UTC time axis to BJD-TDB.
+
+    The observatory location is resolved from the header ``SITE`` keyword
+    (LCO-style) when present, otherwise from :data:`INSTRUMENT_SITES` keyed on
+    *instrument* (e.g. MuSCAT/MuSCAT2 headers carry no ``SITE`` keyword).
+    """
     from astroplan import Observer
 
-    site = header["SITE"]
-    obs_site = Observer.at_site(LCO_SITES[site])
-    t = Time(diff.time, format="jd", scale="utc", location=obs_site.location)
+    site = header.get("SITE")
+    if site is not None:
+        obs_site = Observer.at_site(LCO_SITES[site])
+    elif instrument in INSTRUMENT_SITES:
+        obs_site = Observer.at_site(INSTRUMENT_SITES[instrument])
+        logger.info(
+            f"no SITE keyword; using {instrument} site "
+            f"'{INSTRUMENT_SITES[instrument]}' for BJD correction"
+        )
+    else:
+        obs_site = None
+        logger.warning(
+            "SITE keyword not found in header; BJD correction without site location"
+        )
+    loc = obs_site.location if obs_site is not None else None
+    t = Time(diff.time, format="jd", scale="utc", location=loc)
 
     if use_barycorrpy:
         from barycorrpy import utc_tdb
 
+        if loc is None:
+            raise ValueError(
+                "barycorrpy BJD correction requires an observatory location; "
+                "no SITE keyword and no known site for instrument "
+                f"{instrument!r}"
+            )
         result = utc_tdb.JDUTC_to_BJDTDB(
             t.value,
             ra=target_coord.ra.deg,
             dec=target_coord.dec.deg,
-            lat=obs_site.location.lat.deg,
-            longi=obs_site.location.lon.deg,
-            alt=obs_site.location.height.value,
+            lat=loc.lat.deg,
+            longi=loc.lon.deg,
+            alt=loc.height.value,
         )
         bjd = np.asarray(result[0])
         offset = bjd - t.value
@@ -1142,7 +1245,7 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
 
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--target_name", required=True)
+    ap.add_argument("--target_name", "--target-name", required=True)
     ap.add_argument(
         "--tID",
         type=int,
@@ -1158,12 +1261,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--data_dir",
+        "--data-dir",
         required=True,
         type=Path,
         help="Directory of calibrated FITS frames (globbed recursively).",
     )
     ap.add_argument(
         "--results_dir",
+        "--results-dir",
         dest="results_dir",
         required=True,
         type=Path,
@@ -1172,6 +1277,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--bands", nargs="+", default=None)
     ap.add_argument(
         "--ref_band",
+        "--ref-band",
         default=None,
         help="If given, all bands align to this band's frame. If omitted "
         "(default), each band self-references its own first frame "
@@ -1186,6 +1292,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--aper_radii",
+        "--aper-radii",
         dest="aper_radii",
         type=parse_aper_grid,
         default=None,
@@ -1201,6 +1308,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--aper_unit",
+        "--aper-unit",
         dest="aper_unit",
         choices=["pix", "fwhm"],
         default="pix",
@@ -1208,7 +1316,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(radii scaled by each image's FWHM).",
     )
     ap.add_argument("--glob", default="*.fits", help="FITS glob pattern.")
-    ap.add_argument("--gif_stride", type=int, default=DEFAULT_GIF_STRIDE)
+    ap.add_argument("--gif_stride", "--gif-stride", type=int, default=DEFAULT_GIF_STRIDE)
     ap.add_argument(
         "--gif",
         dest="make_gif",
@@ -1219,11 +1327,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--use_barycorrpy",
+        "--use-barycorrpy",
         action="store_true",
         help="Use barycorrpy for BJD-TDB (default: astropy light-travel).",
     )
     ap.add_argument(
         "--test_run",
+        "--test-run",
         dest="test_run",
         action="store_true",
         help=f"Quick smoke test: use only the first {TEST_RUN_FRAMES} frames "
@@ -1231,6 +1341,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--test_run_frames",
+        "--test-run-frames",
         type=int,
         default=TEST_RUN_FRAMES,
         dest="test_run_frames",
@@ -1238,6 +1349,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--min_star_separation",
+        "--min-star-separation",
         type=float,
         default=MIN_STAR_SEPARATION,
         dest="min_star_separation",
@@ -1246,6 +1358,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--max_num_stars",
+        "--max-num-stars",
         type=int,
         default=MAX_NUM_STARS,
         dest="max_num_stars",
@@ -1254,6 +1367,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--n_stars_align",
+        "--n-stars-align",
         type=int,
         default=None,
         dest="n_stars_align",
@@ -1262,6 +1376,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--cutout_size",
+        "--cutout-size",
         type=int,
         default=CUTOUT_SIZE,
         dest="cutout_size",
@@ -1269,6 +1384,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--ccd_trim",
+        "--ccd-trim",
         type=parse_trim,
         default=CCD_TRIM_SIZE_YX,
         dest="ccd_trim_size_yx",
@@ -1276,6 +1392,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--bin_size_minutes",
+        "--bin-size-minutes",
         type=float,
         default=BIN_SIZE_DAYS * 24 * 60,
         dest="bin_size_minutes",
@@ -1290,6 +1407,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--plot_gaia_sources",
+        "--plot-gaia-sources",
         action="store_true",
         default=False,
         help="Mark Gaia source positions in aperture and stack zoom plots.",
@@ -1301,7 +1419,16 @@ def parse_args(argv=None) -> argparse.Namespace:
         "the directory already contains outputs).",
     )
     ap.add_argument(
+        "--muscat_calib_dir",
+        "--muscat-calib-dir",
+        type=Path,
+        default=None,
+        help="Output directory for MuSCAT calibrated FITS files "
+        "(default: <data_dir>_calibrated).",
+    )
+    ap.add_argument(
         "--muscat2_calib_dir",
+        "--muscat2-calib-dir",
         type=Path,
         default=None,
         help="Output directory for MuSCAT2 calibrated FITS files "
@@ -1410,30 +1537,41 @@ def main(argv=None) -> int:
     # header metadata for naming, time conversion
     probe = FITSImage(sciences[active_bands[0]][0]).header
     instrument = get_instrument(probe)
-    if instrument == "muscat":
-        raise NotImplementedError(
-            f"instrument={instrument}: plain MuSCAT (3-band) is not yet supported"
-        )
+    if instrument == "muscat2" or instrument == "muscat":
+        is_muscat = instrument == "muscat"
+        calib_label = "muscat" if is_muscat else "muscat2"
+        calib_mod = calibrate_muscat if is_muscat else calibrate_muscat2
+        calib_arg_name = "muscat_calib_dir" if is_muscat else "muscat2_calib_dir"
+        default_bands = ["gp", "rp", "zs"] if is_muscat else ["gp", "rp", "ip", "zs"]
 
-    if instrument == "muscat2":
         if args.bands is None:
-            args.bands = ["g", "r", "i", "z_s"]
-            logger.info(f"muscat2 bands: {args.bands}")
-        calib_dir = args.muscat2_calib_dir or args.data_dir.with_name(
+            args.bands = default_bands
+            logger.info(f"{calib_label} bands: {args.bands}")
+        calib_dir = getattr(args, calib_arg_name) or args.data_dir.with_name(
             args.data_dir.name + "_calibrated"
         )
         calib_dir.mkdir(parents=True, exist_ok=True)
         calibrated_files = sorted(calib_dir.glob("*_calibrated.fits"))
         need_calib = not calibrated_files
+
+        if not args.test_run and not need_calib:
+            raw_count = sum(len(fs) for fs in sciences.values())
+            if len(calibrated_files) < raw_count:
+                logger.info(
+                    f"{calib_label}: found {len(calibrated_files)} calibrated frames "
+                    f"but {raw_count} raw frames; re-calibrating"
+                )
+                need_calib = True
+
         if calibrated_files:
             h = fits.getheader(calibrated_files[0])
             if "CD1_1" not in h and "CDELT1" not in h:
                 need_calib = True
                 logger.info(
-                    "muscat2: existing calibrated frames lack WCS; re-calibrating"
+                    f"{calib_label}: existing calibrated frames lack WCS; re-calibrating"
                 )
         if need_calib:
-            logger.info("muscat2: running calibration")
+            logger.info(f"{calib_label}: running calibration")
             calib_args = [
                 "--data_dir",
                 str(args.data_dir),
@@ -1441,26 +1579,26 @@ def main(argv=None) -> int:
                 args.target_name,
                 "--output_dir",
                 str(calib_dir),
-                "--solve-wcs",
+                "--solve_wcs",
             ]
             if args.test_run:
-                calib_args.append("--test-run")
+                calib_args.append("--test_run")
             if args.verbose:
                 calib_args.append("--verbose")
-            ret = calibrate_muscat2.main(calib_args)
+            ret = calib_mod.main(calib_args)
             if ret != 0:
-                logger.error("muscat2 calibration failed")
+                logger.error(f"{calib_label} calibration failed")
                 return 1
             calibrated_files = sorted(calib_dir.glob("*_calibrated.fits"))
         if not calibrated_files:
-            logger.error("muscat2: no calibrated frames found")
+            logger.error(f"{calib_label}: no calibrated frames found")
             return 1
-        logger.info(f"muscat2: {len(calibrated_files)} calibrated frames")
+        logger.info(f"{calib_label}: {len(calibrated_files)} calibrated frames")
         sciences = read_filename_per_band(
             calibrated_files,
             args.bands,
             args.target_name,
-            filter_aliases=INSTRUMENT_FILTER_ALIASES.get("muscat2"),
+            filter_aliases=INSTRUMENT_FILTER_ALIASES.get(calib_label),
         )
         if args.test_run:
             sciences = {b: fs[: args.test_run_frames] for b, fs in sciences.items()}
@@ -1469,7 +1607,7 @@ def main(argv=None) -> int:
         active_bands = [b for b in args.bands if sciences.get(b)]
         if not active_bands:
             logger.error(
-                f"muscat2: no calibrated frames for target={args.target_name}; aborting"
+                f"{calib_label}: no calibrated frames for target={args.target_name}; aborting"
             )
             return 1
         probe = FITSImage(sciences[active_bands[0]][0]).header
@@ -1543,7 +1681,7 @@ def main(argv=None) -> int:
     for band, r in band_results.items():
         stem = build_stem(args.target_name, instrument, date, band)
         bjds[band] = compute_bjd_tdb(
-            r["diff"], r["ref"].header, target_coord, args.use_barycorrpy
+            r["diff"], r["ref"].header, target_coord, args.use_barycorrpy, instrument
         )
         csv_path = args.results_dir / f"{stem}.csv"
         photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)

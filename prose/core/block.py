@@ -68,10 +68,12 @@ class Block(object):
         for _require in self.read:
             if _require == "sources":
                 if len(image.sources) == 0:
-                    raise AttributeError("Image must have sources (0 found)")
+                    image.discard = True
+                    return
             elif _require == "wcs":
                 if not image.plate_solved:
-                    raise AttributeError("Image must have valid WCS")
+                    image.discard = True
+                    return
             if not hasattr(image, _require) and not hasattr(image.computed, _require):
                 raise AttributeError(
                     f"[{self.__class__.__name__}] Image must have attribute '{_require}'"
