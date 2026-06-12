@@ -104,8 +104,13 @@ INSTRUMENT_MAP: dict[tuple[str, str], str] = {
 
 # Instrument-specific filter alias maps (INSTRUME header keyword -> canonical band name)
 INSTRUMENT_FILTER_ALIASES: dict[str, dict[str, str]] = {
-    "muscat": {"g": "g", "r": "r", "i": "i", "z_s": "z_s"},
-    "muscat2": {"g": "g", "r": "r", "i": "i", "z_s": "z_s"},
+    "muscat": {"g": "g", "r": "r", "z_s": "z_s"},  # only 3 bands, no i
+    "muscat2": {
+        "g": "g",
+        "r": "r",
+        "i": "i",
+        "z_s": "z_s",
+    },  # has 4 bands, no p in filter name
 }
 
 DEFAULT_BROAD_BANDS = ["gp", "rp", "ip", "zs"]
@@ -383,6 +388,7 @@ def build_reference(
     max_num_stars: int = MAX_NUM_STARS,
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
+    target_index_override: int | None = None,
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -392,6 +398,8 @@ def build_reference(
     If ``aper_radii`` is provided, the explicit grid (and ``rin``/``rout``) is
     used and the Gaia heuristic is skipped. ``scale`` selects pixel
     (``False``) vs FWHM (``True``) units for the photometry blocks.
+
+    If ``target_index_override`` is given, it bypasses the Gaia cross-match.
     """
     ref = FITSImage(ref_file)
     instrument = get_instrument(ref.header)
@@ -418,7 +426,11 @@ def build_reference(
         min_star_separation=min_star_separation,
         cutout_size=cutout_size,
     ).run(ref, show_progress=False)
-    target_index = find_target_index(ref, target_coord)
+    target_index = (
+        target_index_override
+        if target_index_override is not None
+        else find_target_index(ref, target_coord)
+    )
     if aper_radii is not None:
         unit = "fwhm" if scale else "pix"
         logger.info(
@@ -504,6 +516,8 @@ def run_band(
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
     n_stars_align: int | None = None,
+    target_index_override: int | None = None,
+    cids: list[int] | None = None,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -521,6 +535,7 @@ def run_band(
         max_num_stars=max_num_stars,
         min_star_separation=min_star_separation,
         cutout_size=cutout_size,
+        target_index_override=target_index_override,
     )
     ref = reference["ref"]
 
@@ -541,7 +556,7 @@ def run_band(
     fluxes: Fluxes = phot.data[0].fluxes
     fluxes.target = reference["target_index"]
 
-    diff = differential_photometry(fluxes, reference["target_index"])
+    diff = differential_photometry(fluxes, reference["target_index"], cids=cids)
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
         return None
@@ -561,15 +576,29 @@ def run_band(
     )
 
 
-def differential_photometry(fluxes: Fluxes, target_index: int):
-    """Clean NaN comparison stars, sigma-clip, and run automatic diff phot."""
+def differential_photometry(
+    fluxes: Fluxes, target_index: int, cids: list[int] | None = None
+):
+    """Clean NaN comparison stars, sigma-clip, and run differential photometry.
+
+    When ``cids`` is given only those stars are used as comparisons and the
+    automatic selection (Broeg et al. 2005) is skipped.
+    """
     fluxes = fluxes.copy()
     fluxes.target = target_index
-    nan_stars = np.any(np.isnan(fluxes.fluxes), axis=(0, 2))
-    fluxes = fluxes.mask_stars(~nan_stars)
+    if cids is not None:
+        mask = np.zeros(fluxes.fluxes.shape[1], dtype=bool)
+        mask[target_index] = True
+        mask[list(cids)] = True
+        fluxes = fluxes.mask_stars(mask)
+    else:
+        nan_stars = np.any(np.isnan(fluxes.fluxes), axis=(0, 2))
+        fluxes = fluxes.mask_stars(~nan_stars)
     fluxes = fluxes.sigma_clipping_data(bkg=SIGMA_BKG, fwhm=SIGMA_FWHM)
     if fluxes.time is None or len(fluxes.time) == 0:
         return None
+    if cids is not None:
+        return fluxes.diff(comps=np.array(cids))
     return fluxes.autodiff()
 
 
@@ -707,6 +736,7 @@ def plot_alignment(
     target_name: str,
     instrument: str,
     date: str,
+    target_index: int,
     ccd_trim_size_yx: tuple[int, int] = CCD_TRIM_SIZE_YX,
     max_num_stars: int = MAX_NUM_STARS,
     min_star_separation: float = MIN_STAR_SEPARATION,
@@ -747,7 +777,7 @@ def plot_alignment(
         ax.set_title(title)
         ax.grid(True, linestyle=":", alpha=0.5, color="white")
         ax.axis("off")
-    fig.suptitle(f"{target_name} | {instrument} | {date}")
+    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
     _savefig(fig, path)
 
 
@@ -767,6 +797,7 @@ def plot_lightcurves(
     target_name: str,
     instrument: str,
     date: str,
+    target_index: int,
     bin_size_days: float = BIN_SIZE_DAYS,
 ) -> None:
     bands = list(band_results.keys())
@@ -802,12 +833,17 @@ def plot_lightcurves(
         )
     )
     secax.set_xlabel("UTC")
-    fig.suptitle(f"{target_name} | {instrument} | {date}")
+    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
     _savefig(fig, path)
 
 
 def plot_covariates(
-    band_results, path: Path, target_name: str, instrument: str, date: str
+    band_results,
+    path: Path,
+    target_name: str,
+    instrument: str,
+    date: str,
+    target_index: int,
 ) -> None:
     bands = list(band_results.keys())
     fig, axes = plt.subplots(
@@ -832,7 +868,7 @@ def plot_covariates(
         ax.set_title(band)
         ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
-    fig.suptitle(f"{target_name} | {instrument} | {date}")
+    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
     _savefig(fig, path)
 
 
@@ -845,7 +881,12 @@ def _radial_profile(data, center):
 
 
 def plot_stacks(
-    band_results, path: Path, target_name: str, instrument: str, date: str
+    band_results,
+    path: Path,
+    target_name: str,
+    instrument: str,
+    date: str,
+    target_index: int,
 ) -> None:
     """Per-band target cutout (from the reference image) plus radial profile."""
     bands = list(band_results.keys())
@@ -880,7 +921,7 @@ def plot_stacks(
         axes[row, 1].set_xlabel("radius (pixels)")
         axes[row, 1].set_ylabel("flux (ADU)")
         axes[row, 1].legend()
-    fig.suptitle(f"{target_name} | {instrument} | {date}")
+    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
     _savefig(fig, path)
 
 
@@ -971,7 +1012,9 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
     ``DEFAULT_BROAD_BANDS``.  Logs the decision so operators can override with
     an explicit ``--bands``.
     """
-    obslog_dir = Path(f"/ut2/muscat/obslog/{data_dir.parent.name.lower()}/{data_dir.name}")
+    obslog_dir = Path(
+        f"/ut2/muscat/obslog/{data_dir.parent.name.lower()}/{data_dir.name}"
+    )
     if obslog_dir.is_dir():
         for ccd_csv in sorted(obslog_dir.glob("obslog-*-ccd?.csv")):
             with open(ccd_csv) as f:
@@ -992,6 +1035,7 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
     for fp in candidates[:50]:
         try:
             from astropy.io import fits
+
             hdr = fits.getheader(fp, memmap=True)
             if str(hdr.get("OBJECT", "")).strip() != target_name:
                 continue
@@ -1010,6 +1054,19 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--target_name", required=True)
+    ap.add_argument(
+        "--tID",
+        type=int,
+        default=None,
+        help="Target source index (default: auto-detected from Gaia).",
+    )
+    ap.add_argument(
+        "--cID",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Comparison star indices for differential photometry (default: auto-selected).",
+    )
     ap.add_argument(
         "--data_dir",
         required=True,
@@ -1235,7 +1292,9 @@ def main(argv=None) -> int:
             return 1
         instrume = inst_obslog if inst_obslog in INSTRUMENT_FILTER_ALIASES else ""
         inst_aliases = INSTRUMENT_FILTER_ALIASES.get(instrume)
-        sciences = read_filename_per_band(files, args.bands, args.target_name, filter_aliases=inst_aliases)
+        sciences = read_filename_per_band(
+            files, args.bands, args.target_name, filter_aliases=inst_aliases
+        )
 
     if args.test_run:
         nrf = args.test_run_frames
@@ -1307,6 +1366,8 @@ def main(argv=None) -> int:
                 min_star_separation=args.min_star_separation,
                 cutout_size=args.cutout_size,
                 n_stars_align=args.n_stars_align,
+                target_index_override=args.tID,
+                cids=args.cID,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
@@ -1340,6 +1401,7 @@ def main(argv=None) -> int:
             args.target_name,
             instrument,
             date,
+            target_index=r["target_index"],
             ccd_trim_size_yx=args.ccd_trim_size_yx,
             max_num_stars=args.max_num_stars,
             min_star_separation=args.min_star_separation,
@@ -1350,12 +1412,14 @@ def main(argv=None) -> int:
             make_gif(r["files"], args.results_dir / f"{stem}.gif", stride)
 
     bin_size_days = args.bin_size_minutes / (24 * 60)
+    target_index = next(iter(band_results.values()))["target_index"]
     plot_lightcurves(
         band_results,
         args.results_dir / f"{stem_multi}_lightcurves.png",
         args.target_name,
         instrument,
         date,
+        target_index=target_index,
         bin_size_days=bin_size_days,
     )
     plot_covariates(
@@ -1364,6 +1428,7 @@ def main(argv=None) -> int:
         args.target_name,
         instrument,
         date,
+        target_index=target_index,
     )
     plot_stacks(
         band_results,
@@ -1371,6 +1436,7 @@ def main(argv=None) -> int:
         args.target_name,
         instrument,
         date,
+        target_index=target_index,
     )
     save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz")
 
