@@ -128,7 +128,7 @@ GIF_MAX_PX = 512  # max GIF frame dimension [pix]; larger frames are downsampled
 # reference-image / detection defaults (mirror the template notebook)
 MAX_NUM_STARS = 10  # nth brightest stars to keep
 CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
-CCD_TRIM_SIZE_YX = (10, 10)  # trim image edges [pix]
+CCD_TRIM_SIZE_YX = (0, 0)  # trim image edges [pix]
 MIN_STAR_AREA = 100  # min detected-source area [pix]
 MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
 
@@ -901,9 +901,9 @@ def plot_lightcurves(
         c = band_color(band)
         diff = band_results[band]["diff"]
         t, f = np.asarray(diff.time) - t0, np.asarray(diff.flux)
-        ax.plot(t, f, ".", c=c, alpha=0.5)
+        ax.plot(t, f, ".", c='k', alpha=0.2)
         bt, bf, be = _binned(t, f, bin_size_days=bin_size_days)
-        ax.errorbar(bt, bf, yerr=be, fmt=".", c=c)
+        ax.errorbar(bt, bf, yerr=be, fmt="o", c=c)
         ax.set_ylabel(f"{band}\nDiff. flux")
     axes[-1].set_xlabel(f"time (JD) - {t0}")
 
@@ -1316,6 +1316,8 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+
+    assert args.tID not in (args.cID or []), f"tID={args.tID} must not be in cID={args.cID}"
 
     # guard against clobbering an existing reduction (check before the log
     # file is created so the directory's own log does not count as a product)

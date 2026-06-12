@@ -403,6 +403,7 @@ class Fluxes:
         diff_fluxes, diff_errors = diff(self.fluxes, weights, self.errors)
         _new.fluxes = diff_fluxes
         _new.errors = diff_errors
+        _new.aperture = _new.best_aperture_index()
 
         return _new
 
