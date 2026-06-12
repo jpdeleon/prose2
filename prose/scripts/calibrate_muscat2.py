@@ -32,8 +32,10 @@ import logging
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from tqdm import tqdm
 
 from prose import FITSImage, blocks
@@ -56,6 +58,8 @@ def find_files(data_dir: Path) -> tuple[dict, dict]:
     for fp in files:
         prefix = fp.stem.split("_")[0]
         ccd = int(prefix[4])
+        if ccd not in CCD_BANDS:
+            continue
         hdr = fits.getheader(fp)
         obj = str(hdr.get("OBJECT", "")).strip()
         if obj == "DARK":
@@ -73,6 +77,8 @@ def find_science_files(data_dir: Path, target: str) -> dict[int, list[str]]:
     for fp in files:
         prefix = fp.stem.split("_")[0]
         ccd = int(prefix[4])
+        if ccd not in CCD_BANDS:
+            continue
         hdr = fits.getheader(fp)
         obj = str(hdr.get("OBJECT", "")).strip()
         if obj == target:
@@ -136,6 +142,32 @@ def _solve_wcs(image) -> object | None:
     return wcs
 
 
+def save_master_plots(
+    masters: dict[str, list[tuple[str, np.ndarray]]],
+    output_dir: Path,
+) -> None:
+    for master_type, items in masters.items():
+        n = len(items)
+        if n == 0:
+            continue
+        fig, axes = plt.subplots(1, n, figsize=(8 * n, 8), squeeze=False)
+        for ax, (band, data) in zip(axes[0], items):
+            vmin, vmax = np.nanpercentile(data, [1, 99])
+            im = ax.imshow(data, cmap="gray", vmin=vmin, vmax=vmax, origin="lower")
+            ax.set_title(f"Master {master_type} — {band}")
+            ax.set_xlabel("x (pix)")
+            ax.set_ylabel("y (pix)")
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            fig.colorbar(im, cax=cax)
+        fig.savefig(
+            output_dir / f"master_{master_type}.png",
+            bbox_inches="tight",
+            dpi=150,
+        )
+        plt.close(fig)
+
+
 def calibrate_band(
     darks: list[str],
     flats: list[str],
@@ -143,19 +175,23 @@ def calibrate_band(
     output_dir: Path,
     band: str,
     solve_wcs: bool = False,
-) -> None:
-    """Build master dark + flat and calibrate all science frames for one band."""
-    band_dir = output_dir / band
-    band_dir.mkdir(parents=True, exist_ok=True)
+    test_run: bool = False,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Build master dark + flat and calibrate all science frames for one band.
+
+    Returns ``(master_dark, master_flat)`` arrays or ``(None, None)`` if skipped.
+    """
+    if test_run:
+        sciences = sciences[:10]
 
     if not darks or not flats:
         info(
             f"[{band}] missing calibration frames (darks={len(darks)} flats={len(flats)}); skipping"
         )
-        return
+        return None, None
     if not sciences:
         info(f"[{band}] no science frames; skipping")
-        return
+        return None, None
 
     info(
         f"[{band}] {len(darks)} darks, {len(flats)} flats, "
@@ -187,7 +223,7 @@ def calibrate_band(
             image = FITSImage(fp)
             calib.run(image)
 
-        out_path = band_dir / f"{Path(fp).stem}_calibrated.fits"
+        out_path = output_dir / f"{Path(fp).stem}_calibrated.fits"
         hdu = fits.PrimaryHDU(image.data.astype(np.float32))
         hdu.header = image.header
         hdu.header["CALSTAGE"] = "calibrated"
@@ -195,7 +231,8 @@ def calibrate_band(
             hdu.header.update(wcs.to_header())
         hdu.writeto(out_path, overwrite=True)
 
-    info(f"[{band}] done  ({len(sciences)} frames -> {band_dir})")
+    info(f"[{band}] done  ({len(sciences)} frames -> {output_dir})")
+    return calib.master_dark, calib.master_flat
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -217,6 +254,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         required=True,
         help="Output directory for calibrated FITS files",
+    )
+    ap.add_argument(
+        "--test-run",
+        action="store_true",
+        help="Run on first 10 frames (darks, flats, sciences) per band for quick validation",
     )
     ap.add_argument("--verbose", action="store_true", help="Log to console")
     ap.add_argument(
@@ -248,16 +290,23 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sciences = {c: [] for c in CCD_BANDS}
 
+    master_darks: list[tuple[str, np.ndarray]] = []
+    master_flats: list[tuple[str, np.ndarray]] = []
     for ccd, band in CCD_BANDS.items():
-        calibrate_band(
+        md, mf = calibrate_band(
             darks[ccd],
             flats[ccd],
             sciences[ccd],
             args.output_dir,
             band,
             solve_wcs=args.solve_wcs,
+            test_run=args.test_run,
         )
+        if md is not None and mf is not None:
+            master_darks.append((band, md))
+            master_flats.append((band, mf))
 
+    save_master_plots({"dark": master_darks, "flat": master_flats}, args.output_dir)
     info("calibration complete")
     return 0
 
