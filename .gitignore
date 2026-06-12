@@ -48,20 +48,37 @@ latex/*.synctex.gz
 .*.lb
 
 # perso
-dev
-test
-test_results
+dev/
+test/
+test_results/
 !test/test.py
-dev
 **/*.egg-info
-**.fits
-**.array
+*.fits
+*.array
+output/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+bin/
+include/
+lib/
+share/
+
+# Pytest / Coverage / Caches
+.pytest_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
 
 ## docs
 docs/_build
 docs/md/generated
 _docs
-**/.ipynb_checkpoints
 docs/tested_blocks.md
 docs/md/all_blocks.rst
 docs/md/template.py
@@ -70,6 +87,18 @@ docs/md/template.py
 *.xml
 .idea
 
+## VS Code
+.vscode/*
+!.vscode/settings.json
+
+## OS files
+Thumbs.db
+ehthumbs.db
+
+## IPython cache
+.ipython/
+
 ## profiling artifacts
 cprofile_results.txt
 *.prof
+
