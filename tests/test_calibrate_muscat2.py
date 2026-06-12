@@ -1,0 +1,310 @@
+"""Tests for ``prose.scripts.calibrate_muscat2``.
+
+Uses minimal fake FITS files created on-the-fly so tests are deterministic
+and need no network or real observation data.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+from astropy.io import fits
+
+from prose.scripts import calibrate_muscat2 as cm
+
+CCDS = {0: "g", 1: "r", 2: "i", 3: "z_s"}
+DATA_TYP = "OBJECT"  # MuSCAT2 FITS convention
+
+
+def _fake_fits(path: Path, object_val: str, exptime: float = 1.0) -> None:
+    """Create a minimal valid FITS file with MuSCAT2-like headers."""
+    data = np.random.default_rng().poisson(1000, size=(32, 32)).astype(np.int16)
+    hdu = fits.PrimaryHDU(data)
+    hdu.header["DATA-TYP"] = DATA_TYP
+    hdu.header["OBJECT"] = object_val
+    hdu.header["EXPTIME"] = exptime
+    hdu.header["MJD-STRT"] = 60000.0
+    hdu.header["NAXIS1"] = 32
+    hdu.header["NAXIS2"] = 32
+    hdu.writeto(path, overwrite=True)
+
+
+# ---------- helper to build a fake data directory ----------
+
+
+@pytest.fixture
+def fake_data_dir(tmp_path):
+    """Build a minimal MuSCAT2-like data dir with known file counts."""
+    # Per CCD: 15 darks, 50 flats (same exposure), variable science frames
+    flat_exptimes = {0: 12.5, 1: 3.2, 2: 1.1, 3: 0.9}
+    science_counts = {0: 5, 1: 7, 2: 6, 3: 4}
+
+    for ccd, _band in CCDS.items():
+        prefix = f"MCT2{ccd}_250310"
+        seq = 0
+
+        # 50 flats
+        for _ in range(50):
+            seq += 1
+            _fake_fits(
+                tmp_path / f"{prefix}{seq:04d}.fits",
+                "FLAT",
+                exptime=flat_exptimes[ccd],
+            )
+
+        # 15 darks (same exptime as flats)
+        for _ in range(15):
+            seq += 1
+            _fake_fits(
+                tmp_path / f"{prefix}{seq:04d}.fits",
+                "DARK",
+                exptime=flat_exptimes[ccd],
+            )
+
+        # science frames for TOI00663.02
+        for _ in range(science_counts[ccd]):
+            seq += 1
+            _fake_fits(
+                tmp_path / f"{prefix}{seq:04d}.fits",
+                "TOI00663.02",
+                exptime=20.0,
+            )
+
+        # science frames for other target (not our target)
+        for _ in range(3):
+            seq += 1
+            _fake_fits(
+                tmp_path / f"{prefix}{seq:04d}.fits",
+                "TOI04717.01",
+                exptime=20.0,
+            )
+
+    return tmp_path
+
+
+# ---------- find_files ----------
+
+
+class TestFindFiles:
+    def test_returns_three_dicts(self, fake_data_dir):
+        darks, flats = cm.find_files(fake_data_dir)
+        assert list(darks) == [0, 1, 2, 3]
+        assert list(flats) == [0, 1, 2, 3]
+
+    @pytest.mark.parametrize("ccd", [0, 1, 2, 3])
+    def test_per_ccd_counts(self, fake_data_dir, ccd):
+        darks, flats = cm.find_files(fake_data_dir)
+        assert len(darks[ccd]) == 15, f"CCD{ccd} darks"
+        assert len(flats[ccd]) == 50, f"CCD{ccd} flats"
+
+    def test_returns_paths_to_existing_files(self, fake_data_dir):
+        darks, flats = cm.find_files(fake_data_dir)
+        for fp in darks[0] + flats[0]:
+            assert Path(fp).is_file()
+
+    def test_empty_directory(self, tmp_path):
+        darks, flats = cm.find_files(tmp_path)
+        assert all(len(darks[c]) == 0 for c in CCDS)
+        assert all(len(flats[c]) == 0 for c in CCDS)
+
+    def test_skips_non_muscat2_files(self, tmp_path):
+        _fake_fits(tmp_path / "random.fits", "DARK")
+        darks, flats = cm.find_files(tmp_path)
+        assert all(len(darks[c]) == 0 for c in CCDS)
+
+
+# ---------- find_science_files ----------
+
+
+class TestFindScienceFiles:
+    def test_finds_target_per_ccd(self, fake_data_dir):
+        sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
+        expected = {0: 5, 1: 7, 2: 6, 3: 4}
+        for ccd, band in CCDS.items():
+            assert len(sciences[ccd]) == expected[ccd], f"{band}"
+
+    def test_other_target_counts(self, fake_data_dir):
+        sciences = cm.find_science_files(fake_data_dir, "TOI04717.01")
+        for ccd in CCDS:
+            assert len(sciences[ccd]) == 3, f"CCD{ccd}"
+
+    def test_nonexistent_target(self, fake_data_dir):
+        sciences = cm.find_science_files(fake_data_dir, "NONEXIST")
+        for ccd in CCDS:
+            assert len(sciences[ccd]) == 0
+
+    def test_excludes_empty_str(self, fake_data_dir):
+        sciences = cm.find_science_files(fake_data_dir, "")
+        for ccd in CCDS:
+            assert len(sciences[ccd]) == 0
+
+
+# ---------- calibrate_band (integration) ----------
+
+
+class TestCalibrateBand:
+    @pytest.mark.parametrize("ccd,band", [(0, "g"), (1, "r"), (2, "i"), (3, "z_s")])
+    def test_calibrates_all_science_frames(self, fake_data_dir, tmp_path, ccd, band):
+        darks, flats = cm.find_files(fake_data_dir)
+        sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
+        cm.calibrate_band(darks[ccd], flats[ccd], sciences[ccd], tmp_path, band)
+        band_dir = tmp_path / band
+        assert band_dir.is_dir()
+        out_files = sorted(band_dir.glob("*.fits"))
+        assert len(out_files) == len(sciences[ccd])
+
+    @pytest.mark.parametrize("ccd,band", [(0, "g"), (1, "r"), (2, "i"), (3, "z_s")])
+    def test_output_valid_fits(self, fake_data_dir, tmp_path, ccd, band):
+        darks, flats = cm.find_files(fake_data_dir)
+        sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
+        cm.calibrate_band(darks[ccd], flats[ccd], sciences[ccd], tmp_path, band)
+        out_files = sorted((tmp_path / band).glob("*.fits"))
+        for fp in out_files:
+            hdr = fits.getheader(fp)
+            data = fits.getdata(fp)
+            assert data.dtype.kind == "f" and data.dtype.itemsize == 4
+            assert data.shape == (32, 32)
+            assert np.all(np.isfinite(data))
+            assert hdr.get("CALSTAGE") == "calibrated"
+
+    def test_skips_band_without_darks(self, tmp_path):
+        cm.calibrate_band([], ["fake.fits"], [], tmp_path, "g")
+        # band dir is created by mkdir but should have no output files
+        assert len(list((tmp_path / "g").glob("*.fits"))) == 0
+
+    def test_skips_band_without_sciences(self, fake_data_dir, tmp_path):
+        darks = ["fake.fits"]
+        flats = ["fake.fits"]
+        cm.calibrate_band(darks, flats, [], tmp_path, "g")
+        assert len(list((tmp_path / "g").glob("*.fits"))) == 0
+
+    def test_output_files_have_calstage(self, fake_data_dir, tmp_path):
+        darks, flats = cm.find_files(fake_data_dir)
+        sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
+        cm.calibrate_band(darks[0], flats[0], sciences[0], tmp_path, "g")
+        hdr = fits.getheader(sorted((tmp_path / "g").glob("*.fits"))[0])
+        assert hdr["CALSTAGE"] == "calibrated"
+
+
+    def test_solve_wcs_graceful_failure(self, fake_data_dir, tmp_path):
+        """solve_wcs=True on fake data (no real stars) must not crash."""
+        darks, flats = cm.find_files(fake_data_dir)
+        sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
+        cm.calibrate_band(
+            darks[0], flats[0], sciences[0], tmp_path, "g", solve_wcs=True
+        )
+        out_files = sorted((tmp_path / "g").glob("*.fits"))
+        assert len(out_files) == len(sciences[0])
+
+
+# ---------- CLI argument parsing ----------
+
+
+class TestCLI:
+    def test_parse_args_minimal(self):
+        args = cm.parse_args(["--data_dir", "/data", "--output_dir", "/out"])
+        assert args.data_dir == Path("/data")
+        assert args.output_dir == Path("/out")
+        assert args.target is None
+        assert args.verbose is False
+
+    def test_parse_args_full(self):
+        args = cm.parse_args(
+            [
+                "--data_dir",
+                "/data/MuSCAT2/250310",
+                "--target",
+                "TOI00663.02",
+                "--output_dir",
+                "/tmp/out",
+                "--verbose",
+            ]
+        )
+        assert args.target == "TOI00663.02"
+        assert args.verbose is True
+
+    def test_parse_args_requires_data_dir(self):
+        with pytest.raises(SystemExit):
+            cm.parse_args(["--output_dir", "/out"])
+
+    def test_solve_wcs_flag(self):
+        args = cm.parse_args(
+            ["--data_dir", "/d", "--output_dir", "/o", "--solve-wcs"]
+        )
+        assert args.solve_wcs is True
+
+    def test_solve_wcs_defaults_to_false(self):
+        args = cm.parse_args(["--data_dir", "/d", "--output_dir", "/o"])
+        assert args.solve_wcs is False
+
+    def test_solve_wcs_main_flag(self, fake_data_dir, tmp_path):
+        """End-to-end with --solve-wcs: WCS may fail on fake data but must not crash."""
+        rc = cm.main(
+            [
+                "--data_dir",
+                str(fake_data_dir),
+                "--target",
+                "TOI00663.02",
+                "--output_dir",
+                str(tmp_path / "out"),
+                "--solve-wcs",
+            ]
+        )
+        assert rc == 0
+        for band in ["g", "r", "i", "z_s"]:
+            band_dir = tmp_path / "out" / band
+            assert band_dir.is_dir(), f"{band} dir exists"
+            assert len(list(band_dir.glob("*.fits"))) > 0, f"{band} has files"
+
+
+# ---------- main ----------
+
+
+class TestMain:
+    def test_missing_data_dir_returns_1(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        rc = cm.main(
+            [
+                "--data_dir",
+                str(tmp_path / "nonexistent"),
+                "--output_dir",
+                str(tmp_path / "out"),
+            ]
+        )
+        assert rc == 1
+
+    def test_end_to_end(self, fake_data_dir, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        rc = cm.main(
+            [
+                "--data_dir",
+                str(fake_data_dir),
+                "--target",
+                "TOI00663.02",
+                "--output_dir",
+                str(tmp_path / "out"),
+                "--verbose",
+            ]
+        )
+        assert rc == 0
+        for band in ["g", "r", "i", "z_s"]:
+            band_dir = tmp_path / "out" / band
+            assert band_dir.is_dir(), f"{band} dir exists"
+            assert len(list(band_dir.glob("*.fits"))) > 0, f"{band} has files"
+
+    def test_main_without_target(self, fake_data_dir, tmp_path):
+        rc = cm.main(
+            [
+                "--data_dir",
+                str(fake_data_dir),
+                "--output_dir",
+                str(tmp_path / "out"),
+            ]
+        )
+        assert rc == 0
+        for band in ["g", "r", "i", "z_s"]:
+            band_dir = tmp_path / "out" / band
+            assert band_dir.is_dir(), f"{band} dir should be created (empty)"
+            assert len(list(band_dir.glob("*.fits"))) == 0, (
+                f"{band} should have no files"
+            )
