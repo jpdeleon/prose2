@@ -81,6 +81,7 @@ from prose.core.sequence import SequenceParallel
 from prose.utils import (
     LCO_SITES,
     PIXSCALES,
+    _FILTER_ALIASES,
     get_saturation_from_header,
     get_simbad_data,
     read_filename_per_band,
@@ -101,7 +102,15 @@ INSTRUMENT_MAP: dict[tuple[str, str], str] = {
     ("ep05", "coj2m002"): "muscat3",  # z
 }
 
-DEFAULT_BANDS = ["gp", "rp", "ip", "zs"]
+# Instrument-specific filter alias maps (INSTRUME header keyword -> canonical band name)
+INSTRUMENT_FILTER_ALIASES: dict[str, dict[str, str]] = {
+    "muscat": {"g": "g", "r": "r", "i": "i", "z_s": "z_s"},
+    "muscat2": {"g": "g", "r": "r", "i": "i", "z_s": "z_s"},
+}
+
+DEFAULT_BROAD_BANDS = ["gp", "rp", "ip", "zs"]
+DEFAULT_NARROW_BANDS = ["g_narrow", "Na_D", "i_narrow", "z_narrow"]
+DEFAULT_BANDS = DEFAULT_BROAD_BANDS
 DEFAULT_GIF_STRIDE = 100
 TEST_RUN_FRAMES = 10  # frames per band used by --test_run
 FPS = 5
@@ -133,7 +142,7 @@ BAND_COLORS = {"g": "blue", "r": "green", "i": "orange", "z": "red"}
 
 
 def band_color(band: str) -> str:
-    if band == "NaD":
+    if band == "Na_D":
         return BAND_COLORS["r"]
     return BAND_COLORS.get(band[0], "k")
 
@@ -165,7 +174,10 @@ def setup_logger(outdir: Path, verbose: bool = False) -> Path:
 
 
 def get_instrument(header) -> str:
-    """Derive a short instrument label from an LCO header."""
+    """Derive a short instrument label from a FITS header."""
+    instrume = str(header.get("INSTRUME", "")).lower()
+    if instrume in ("muscat", "muscat2"):
+        return instrume
     telid = str(header.get("TELID", "")).lower()
     site = str(header.get("SITEID", "")).lower()
     if telid == "2m0a":
@@ -175,9 +187,29 @@ def get_instrument(header) -> str:
     return "unknown"
 
 
+def _resolve_band(raw_filter: str, instrument: str, bands: list[str]) -> str | None:
+    """Map raw filter value to canonical band name.
+
+    Resolution chain: instrument-specific aliases -> global :data:`_FILTER_ALIASES`
+    -> raw value.  Returns the band name if it is present in *bands*, else None.
+    """
+    aliases = INSTRUMENT_FILTER_ALIASES.get(instrument)
+    if aliases:
+        band = aliases.get(raw_filter)
+        if band is not None and band in bands:
+            return band
+    band = _FILTER_ALIASES.get(raw_filter)
+    if band is not None and band in bands:
+        return band
+    if raw_filter in bands:
+        return raw_filter
+    return None
+
+
 def date_from_header(header) -> str:
-    """Return YYMMDD from the LCO ``DAY-OBS`` keyword (e.g. 20250416 -> 250416)."""
-    return str(header["DAY-OBS"]).replace("-", "")[2:]
+    """Return YYMMDD from the ``DAY-OBS`` or ``DATE-OBS`` keyword (e.g. 20250416 -> 250416)."""
+    raw = str(header.get("DAY-OBS", header.get("DATE-OBS", "")))
+    return raw.replace("-", "")[2:]
 
 
 def build_stem(target: str, inst: str, date: str, band: str | None = None) -> str:
@@ -713,6 +745,7 @@ def plot_alignment(
         ax.imshow(_zscale(ref.data), cmap="Greys_r", origin="lower")
         ax.imshow(_zscale(img), cmap="Reds_r", origin="lower", alpha=0.5)
         ax.set_title(title)
+        ax.grid(True, linestyle=":", alpha=0.5, color="white")
         ax.axis("off")
     fig.suptitle(f"{target_name} | {instrument} | {date}")
     _savefig(fig, path)
@@ -755,6 +788,20 @@ def plot_lightcurves(
         ax.errorbar(bt, bf, yerr=be, fmt=".", c=c)
         ax.set_ylabel(f"{band}\nDiff. flux")
     axes[-1].set_xlabel(f"time (JD) - {t0}")
+
+    secax = axes[0].secondary_xaxis(
+        location="top",
+        functions=(
+            lambda rel: rel + t0,
+            lambda jd: jd - t0,
+        ),
+    )
+    secax.xaxis.set_major_formatter(
+        plt.FuncFormatter(
+            lambda jd, _: Time(jd, format="jd").datetime.strftime("%m-%d\n%H:%M")
+        )
+    )
+    secax.set_xlabel("UTC")
     fig.suptitle(f"{target_name} | {instrument} | {date}")
     _savefig(fig, path)
 
@@ -914,6 +961,52 @@ def save_all_bands_npz(band_results, bjds, path: Path) -> None:
 # --------------------------- main ---------------------------
 
 
+_NARROW_FILTER_NAMES = {"g_narrow", "Na_D", "i_narrow", "z_narrow"}
+
+
+def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
+    """Peek at obslog or FITS headers to detect narrow-band filters.
+
+    Returns ``DEFAULT_NARROW_BANDS`` if narrow filters are found, otherwise
+    ``DEFAULT_BROAD_BANDS``.  Logs the decision so operators can override with
+    an explicit ``--bands``.
+    """
+    obslog_dir = Path(f"/ut2/muscat/obslog/{data_dir.parent.name.lower()}/{data_dir.name}")
+    if obslog_dir.is_dir():
+        for ccd_csv in sorted(obslog_dir.glob("obslog-*-ccd?.csv")):
+            with open(ccd_csv) as f:
+                for row in csv.DictReader(f):
+                    if row["OBJECT"] != target_name:
+                        continue
+                    raw = row["FILTER"].strip()
+                    if raw in _NARROW_FILTER_NAMES:
+                        logger.info(
+                            f"obslog shows narrow-band filter {raw!r}; "
+                            f"auto-using {DEFAULT_NARROW_BANDS}"
+                        )
+                        return DEFAULT_NARROW_BANDS
+        return DEFAULT_BROAD_BANDS
+
+    # fallback: scan first few FITS headers
+    candidates = sorted(data_dir.glob("*.fits")) or sorted(data_dir.rglob("*.fits"))
+    for fp in candidates[:50]:
+        try:
+            from astropy.io import fits
+            hdr = fits.getheader(fp, memmap=True)
+            if str(hdr.get("OBJECT", "")).strip() != target_name:
+                continue
+            raw = str(hdr.get("FILTER", "")).strip()
+            if raw in _NARROW_FILTER_NAMES:
+                logger.info(
+                    f"FITS header shows narrow-band filter {raw!r}; "
+                    f"auto-using {DEFAULT_NARROW_BANDS}"
+                )
+                return DEFAULT_NARROW_BANDS
+        except Exception:
+            continue
+    return DEFAULT_BROAD_BANDS
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--target_name", required=True)
@@ -930,7 +1023,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=Path,
         help="Full output directory for all products (CSV/PNG/GIF/NPZ/log).",
     )
-    ap.add_argument("--bands", nargs="+", default=DEFAULT_BANDS)
+    ap.add_argument("--bands", nargs="+", default=None)
     ap.add_argument(
         "--ref_band",
         default=None,
@@ -1096,6 +1189,12 @@ def main(argv=None) -> int:
     setup_logger(args.results_dir, verbose=args.verbose)
     t0 = time_module.time()
 
+    if args.bands is None:
+        args.bands = _detect_narrow_bands(args.data_dir, args.target_name)
+        logger.info(f"bands: {args.bands}")
+    else:
+        logger.info(f"bands: {args.bands} (explicit)")
+
     sciences = {}
     inst_obslog = args.data_dir.parent.name.lower()
     obslog_dir = Path(f"/ut2/muscat/obslog/{inst_obslog}/{args.data_dir.name}")
@@ -1104,14 +1203,14 @@ def main(argv=None) -> int:
         for ccd_csv in sorted(obslog_dir.glob("obslog-*-ccd?.csv")):
             with open(ccd_csv) as f:
                 for row in csv.DictReader(f):
-                    if (
-                        row["OBJECT"] != args.target_name
-                        or row["FILTER"] not in args.bands
-                    ):
+                    if row["OBJECT"] != args.target_name:
+                        continue
+                    band = _resolve_band(row["FILTER"], inst_obslog, args.bands)
+                    if band is None:
                         continue
                     fp = args.data_dir / f"{row['FRAME']}.fits"
                     if fp.is_file():
-                        sciences.setdefault(row["FILTER"], []).append(str(fp))
+                        sciences.setdefault(band, []).append(str(fp))
         if sciences:
             logger.info(
                 f"obslog: frames per band: "
@@ -1134,7 +1233,9 @@ def main(argv=None) -> int:
         if not files:
             logger.error("no FITS files found; aborting")
             return 1
-        sciences = read_filename_per_band(files, args.bands, args.target_name)
+        instrume = inst_obslog if inst_obslog in INSTRUMENT_FILTER_ALIASES else ""
+        inst_aliases = INSTRUMENT_FILTER_ALIASES.get(instrume)
+        sciences = read_filename_per_band(files, args.bands, args.target_name, filter_aliases=inst_aliases)
 
     if args.test_run:
         nrf = args.test_run_frames
@@ -1150,6 +1251,11 @@ def main(argv=None) -> int:
     # header metadata for naming, time conversion
     probe = FITSImage(sciences[active_bands[0]][0]).header
     instrument = get_instrument(probe)
+    if instrument in ("muscat", "muscat2"):
+        raise NotImplementedError(
+            f"instrument={instrument}: MuSCAT/MuSCAT2 data lacks WCS keywords "
+            "needed for source detection; not yet supported"
+        )
     date = date_from_header(probe)
     logger.info(
         f"target={args.target_name} inst={instrument} date={date} "
