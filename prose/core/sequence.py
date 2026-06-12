@@ -2,7 +2,6 @@ import sys
 from collections import OrderedDict
 from functools import partial
 from pathlib import Path
-from time import time
 
 import multiprocess as mp
 import numpy as np
@@ -11,7 +10,7 @@ from tabulate import tabulate
 from tqdm.autonotebook import tqdm
 
 from prose.citations import citations as default_citations
-from prose.console_utils import TQDM_BAR_FORMAT, error, warning
+from prose.console_utils import error, warning
 from prose.core.image import Buffer, FITSImage, Image
 from prose.utils import full_class_name
 
@@ -189,7 +188,6 @@ class Sequence:
 
     @classmethod
     def from_args(cls, args):
-        import prose
 
         blocks = []
         for block_dict in args:

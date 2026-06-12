@@ -55,7 +55,8 @@ While being run on a single image, a Sequence is designed to be run on list of i
 ## Example Datasets
 * sinistro: 250523
 * muscat4 (broadband): 250416, 250512
-* muscat3 (narrowband): 
+* muscat3 (narrowband): 240122
+* muscat4: 240128 (supply tID manually)
 
 ## End-to-end photometry script (LCO MuSCAT3/4)
 

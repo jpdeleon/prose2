@@ -1,6 +1,4 @@
-import pytest
 
-from prose import Image
 from prose.blocks.background import PhotutilsBackground2D
 
 

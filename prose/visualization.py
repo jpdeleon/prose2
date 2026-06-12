@@ -12,11 +12,9 @@ from matplotlib.ticker import AutoMinorLocator
 from mpl_toolkits import axes_grid1
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes, zoomed_inset_axes
 from skimage.transform import resize
-from astroquery.simbad import Simbad
 from astropy.visualization.wcsaxes import SphericalCircle
 from astropy.coordinates import SkyCoord
 import astropy.units as u
-import matplotlib.patches as mpatches
 
 from prose import utils
 
@@ -1099,7 +1097,7 @@ def rename_tab(name):
     name : str
         name to be used
     """
-    from IPython.display import Javascript, display
+    from IPython.display import Javascript
 
     return Javascript('document.title="{}"'.format(name))
 
@@ -1126,9 +1124,7 @@ def plot_section(y, s, t0, duration, c="C0", y0=1, offset=0.002):
 
 # Debugging helpers
 
-import astropy.units as u
 import numpy as np
-from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
 from astropy.wcs import utils as wcsutils
 from astroquery.mast import Catalogs

@@ -80,7 +80,6 @@ import inspect
 import sys
 from glob import glob
 
-import prose
 from prose import Block
 
 files = glob("../prose/blocks/*.py")

@@ -193,6 +193,192 @@ def test_aper_radii_pix_fwhm_unit_scales_by_reference_fwhm():
 # --------------------------- SIMBAD overlay on ref plot ---------------------------
 
 
+# --------------------------- tID / cID CLI parsing ---------------------------
+
+
+def test_parse_tID_accepts_single_int():
+    args = rp.parse_args(
+        ["--target_name", "T1", "--data_dir", ".", "--results_dir", ".", "--tID", "5"]
+    )
+    assert args.tID == 5
+
+
+def test_parse_tID_default_is_None():
+    args = rp.parse_args(
+        ["--target_name", "T1", "--data_dir", ".", "--results_dir", "."]
+    )
+    assert args.tID is None
+
+
+def test_parse_cID_accepts_int_list():
+    args = rp.parse_args(
+        [
+            "--target_name",
+            "T1",
+            "--data_dir",
+            ".",
+            "--results_dir",
+            ".",
+            "--cID",
+            "3",
+            "7",
+            "12",
+        ]
+    )
+    assert args.cID == [3, 7, 12]
+
+
+def test_parse_cID_default_is_None():
+    args = rp.parse_args(
+        ["--target_name", "T1", "--data_dir", ".", "--results_dir", "."]
+    )
+    assert args.cID is None
+
+
+# --------------------------- differential_photometry with cids ---------------------------
+
+
+def _make_fluxes(n_stars: int, n_times: int, rng: np.random.Generator):
+    """Build a minimal 3-D ``Fluxes`` with controlled noise."""
+    from prose import Fluxes
+
+    fluxes = np.ones((n_stars, n_times))
+    fluxes[0] *= 10000  # "target" star
+    for i in range(1, n_stars):
+        fluxes[i] *= 10000 + 100 * rng.normal(0, 1, n_times)
+    errors = np.full((n_stars, n_times), 25.0)
+    obj = Fluxes(fluxes=fluxes, errors=errors, time=np.arange(n_times, dtype=float))
+    obj.data = {
+        "bkg": 100.0 + 10 * rng.normal(0, 1, n_times),
+        "fwhm": 4.0 + 0.5 * rng.normal(0, 1, n_times),
+    }
+    return obj
+
+
+def test_differential_photometry_cids_uses_diff_not_autodiff():
+    rng = np.random.default_rng(42)
+    fluxes = _make_fluxes(5, 20, rng)
+
+    result = rp.differential_photometry(fluxes, target_index=0, cids=[1, 2, 3])
+
+    assert result is not None
+    assert result.time is not None
+    assert len(result.time) == 20  # no frames clipped by sigma
+    # diff() returns a Fluxes with weights set; autodiff would have weights too
+    assert result.weights is not None
+    assert result.weights.shape == (1, 5)
+    # only target + cids should have non-zero weight
+    assert result.weights[0, 0] == 0.0  # target is NOT a comparison
+    for c in (1, 2, 3):
+        assert result.weights[0, c] == 1.0  # user-specified comparisons
+    assert result.weights[0, 4] == 0.0  # star 4 was masked out
+
+
+def test_differential_photometry_cids_rejects_invalid_index(tmp_path, monkeypatch):
+    """cids that are out of range should propagate as an error from Fluxes.diff."""
+    rng = np.random.default_rng(7)
+    fluxes = _make_fluxes(3, 10, rng)
+    with pytest.raises(IndexError):
+        rp.differential_photometry(fluxes, target_index=0, cids=[1, 99])
+
+
+# --------------------------- build_reference target_index_override ---------------------------
+
+
+def _write_minimal_fits(tmp_path, name="test.fits"):
+    """Write a minimal FITS file with a simple WCS."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / name
+    fits.writeto(fpath, data, header=hdr)
+    return fpath
+
+
+class _FakeRefSeq:
+    """Stand-in for the reference_sequence that sets sources and fwhm
+    instead of running the full detection pipeline."""
+
+    def run(self, img, **kw):
+        from prose.core.source import Sources
+
+        img.sources = Sources(np.array([[5.0, 5.0], [10.0, 10.0]]))
+        img.fwhm = 4.0
+
+
+def _patch_ref_seq(monkeypatch):
+    monkeypatch.setattr(rp, "reference_sequence", lambda *a, **kw: _FakeRefSeq())
+
+
+def test_build_reference_target_index_override_bypasses_gaia(tmp_path, monkeypatch):
+    """When ``target_index_override`` is given the Gaia cross-match is skipped."""
+    called = False
+    original_find = rp.find_target_index
+
+    def _never_called(*a, **kw):
+        nonlocal called
+        called = True
+        return original_find(*a, **kw)
+
+    monkeypatch.setattr(rp, "find_target_index", _never_called)
+    _patch_ref_seq(monkeypatch)
+
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    coord = SkyCoord(0, 0, unit="deg")
+    result = rp.build_reference(
+        fpath,
+        coord,
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=42,
+    )
+    assert result["target_index"] == 42
+    assert not called, "find_target_index should not have been called"
+
+
+def test_build_reference_target_index_override_None_still_calls_find(
+    tmp_path, monkeypatch
+):
+    """When ``target_index_override`` is None the normal Gaia path runs."""
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    coord = SkyCoord(0, 0, unit="deg")
+    result = rp.build_reference(
+        fpath,
+        coord,
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=None,
+    )
+    assert isinstance(result["target_index"], int)
+    assert result["target_index"] >= 0
+
+
 def test_plot_ref_image_handles_empty_simbad(tmp_path, monkeypatch):
     from astropy.io import fits
     from astropy.wcs import WCS

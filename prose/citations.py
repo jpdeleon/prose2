@@ -1,4 +1,3 @@
-import astropy
 
 citations = {
     "numpy": """

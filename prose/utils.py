@@ -208,24 +208,26 @@ def get_saturation_from_header(h) -> dict:
 _FILTER_ALIASES: dict[str, str] = {
     "gp": "gp",
     "g": "gp",
-    "g_narrow": "gp",
-    "g_wide": "gp",
+    "g_narrow": "g_narrow",
+    "g_wide": "g_wide",
     "rp": "rp",
     "r": "rp",
     "rp*diffuser": "rp",
-    "r_narrow": "rp",
+    "r_narrow": "r_narrow",
     "ip": "ip",
     "i": "ip",
-    "i_narrow": "ip",
+    "i_narrow": "i_narrow",
     "zs": "zs",
     "z": "zs",
     "zp": "zs",
-    "z_narrow": "zs",
+    "z_s": "zs",
+    "z_narrow": "z_narrow",
     "zp*diffuser": "zs",
+    "Na_D": "Na_D",
 }
 
 
-def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: int=0) -> dict:
+def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: int=0, filter_aliases: dict[str, str] | None = None) -> dict:
     """
     Collect FITS files by filter band for a specific target.
 
@@ -238,13 +240,25 @@ def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: i
         dict: A dictionary {band: [file_paths]} of matching FITS files.
     """
 
+    def _band_for(raw: str) -> str | None:
+        aliases = filter_aliases or _FILTER_ALIASES
+        band = aliases.get(raw)
+        if band is not None and band in bands:
+            return band
+        band = _FILTER_ALIASES.get(raw)
+        if band is not None and band in bands:
+            return band
+        if raw in bands:
+            return raw
+        return None
+
     def process_file(fp):
         try:
             header = fits.getheader(fp, memmap=True, ext=ext)
             if str(header.get("OBJECT", "")).strip() == target_name:
                 raw = str(header.get("FILTER", "")).strip()
-                band = _FILTER_ALIASES.get(raw)
-                if band is not None and band in bands:
+                band = _band_for(raw)
+                if band is not None:
                     return band, fp
         except Exception:
             return None
