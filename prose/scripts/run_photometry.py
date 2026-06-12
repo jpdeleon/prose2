@@ -71,6 +71,7 @@ import numpy as np
 import pandas as pd
 import astropy.units as u
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
 from astropy.time import Time
 from astropy.visualization import ZScaleInterval
 from astroquery.mast import Mast
@@ -79,6 +80,7 @@ from tqdm import tqdm
 from prose import FITSImage, Fluxes, Sequence, Telescope, blocks
 from prose.blocks import catalogs
 from prose.core.sequence import SequenceParallel
+from prose.scripts import calibrate_muscat2
 from prose.utils import (
     LCO_SITES,
     PIXSCALES,
@@ -901,7 +903,7 @@ def plot_lightcurves(
         c = band_color(band)
         diff = band_results[band]["diff"]
         t, f = np.asarray(diff.time) - t0, np.asarray(diff.flux)
-        ax.plot(t, f, ".", c='k', alpha=0.2)
+        ax.plot(t, f, ".", c="k", alpha=0.2)
         bt, bf, be = _binned(t, f, bin_size_days=bin_size_days)
         ax.errorbar(bt, bf, yerr=be, fmt="o", c=c)
         ax.set_ylabel(f"{band}\nDiff. flux")
@@ -1298,6 +1300,13 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Overwrite existing products in --results_dir (default: abort if "
         "the directory already contains outputs).",
     )
+    ap.add_argument(
+        "--muscat2_calib_dir",
+        type=Path,
+        default=None,
+        help="Output directory for MuSCAT2 calibrated FITS files "
+        "(default: <data_dir>_calibrated).",
+    )
     args = ap.parse_args(argv)
 
     if args.aper_radii is not None and args.annulus is None:
@@ -1317,7 +1326,9 @@ def parse_args(argv=None) -> argparse.Namespace:
 def main(argv=None) -> int:
     args = parse_args(argv)
 
-    assert args.tID not in (args.cID or []), f"tID={args.tID} must not be in cID={args.cID}"
+    assert args.tID not in (args.cID or []), (
+        f"tID={args.tID} must not be in cID={args.cID}"
+    )
 
     # guard against clobbering an existing reduction (check before the log
     # file is created so the directory's own log does not count as a product)
@@ -1399,11 +1410,70 @@ def main(argv=None) -> int:
     # header metadata for naming, time conversion
     probe = FITSImage(sciences[active_bands[0]][0]).header
     instrument = get_instrument(probe)
-    if instrument in ("muscat", "muscat2"):
+    if instrument == "muscat":
         raise NotImplementedError(
-            f"instrument={instrument}: MuSCAT/MuSCAT2 data lacks WCS keywords "
-            "needed for source detection; not yet supported"
+            f"instrument={instrument}: plain MuSCAT (3-band) is not yet supported"
         )
+
+    if instrument == "muscat2":
+        if args.bands is None:
+            args.bands = ["g", "r", "i", "z_s"]
+            logger.info(f"muscat2 bands: {args.bands}")
+        calib_dir = args.muscat2_calib_dir or args.data_dir.with_name(
+            args.data_dir.name + "_calibrated"
+        )
+        calib_dir.mkdir(parents=True, exist_ok=True)
+        calibrated_files = sorted(calib_dir.glob("*_calibrated.fits"))
+        need_calib = not calibrated_files
+        if calibrated_files:
+            h = fits.getheader(calibrated_files[0])
+            if "CD1_1" not in h and "CDELT1" not in h:
+                need_calib = True
+                logger.info(
+                    "muscat2: existing calibrated frames lack WCS; re-calibrating"
+                )
+        if need_calib:
+            logger.info("muscat2: running calibration")
+            calib_args = [
+                "--data_dir",
+                str(args.data_dir),
+                "--target",
+                args.target_name,
+                "--output_dir",
+                str(calib_dir),
+                "--solve-wcs",
+            ]
+            if args.test_run:
+                calib_args.append("--test-run")
+            if args.verbose:
+                calib_args.append("--verbose")
+            ret = calibrate_muscat2.main(calib_args)
+            if ret != 0:
+                logger.error("muscat2 calibration failed")
+                return 1
+            calibrated_files = sorted(calib_dir.glob("*_calibrated.fits"))
+        if not calibrated_files:
+            logger.error("muscat2: no calibrated frames found")
+            return 1
+        logger.info(f"muscat2: {len(calibrated_files)} calibrated frames")
+        sciences = read_filename_per_band(
+            calibrated_files,
+            args.bands,
+            args.target_name,
+            filter_aliases=INSTRUMENT_FILTER_ALIASES.get("muscat2"),
+        )
+        if args.test_run:
+            sciences = {b: fs[: args.test_run_frames] for b, fs in sciences.items()}
+        counts = {b: len(sciences.get(b, [])) for b in args.bands}
+        logger.info(f"frames per band: {counts}")
+        active_bands = [b for b in args.bands if sciences.get(b)]
+        if not active_bands:
+            logger.error(
+                f"muscat2: no calibrated frames for target={args.target_name}; aborting"
+            )
+            return 1
+        probe = FITSImage(sciences[active_bands[0]][0]).header
+        instrument = get_instrument(probe)
     date = date_from_header(probe)
     logger.info(
         f"target={args.target_name} inst={instrument} date={date} "

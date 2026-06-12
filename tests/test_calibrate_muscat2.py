@@ -148,9 +148,7 @@ class TestCalibrateBand:
         darks, flats = cm.find_files(fake_data_dir)
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
         cm.calibrate_band(darks[ccd], flats[ccd], sciences[ccd], tmp_path, band)
-        band_dir = tmp_path / band
-        assert band_dir.is_dir()
-        out_files = sorted(band_dir.glob("*.fits"))
+        out_files = sorted(tmp_path.glob("*_calibrated.fits"))
         assert len(out_files) == len(sciences[ccd])
 
     @pytest.mark.parametrize("ccd,band", [(0, "g"), (1, "r"), (2, "i"), (3, "z_s")])
@@ -158,7 +156,7 @@ class TestCalibrateBand:
         darks, flats = cm.find_files(fake_data_dir)
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
         cm.calibrate_band(darks[ccd], flats[ccd], sciences[ccd], tmp_path, band)
-        out_files = sorted((tmp_path / band).glob("*.fits"))
+        out_files = sorted(tmp_path.glob("*_calibrated.fits"))
         for fp in out_files:
             hdr = fits.getheader(fp)
             data = fits.getdata(fp)
@@ -169,22 +167,20 @@ class TestCalibrateBand:
 
     def test_skips_band_without_darks(self, tmp_path):
         cm.calibrate_band([], ["fake.fits"], [], tmp_path, "g")
-        # band dir is created by mkdir but should have no output files
-        assert len(list((tmp_path / "g").glob("*.fits"))) == 0
+        assert len(list(tmp_path.glob("*_calibrated.fits"))) == 0
 
     def test_skips_band_without_sciences(self, fake_data_dir, tmp_path):
         darks = ["fake.fits"]
         flats = ["fake.fits"]
         cm.calibrate_band(darks, flats, [], tmp_path, "g")
-        assert len(list((tmp_path / "g").glob("*.fits"))) == 0
+        assert len(list(tmp_path.glob("*_calibrated.fits"))) == 0
 
     def test_output_files_have_calstage(self, fake_data_dir, tmp_path):
         darks, flats = cm.find_files(fake_data_dir)
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
         cm.calibrate_band(darks[0], flats[0], sciences[0], tmp_path, "g")
-        hdr = fits.getheader(sorted((tmp_path / "g").glob("*.fits"))[0])
+        hdr = fits.getheader(sorted(tmp_path.glob("*_calibrated.fits"))[0])
         assert hdr["CALSTAGE"] == "calibrated"
-
 
     def test_solve_wcs_graceful_failure(self, fake_data_dir, tmp_path):
         """solve_wcs=True on fake data (no real stars) must not crash."""
@@ -193,7 +189,7 @@ class TestCalibrateBand:
         cm.calibrate_band(
             darks[0], flats[0], sciences[0], tmp_path, "g", solve_wcs=True
         )
-        out_files = sorted((tmp_path / "g").glob("*.fits"))
+        out_files = sorted(tmp_path.glob("*_calibrated.fits"))
         assert len(out_files) == len(sciences[0])
 
 
@@ -228,9 +224,7 @@ class TestCLI:
             cm.parse_args(["--output_dir", "/out"])
 
     def test_solve_wcs_flag(self):
-        args = cm.parse_args(
-            ["--data_dir", "/d", "--output_dir", "/o", "--solve-wcs"]
-        )
+        args = cm.parse_args(["--data_dir", "/d", "--output_dir", "/o", "--solve-wcs"])
         assert args.solve_wcs is True
 
     def test_solve_wcs_defaults_to_false(self):
@@ -239,6 +233,7 @@ class TestCLI:
 
     def test_solve_wcs_main_flag(self, fake_data_dir, tmp_path):
         """End-to-end with --solve-wcs: WCS may fail on fake data but must not crash."""
+        out_dir = tmp_path / "out"
         rc = cm.main(
             [
                 "--data_dir",
@@ -246,15 +241,15 @@ class TestCLI:
                 "--target",
                 "TOI00663.02",
                 "--output_dir",
-                str(tmp_path / "out"),
+                str(out_dir),
                 "--solve-wcs",
             ]
         )
         assert rc == 0
-        for band in ["g", "r", "i", "z_s"]:
-            band_dir = tmp_path / "out" / band
-            assert band_dir.is_dir(), f"{band} dir exists"
-            assert len(list(band_dir.glob("*.fits"))) > 0, f"{band} has files"
+        calibrated = sorted(out_dir.glob("*_calibrated.fits"))
+        assert len(calibrated) > 0
+        assert (out_dir / "master_dark.png").is_file()
+        assert (out_dir / "master_flat.png").is_file()
 
 
 # ---------- main ----------
@@ -275,6 +270,7 @@ class TestMain:
 
     def test_end_to_end(self, fake_data_dir, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        out_dir = tmp_path / "out"
         rc = cm.main(
             [
                 "--data_dir",
@@ -282,29 +278,28 @@ class TestMain:
                 "--target",
                 "TOI00663.02",
                 "--output_dir",
-                str(tmp_path / "out"),
+                str(out_dir),
                 "--verbose",
             ]
         )
         assert rc == 0
-        for band in ["g", "r", "i", "z_s"]:
-            band_dir = tmp_path / "out" / band
-            assert band_dir.is_dir(), f"{band} dir exists"
-            assert len(list(band_dir.glob("*.fits"))) > 0, f"{band} has files"
+        calibrated = sorted(out_dir.glob("*_calibrated.fits"))
+        assert len(calibrated) > 0
+        assert (out_dir / "master_dark.png").is_file()
+        assert (out_dir / "master_flat.png").is_file()
 
     def test_main_without_target(self, fake_data_dir, tmp_path):
+        out_dir = tmp_path / "out"
         rc = cm.main(
             [
                 "--data_dir",
                 str(fake_data_dir),
                 "--output_dir",
-                str(tmp_path / "out"),
+                str(out_dir),
             ]
         )
         assert rc == 0
-        for band in ["g", "r", "i", "z_s"]:
-            band_dir = tmp_path / "out" / band
-            assert band_dir.is_dir(), f"{band} dir should be created (empty)"
-            assert len(list(band_dir.glob("*.fits"))) == 0, (
-                f"{band} should have no files"
-            )
+        assert len(list(out_dir.glob("*.fits"))) == 0
+        # master plots are only written when master frames actually exist
+        assert not (out_dir / "master_dark.png").is_file()
+        assert not (out_dir / "master_flat.png").is_file()
