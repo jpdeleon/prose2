@@ -1,3 +1,4 @@
+import csv
 import inspect
 import urllib
 from datetime import datetime, timedelta
@@ -5,7 +6,7 @@ from functools import wraps
 from pathlib import Path
 from astropy.io import fits
 from concurrent.futures import ThreadPoolExecutor
-from tqdm import tqdm
+from rich.progress import track
 
 import astropy.constants as c
 import astropy.units as u
@@ -227,7 +228,87 @@ _FILTER_ALIASES: dict[str, str] = {
 }
 
 
-def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: int=0, filter_aliases: dict[str, str] | None = None) -> dict:
+OBSLOG_ROOT = "/ut2/muscat/obslog"
+
+
+def frames_from_obslog(data_dir, instrument: str | None = None) -> list[dict] | None:
+    """Resolve frame metadata from MuSCAT obslog CSVs without opening FITS files.
+
+    The obslog lives at ``<OBSLOG_ROOT>/<instrument>/<date>/`` and holds one
+    ``obslog-*-ccd<N>.csv`` per CCD with ``FRAME``, ``OBJECT`` and ``FILTER``
+    columns. *instrument* defaults to ``data_dir.parent.name`` and ``<date>`` to
+    ``data_dir.name`` (instrument is lowercased to match the obslog layout).
+
+    Returns a list of ``{"frame", "object", "filter", "ccd", "path"}`` dicts for
+    every logged frame whose ``.fits`` file exists in *data_dir*, or ``None`` when
+    no obslog directory is present, so callers can fall back to a header scan.
+    """
+    data_dir = Path(data_dir)
+    instrument = (instrument or data_dir.parent.name).lower()
+    obslog_dir = Path(OBSLOG_ROOT) / instrument / data_dir.name
+    if not obslog_dir.is_dir():
+        return None
+
+    # One directory listing instead of a per-frame ``is_file()`` stat (thousands
+    # of stats on slow/networked storage otherwise).
+    on_disk = {p.name for p in data_dir.glob("*.fits")}
+
+    records: list[dict] = []
+    for ccd_csv in sorted(obslog_dir.glob("obslog-*-ccd?.csv")):
+        try:
+            ccd = int(ccd_csv.stem.rsplit("ccd", 1)[1])
+        except (IndexError, ValueError):
+            ccd = None
+        with open(ccd_csv) as f:
+            for row in csv.DictReader(f):
+                frame = (row.get("FRAME") or "").strip()
+                fname = f"{frame}.fits"
+                if not frame or fname not in on_disk:
+                    continue
+                records.append(
+                    {
+                        "frame": frame,
+                        "object": (row.get("OBJECT") or "").strip(),
+                        "filter": (row.get("FILTER") or "").strip(),
+                        "ccd": ccd,
+                        "path": str(data_dir / fname),
+                    }
+                )
+    return records
+
+
+def scan_fits_headers(
+    files: list,
+    keys=("OBJECT",),
+    ext: int = 0,
+    description: str = "Scanning files",
+) -> list[tuple[str, dict]]:
+    """Read selected header keywords from many FITS files in parallel.
+
+    Header reads are I/O-bound, so they are fanned out across a thread pool — a
+    large win on slow/networked storage versus a serial loop. Returns a list of
+    ``(path, {key: value})`` in the same order as *files*; unreadable files yield
+    an empty mapping.
+    """
+
+    def _read(fp):
+        try:
+            header = fits.getheader(fp, memmap=True, ext=ext)
+            return str(fp), {k: str(header.get(k, "")).strip() for k in keys}
+        except Exception:
+            return str(fp), {}
+
+    with ThreadPoolExecutor() as executor:
+        return list(
+            track(
+                executor.map(_read, files),
+                total=len(files),
+                description=description,
+            )
+        )
+
+
+def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: int = 0, filter_aliases: dict[str, str] | None = None) -> dict:
     """
     Collect FITS files by filter band for a specific target.
 
@@ -252,27 +333,17 @@ def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: i
             return raw
         return None
 
-    def process_file(fp):
-        try:
-            header = fits.getheader(fp, memmap=True, ext=ext)
-            if str(header.get("OBJECT", "")).strip() == target_name:
-                raw = str(header.get("FILTER", "")).strip()
-                band = _band_for(raw)
-                if band is not None:
-                    return band, fp
-        except Exception:
-            return None
-        return None
-
-    with ThreadPoolExecutor() as executor:
-        results = list(tqdm(executor.map(process_file, sciences), total=len(sciences)))
-
     data = {b: [] for b in bands}
-    for result in results:
-        if result:
-            band, fp = result
-            data[band].append(fp)
-
+    for fp, header in scan_fits_headers(
+        sciences,
+        keys=("OBJECT", "FILTER"),
+        ext=ext,
+        description="Scanning science files",
+    ):
+        if header.get("OBJECT") == target_name:
+            band = _band_for(header.get("FILTER", ""))
+            if band is not None:
+                data[band].append(fp)
     return data
 
 def remove_sip(dict_like):

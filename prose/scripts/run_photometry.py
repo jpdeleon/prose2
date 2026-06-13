@@ -75,7 +75,7 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.visualization import ZScaleInterval
 from astroquery.mast import Mast
-from tqdm import tqdm
+from rich.progress import track
 
 from prose import FITSImage, Fluxes, Sequence, Telescope, blocks
 from prose.blocks import catalogs
@@ -86,6 +86,7 @@ from prose.utils import (
     PIXSCALES,
     _FILTER_ALIASES,
     coord_cache_path,
+    frames_from_obslog,
     get_saturation_from_header,
     get_simbad_data,
     load_cached_df,
@@ -139,7 +140,7 @@ GIF_MAX_PX = 512  # max GIF frame dimension [pix]; larger frames are downsampled
 MAX_NUM_STARS = 10  # nth brightest stars to keep
 CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
 CCD_TRIM_SIZE_YX = (0, 0)  # trim image edges [pix]
-MIN_STAR_AREA = 100  # min detected-source area [pix]
+MIN_STAR_AREA = 10  # min detected-source area [pix]
 MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
 
 # Gaia aperture-radii / sky-annulus heuristic
@@ -341,6 +342,7 @@ def reference_sequence(
     max_num_stars: int = MAX_NUM_STARS,
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
+    min_area: int = MIN_STAR_AREA,
 ) -> Sequence:
     """Calibration sequence run on the per-band reference frame."""
     return Sequence(
@@ -348,7 +350,7 @@ def reference_sequence(
             blocks.Trim(ccd_trim_size_yx),
             blocks.PointSourceDetection(
                 n=max_num_stars,
-                min_area=MIN_STAR_AREA,
+                min_area=min_area,
                 min_separation=min_star_separation,
             ),
             blocks.Cutouts(shape=cutout_size),
@@ -512,6 +514,7 @@ def build_reference(
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
     target_index_override: int | None = None,
+    min_area: int = MIN_STAR_AREA,
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -549,6 +552,7 @@ def build_reference(
         max_num_stars=max_num_stars,
         min_star_separation=min_star_separation,
         cutout_size=cutout_size,
+        min_area=min_area,
     ).run(ref, show_progress=False)
     target_index = (
         target_index_override
@@ -592,6 +596,7 @@ def photometry_sequence(
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
     n_stars_align: int | None = None,
+    min_area: int = MIN_STAR_AREA,
 ) -> SequenceParallel:
     """Parallel per-image photometry sequence (mirrors the notebook)."""
     if n_stars_align is None:
@@ -600,7 +605,7 @@ def photometry_sequence(
         blocks.Trim(ccd_trim_size_yx),
         blocks.PointSourceDetection(
             n=max_num_stars,
-            min_area=MIN_STAR_AREA,
+            min_area=min_area,
             min_separation=min_star_separation,
         ),
         blocks.Cutouts(shape=cutout_size),
@@ -657,6 +662,7 @@ def run_band(
     n_stars_align: int | None = None,
     target_index_override: int | None = None,
     cids: list[int] | None = None,
+    min_area: int = MIN_STAR_AREA,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -675,6 +681,7 @@ def run_band(
         min_star_separation=min_star_separation,
         cutout_size=cutout_size,
         target_index_override=target_index_override,
+        min_area=min_area,
     )
     ref = reference["ref"]
 
@@ -691,6 +698,7 @@ def run_band(
         n_stars_align=min(n_stars_align, len(ref.sources))
         if n_stars_align
         else len(ref.sources),
+        min_area=min_area,
     )
     phot.run(files)
 
@@ -933,6 +941,7 @@ def plot_alignment(
     max_num_stars: int = MAX_NUM_STARS,
     min_star_separation: float = MIN_STAR_SEPARATION,
     n_stars_align: int | None = None,
+    min_area: int = MIN_STAR_AREA,
 ) -> None:
     """Overlay the reference image with an aligned later frame (best effort)."""
     if n_stars_align is None:
@@ -946,7 +955,7 @@ def plot_alignment(
                 blocks.Trim(ccd_trim_size_yx),
                 blocks.PointSourceDetection(
                     n=max_num_stars,
-                    min_area=MIN_STAR_AREA,
+                    min_area=min_area,
                     min_separation=min_star_separation,
                 ),
                 blocks.ComputeTransformTwirl(ref, n=n_stars_align),
@@ -1154,7 +1163,7 @@ def make_gif(files, path: Path, stride: int) -> None:
     if not sampled:
         return
     frames = []
-    for fp in tqdm(sampled, desc=f"gif:{path.name}"):
+    for fp in track(sampled, description=f"gif:{path.name}"):
         img = FITSImage(fp)
         frames.append(_gif_frame(img.data, img.header.get("DATE-OBS", "")))
     imageio.mimsave(path, frames, fps=FPS, loop=0)
@@ -1357,6 +1366,14 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(default: %(default)s).",
     )
     ap.add_argument(
+        "--min_star_area",
+        "--min-star-area",
+        type=int,
+        default=MIN_STAR_AREA,
+        dest="min_star_area",
+        help="Minimum area in pixels of detected sources (default: %(default)s).",
+    )
+    ap.add_argument(
         "--max_num_stars",
         "--max-num-stars",
         type=int,
@@ -1481,20 +1498,16 @@ def main(argv=None) -> int:
 
     sciences = {}
     inst_obslog = args.data_dir.parent.name.lower()
-    obslog_dir = Path(f"/ut2/muscat/obslog/{inst_obslog}/{args.data_dir.name}")
-    if obslog_dir.is_dir():
-        logger.info(f"reading obslog: {obslog_dir}")
-        for ccd_csv in sorted(obslog_dir.glob("obslog-*-ccd?.csv")):
-            with open(ccd_csv) as f:
-                for row in csv.DictReader(f):
-                    if row["OBJECT"] != args.target_name:
-                        continue
-                    band = _resolve_band(row["FILTER"], inst_obslog, args.bands)
-                    if band is None:
-                        continue
-                    fp = args.data_dir / f"{row['FRAME']}.fits"
-                    if fp.is_file():
-                        sciences.setdefault(band, []).append(str(fp))
+    obslog_records = frames_from_obslog(args.data_dir, inst_obslog)
+    if obslog_records is not None:
+        logger.info(f"reading obslog: {len(obslog_records)} frames")
+        for rec in obslog_records:
+            if rec["object"] != args.target_name:
+                continue
+            band = _resolve_band(rec["filter"], inst_obslog, args.bands)
+            if band is None:
+                continue
+            sciences.setdefault(band, []).append(rec["path"])
         if sciences:
             logger.info(
                 f"obslog: frames per band: "
@@ -1665,6 +1678,7 @@ def main(argv=None) -> int:
                 n_stars_align=args.n_stars_align,
                 target_index_override=args.tID,
                 cids=args.cID,
+                min_area=args.min_star_area,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
@@ -1703,6 +1717,7 @@ def main(argv=None) -> int:
             max_num_stars=args.max_num_stars,
             min_star_separation=args.min_star_separation,
             n_stars_align=args.n_stars_align,
+            min_area=args.min_star_area,
         )
         if args.make_gif:
             stride = 1 if args.test_run else args.gif_stride

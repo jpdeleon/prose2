@@ -3,34 +3,25 @@ import platform
 import shlex
 import struct
 import subprocess
-import warnings
 from datetime import datetime
 
-from tqdm import TqdmExperimentalWarning
+from rich.progress import track
 
 from prose import CONFIG
 
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", category=TqdmExperimentalWarning)
-    from tqdm.autonotebook import tqdm
-
 
 def color(s, i):
-    return f"\u001b[38;5;{i}m{s}\x1b[0m"
-
-
-TQDM_BAR_FORMAT = "%s {l_bar}%s{bar}%s{r_bar}" % (
-    color("RUN", 12),
-    "\u001b[38;5;12m",
-    "\x1b[0m",
-)
+    return f"[38;5;{i}m{s}\x1b[0m"
 
 
 def progress(show, **kwargs):
-    if show:
-        return lambda x: tqdm(x, **kwargs)
-    else:
+    # rich renders a single clean line when stderr is not a TTY, so redirected
+    # logs stay tidy without a manual isatty guard. ``desc`` (tqdm naming) and
+    # ``description`` are both accepted; other tqdm-era kwargs are ignored.
+    if not show:
         return lambda x: x
+    description = kwargs.get("desc", kwargs.get("description", "Working..."))
+    return lambda x: track(x, description=description)
 
 
 def get_terminal_size():

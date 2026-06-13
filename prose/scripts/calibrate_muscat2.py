@@ -36,11 +36,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from tqdm import tqdm
 
 from prose import FITSImage, blocks
 from prose.console_utils import info
 from prose.core.sequence import SequenceParallel
+from prose.utils import frames_from_obslog, scan_fits_headers
 
 logger = logging.getLogger("calibrate_muscat2")
 
@@ -60,50 +60,70 @@ class SaveCalibratedFITS(blocks.Block):
             return
         out_path = self.output_dir / f"{Path(fp).stem}_calibrated.fits"
         hdu = fits.PrimaryHDU(image.data.astype(np.float32))
-        hdu.header = image.header
+        header = image.header.copy()
+        if "BZERO" in header:
+            del header["BZERO"]
+        if "BSCALE" in header:
+            del header["BSCALE"]
+        hdu.header = header
         hdu.header["CALSTAGE"] = "calibrated"
         if self.wcs is not None:
             hdu.header.update(self.wcs.to_header())
         hdu.writeto(out_path, overwrite=True)
 
 
-def find_files(data_dir: Path) -> tuple[dict, dict]:
-    """Scan FITS headers and return ``(darks, flats)`` per CCD.
+def find_frames(
+    data_dir: Path, target: str | None = None
+) -> tuple[dict, dict, dict]:
+    """Return ``(darks, flats, sciences)`` mapping CCD index (0-3) to file paths.
 
-    Each returned dict maps CCD index (0-3) to a list of file paths.
+    Resolution mirrors ``run_photometry``: the MuSCAT obslog is used when present
+    (no FITS reads at all), otherwise a parallel header scan classifies frames by
+    ``OBJECT``. ``sciences`` stays empty when *target* is ``None``.
     """
     darks: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
     flats: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
+    sciences: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
 
-    files = sorted(data_dir.glob("MCT2?_*.fits"))
-    for fp in files:
-        prefix = fp.stem.split("_")[0]
-        ccd = int(prefix[4])
+    def _bucket(ccd, obj: str, path: str) -> None:
         if ccd not in CCD_BANDS:
-            continue
-        hdr = fits.getheader(fp)
-        obj = str(hdr.get("OBJECT", "")).strip()
+            return
         if obj == "DARK":
-            darks[ccd].append(str(fp))
+            darks[ccd].append(path)
         elif obj == "FLAT":
-            flats[ccd].append(str(fp))
+            flats[ccd].append(path)
+        elif target is not None and obj == target:
+            sciences[ccd].append(path)
 
+    records = frames_from_obslog(data_dir)
+    if records is not None:
+        logger.info(f"obslog: {len(records)} frames (skipping header scan)")
+        for rec in records:
+            _bucket(rec["ccd"], rec["object"], rec["path"])
+        return darks, flats, sciences
+
+    files = sorted(Path(data_dir).glob("MCT2?_*.fits"))
+    for fp, header in scan_fits_headers(
+        files, keys=("OBJECT",), description="Scanning calibration files"
+    ):
+        prefix = Path(fp).stem.split("_")[0]
+        try:
+            ccd = int(prefix[4])
+        except (IndexError, ValueError):
+            continue
+        _bucket(ccd, header.get("OBJECT", ""), fp)
+    return darks, flats, sciences
+
+
+def find_files(data_dir: Path) -> tuple[dict, dict]:
+    """Return ``(darks, flats)`` per CCD (thin wrapper over :func:`find_frames`)."""
+    darks, flats, _ = find_frames(data_dir)
     return darks, flats
 
 
 def find_science_files(data_dir: Path, target: str) -> dict[int, list[str]]:
-    """Scan FITS headers and return science files per CCD for *target*."""
-    sciences: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
-    files = sorted(data_dir.glob("MCT2?_*.fits"))
-    for fp in files:
-        prefix = fp.stem.split("_")[0]
-        ccd = int(prefix[4])
-        if ccd not in CCD_BANDS:
-            continue
-        hdr = fits.getheader(fp)
-        obj = str(hdr.get("OBJECT", "")).strip()
-        if obj == target:
-            sciences[ccd].append(str(fp))
+    """Return science files per CCD for *target* (see :func:`find_frames`)."""
+    _, _, sciences = find_frames(data_dir, target)
     return sciences
 
 
@@ -347,12 +367,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    darks, flats = find_files(args.data_dir)
-
-    if args.target:
-        sciences = find_science_files(args.data_dir, args.target)
-    else:
-        sciences = {c: [] for c in CCD_BANDS}
+    darks, flats, sciences = find_frames(args.data_dir, args.target)
 
     master_darks: list[tuple[str, np.ndarray]] = []
     master_flats: list[tuple[str, np.ndarray]] = []

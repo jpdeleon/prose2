@@ -14,7 +14,7 @@ from astropy.table import Table
 from astropy.time import Time
 from photutils.psf import extract_stars
 from skimage.draw import line_aa
-from tqdm import tqdm
+from rich.progress import track
 
 from prose import utils, viz
 from prose.archive import sdss_image
@@ -240,7 +240,11 @@ class ObservationSimulation:
         self.remove_stars(close_by)
 
     def save_fits(self, destination, calibration=False, verbose=True, **kwargs):
-        progress = lambda x: tqdm(x) if verbose else x
+        progress = (
+            (lambda x: track(x, description="Saving FITS"))
+            if verbose
+            else (lambda x: x)
+        )
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

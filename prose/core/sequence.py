@@ -7,16 +7,22 @@ import multiprocess as mp
 import numpy as np
 import yaml
 from tabulate import tabulate
-from tqdm.autonotebook import tqdm
 
 from prose.citations import citations as default_citations
-from prose.console_utils import error, warning
+from prose.console_utils import error, track, warning
 from prose.core.image import Buffer, FITSImage, Image
 from prose.utils import full_class_name
 
 
 def progress(name, x, **kwargs):
-    return tqdm(x, desc=name, unit="images", **kwargs)
+    # rich keeps redirected logs clean on its own (one final line when stderr is
+    # not a TTY); callers can still pass ``total`` / ``disable`` through.
+    return track(
+        x,
+        description=name,
+        total=kwargs.get("total"),
+        disable=kwargs.get("disable", False),
+    )
 
 
 class Sequence:
