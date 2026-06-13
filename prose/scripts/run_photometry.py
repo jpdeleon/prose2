@@ -27,6 +27,7 @@ structural reference; the reduction itself is pure ``prose``)::
     {target}_{inst}_{band}_{date}.gif
     {target}_{inst}_{band}_{date}.csv
     {target}_{inst}_{date}_lightcurves.png
+    {target}_{inst}_{date}_raw_flux.png
     {target}_{inst}_{date}_covariates.png
     {target}_{inst}_{date}_stacks.png
     {target}_{inst}_{date}.npz
@@ -345,6 +346,29 @@ def aper_radii_pix(r: dict):
     return radii, rin, rout
 
 
+from prose.core.block import Block
+
+
+class MeasurePeaks(Block):
+    def __init__(self, name=None):
+        super().__init__(name=name)
+
+    def run(self, image):
+        peaks = []
+        for x, y in image.sources.coords:
+            ix, iy = int(round(x)), int(round(y))
+            h = 5
+            cutout = image.data[
+                max(0, iy - h) : min(image.shape[0], iy + h + 1),
+                max(0, ix - h) : min(image.shape[1], ix + h + 1),
+            ]
+            if cutout.size > 0:
+                peaks.append(float(np.nanmax(cutout)))
+            else:
+                peaks.append(float("nan"))
+        image.computed["peaks"] = np.array(peaks)
+
+
 # --------------------------- reference building ---------------------------
 
 
@@ -607,6 +631,7 @@ def photometry_sequence(
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
     n_stars_align: int | None = None,
+    target_index: int = 0,
     min_area: int = MIN_STAR_AREA,
 ) -> SequenceParallel:
     """Parallel per-image photometry sequence (mirrors the notebook)."""
@@ -631,6 +656,7 @@ def photometry_sequence(
             blocks.CentroidQuadratic(),
             blocks.AperturePhotometry(aper_radii, scale=scale),
             blocks.AnnulusBackground(rin=rin, rout=rout, scale=scale),
+            MeasurePeaks(),
             blocks.Del("data", "cutouts"),
         ]
     )
@@ -651,7 +677,11 @@ def photometry_sequence(
                     if hasattr(im, "transform") and im.transform is not None
                     else float("nan")
                 ),
-                peak=lambda im: im.sources[0].peak,
+                peak=lambda im: (
+                    im.computed["peaks"][target_index]
+                    if "peaks" in im.computed and len(im.computed["peaks"]) > target_index
+                    else float("nan")
+                ),
             ),
         ],
     )
@@ -709,6 +739,7 @@ def run_band(
         n_stars_align=min(n_stars_align, len(ref.sources))
         if n_stars_align
         else len(ref.sources),
+        target_index=reference["target_index"],
         min_area=min_area,
     )
     phot.run(files)
@@ -1049,6 +1080,63 @@ def plot_lightcurves(
     _savefig(fig, path)
 
 
+def plot_raw_flux(
+    band_results,
+    path: Path,
+    target_name: str,
+    instrument: str,
+    date: str,
+    target_index: int,
+) -> None:
+    """Plot comparison stars raw flux for each band."""
+    bands = list(band_results.keys())
+    fig, axes = plt.subplots(
+        1,
+        len(bands),
+        figsize=(4 * len(bands), 7),
+        sharex=True,
+        sharey=False,
+        constrained_layout=True,
+    )
+    axes = np.atleast_1d(axes)
+    t0 = int(np.asarray(band_results[bands[0]]["diff"].time)[0])
+    for ax, band in zip(axes, bands):
+        diff = band_results[band]["diff"]
+        fluxes = band_results[band]["fluxes"]
+        t = np.asarray(diff.time) - t0
+
+        jd_scale = band_results[band]["ref"].telescope.jd_scale
+        fluxes_time = normalize_time_to_jd(fluxes.time, jd_scale)
+        mask = np.isin(fluxes_time, diff.time)
+
+        comps = diff.comparisons
+        stars = [diff.target]
+        if comps is not None and len(comps) > 0:
+            stars.extend(comps[0:5])
+
+        for j, i in enumerate(stars):
+            y = fluxes.fluxes[diff.aperture, i][mask].copy()
+            std_val = np.std(y)
+            denom = std_val or 1e-12
+            y = (y - np.mean(y)) / denom + 8 * j
+            ax.text(
+                t.max(),
+                np.mean(y) + 4,
+                i if i != diff.target else "target",
+                ha="right",
+            )
+            ax.plot(t, y, ".", c="0.8" if i != diff.target else "k")
+
+        ax.set_title(band)
+        ax.set_xlabel(f"time (JD) - {t0}")
+        ax.set_ylabel("raw flux (arbitrary units)")
+        ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+
+    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
+    _savefig(fig, path)
+
+
 def plot_covariates(
     band_results,
     path: Path,
@@ -1059,10 +1147,10 @@ def plot_covariates(
 ) -> None:
     bands = list(band_results.keys())
     fig, axes = plt.subplots(
-        1, len(bands), figsize=(4 * len(bands), 7), sharey=True, constrained_layout=True
+        1, len(bands), figsize=(5 * len(bands), 8), sharey=True, constrained_layout=True
     )
     axes = np.atleast_1d(axes)
-    signals = ["flux", "fwhm", "airmass", "bkg", "dx", "dy"]
+    signals = ["flux", "fwhm", "peak", "airmass", "bkg", "dx", "dy"]
     for ax, band in zip(axes, bands):
         bc = band_color(band)
         diff = band_results[band]["diff"]
@@ -1756,6 +1844,14 @@ def main(argv=None) -> int:
         date,
         target_index=target_index,
         bin_size_days=bin_size_days,
+    )
+    plot_raw_flux(
+        band_results,
+        args.results_dir / f"{stem_multi}_raw_flux.png",
+        args.target_name,
+        instrument,
+        date,
+        target_index=target_index,
     )
     plot_covariates(
         band_results,
