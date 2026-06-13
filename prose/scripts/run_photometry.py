@@ -177,6 +177,17 @@ def band_color(band: str) -> str:
 logger = logging.getLogger("prose_run_photometry")
 
 
+def log_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+
+sys.excepthook = log_exception
+
+
 # ------------------------------- helpers -------------------------------
 
 
@@ -443,7 +454,7 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
 
     try:
         c = ref.cutout(ref.sources[target_index].coords, GAIA_CUTOUT)
-        c.fov = np.array(c.shape) * pixscale * u.arcsec  # required before Gaia query
+        c.metadata["pixel_scale"] = pixscale * u.arcsec  # required before Gaia query
         c = catalogs.GaiaCatalog(mode="replace")(c)
         df = c.catalogs["gaia"]
         if save_cached_df(cache_path, df):  # refresh cache whenever online
@@ -858,10 +869,10 @@ CSV_RENAME = {
 def photometry_df(diff: Fluxes, bjd: np.ndarray) -> pd.DataFrame:
     df = diff.df.copy()
     df["BJD_TDB"] = bjd
-    df["Flux_Err"] = diff.error
+    df["Err"] = diff.error
     df = df.rename(CSV_RENAME, axis=1)
     cols = df.columns.tolist()
-    left = ["BJD_TDB", "Flux", "Flux_Err"]
+    left = ["BJD_TDB", "Flux", "Err"]
     rest = [c for c in cols if c not in left]
     return df[left + rest]
 
@@ -1598,6 +1609,11 @@ def main(argv=None) -> int:
                 calib_args.append("--test_run")
             if args.verbose:
                 calib_args.append("--verbose")
+            # Forward main logger's FileHandlers to the calibration logger so WCS and calibration details get written to the target's .log file
+            calib_mod.logger.setLevel(logging.INFO)
+            for h in logger.handlers:
+                if isinstance(h, logging.FileHandler):
+                    calib_mod.logger.addHandler(h)
             ret = calib_mod.main(calib_args)
             if ret != 0:
                 logger.error(f"{calib_label} calibration failed")
@@ -1631,7 +1647,14 @@ def main(argv=None) -> int:
         f"site={probe.get('SITE')}"
     )
 
-    target_coord = Mast().resolve_object(args.target_name)
+    try:
+        target_coord = Mast().resolve_object(args.target_name)
+    except Exception as e:
+        logger.warning(f"MAST resolution failed for {args.target_name}: {e}. Retrying with space-separated name.")
+        try:
+            target_coord = Mast().resolve_object(args.target_name.replace("-", " "))
+        except Exception:
+            raise e
     logger.info(f"target radec: {target_coord}")
 
     # reference seeding: without --ref_band each band self-references its first
