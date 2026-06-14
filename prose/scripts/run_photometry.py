@@ -390,7 +390,7 @@ def reference_sequence(
             ),
             blocks.Cutouts(shape=cutout_size),
             blocks.MedianEPSF(),
-            blocks.psf.Moffat2D(),
+            blocks.psf.Gaussian2D(),
             blocks.CentroidQuadratic(),
             blocks.AperturePhotometry(),
             blocks.AnnulusBackground(),
@@ -477,7 +477,7 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
         return _gaia_cache[cache_path]
 
     try:
-        c = ref.cutout(ref.sources[target_index].coords, GAIA_CUTOUT)
+        c = ref.cutout(ref.sources[target_index].coords, GAIA_CUTOUT, reset_index=False)
         c.metadata["pixel_scale"] = pixscale * u.arcsec  # required before Gaia query
         c = catalogs.GaiaCatalog(mode="replace")(c)
         df = c.catalogs["gaia"]
@@ -959,15 +959,16 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
 def plot_apertures(r, path: Path) -> None:
     ref = r["ref"]
     coords = ref.sources[r["target_index"]].coords
-    c = ref.cutout(coords, GAIA_CUTOUT)
+    c = ref.cutout(coords, GAIA_CUTOUT, reset_index=False)
     radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
     fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
     c.show(ax=ax, zscale=True, sources=False)
+    target_source = next((s for s in c.sources if s.i == r["target_index"]), c.sources[0])
     for radius in radii_pix:
-        c.sources[0].plot(radius, label=False, c="r")
-    c.sources[0].plot(rin_pix, label=False, c="y")
-    c.sources[0].plot(rout_pix, label=False, c="y")
-    ax.set_title(f"{r['band']} apertures")
+        target_source.plot(radius, label=False, c="r")
+    target_source.plot(rin_pix, label=False, c="y")
+    target_source.plot(rout_pix, label=False, c="y")
+    ax.set_title(f"{r['band']} apertures zoom on target (tID={r['target_index']})")
     _savefig(fig, path)
 
 
@@ -1125,7 +1126,7 @@ def plot_raw_flux(
                 i if i != diff.target else "target",
                 ha="right",
             )
-            ax.plot(t, y, ".", c="0.8" if i != diff.target else "k")
+            ax.plot(t, y, ".", c="0.8" if i != diff.target else band_color(band))
 
         ax.set_title(band)
         ax.set_xlabel(f"time (JD) - {t0}")
@@ -1199,7 +1200,7 @@ def plot_stacks(
         r = band_results[band]
         ref = r["ref"]
         diff = r["diff"]
-        c = ref.cutout(ref.sources[r["target_index"]].coords, GAIA_CUTOUT)
+        c = ref.cutout(ref.sources[r["target_index"]].coords, GAIA_CUTOUT, reset_index=False)
         center = np.array(c.data.shape)[::-1] / 2
         axes[row, 0].imshow(_zscale(c.data), cmap="Greys_r", origin="lower")
         axes[row, 0].set_title(f"target zoom ({band})")
@@ -1251,8 +1252,23 @@ def _gif_frame(
             (max(1, round(frame.width * scale)), max(1, round(frame.height * scale))),
             Image.BILINEAR,
         )
+    draw = ImageDraw.Draw(frame)
+    width, height = frame.size
+    grid_spacing = 50
+    dot_spacing = 5
+    pts = []
+    # Horizontal grid lines
+    for y in range(grid_spacing, height, grid_spacing):
+        pts.extend((x, y) for x in range(0, width, dot_spacing))
+    # Vertical grid lines
+    for x in range(grid_spacing, width, grid_spacing):
+        pts.extend((x, y) for y in range(0, height, dot_spacing))
+    
+    if pts:
+        draw.point(pts, fill=(255, 255, 255))
+
     if label:
-        ImageDraw.Draw(frame).text((5, 5), label, fill=(255, 255, 255))
+        draw.text((5, 5), label, fill=(255, 255, 255))
     return np.asarray(frame)
 
 
@@ -1354,6 +1370,16 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--target_name", "--target-name", required=True)
+    ap.add_argument(
+        "--target_coord",
+        "--target-coord",
+        nargs=2,
+        default=None,
+        metavar=("RA", "Dec"),
+        help="Target sky coordinates RA Dec (e.g. '12:34:56.7' '38:47:04.5' "
+        "or '187.5' '38.78'). When provided, bypasses MAST name resolution "
+        "and uses these coordinates directly.",
+    )
     ap.add_argument(
         "--tID",
         type=int,
@@ -1735,15 +1761,23 @@ def main(argv=None) -> int:
         f"site={probe.get('SITE')}"
     )
 
-    try:
-        target_coord = Mast().resolve_object(args.target_name)
-    except Exception as e:
-        logger.warning(f"MAST resolution failed for {args.target_name}: {e}. Retrying with space-separated name.")
+    if args.target_coord is not None:
+        ra_str, dec_str = args.target_coord
+        if ":" in ra_str:
+            target_coord = SkyCoord(ra_str, dec_str, frame="icrs", unit=(u.hourangle, u.deg))
+        else:
+            target_coord = SkyCoord(ra_str, dec_str, frame="icrs", unit=u.deg)
+        logger.info(f"target_coord from --target_coord: {target_coord}")
+    else:
         try:
-            target_coord = Mast().resolve_object(args.target_name.replace("-", " "))
-        except Exception:
-            raise e
-    logger.info(f"target radec: {target_coord}")
+            target_coord = Mast().resolve_object(args.target_name)
+        except Exception as e:
+            logger.warning(f"MAST resolution failed for {args.target_name}: {e}. Retrying with space-separated name.")
+            try:
+                target_coord = Mast().resolve_object(args.target_name.replace("-", " "))
+            except Exception:
+                raise e
+        logger.info(f"target radec: {target_coord}")
 
     # reference seeding: without --ref_band each band self-references its first
     # frame (within-camera alignment, correct for multi-camera instruments);
