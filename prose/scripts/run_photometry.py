@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import re
 import sys
 import time as time_module
 from datetime import datetime
@@ -573,6 +574,7 @@ def build_reference(
     cutout_size: int = CUTOUT_SIZE,
     target_index_override: int | None = None,
     min_area: int = MIN_STAR_AREA,
+    plot_gaia_sources: bool = False,
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -584,6 +586,11 @@ def build_reference(
     (``False``) vs FWHM (``True``) units for the photometry blocks.
 
     If ``target_index_override`` is given, it bypasses the Gaia cross-match.
+
+    When ``plot_gaia_sources`` is set, the Gaia catalog around the target is
+    fetched (or reused from cache) and returned under ``gaia_df`` so the
+    aperture/stack zoom plots can overlay Gaia source positions, even when the
+    Gaia contamination heuristic is bypassed by an explicit aperture grid.
     """
     ref = FITSImage(ref_file)
     instrument = get_instrument(ref.header)
@@ -617,7 +624,8 @@ def build_reference(
         if target_index_override is not None
         else find_target_index(ref, target_coord)
     )
-    if aper_radii is not None:
+    aper_radii_was_custom = aper_radii is not None
+    if aper_radii_was_custom:
         unit = "fwhm" if scale else "pix"
         logger.info(
             f"using custom apertures: {len(aper_radii)} radii in "
@@ -626,6 +634,12 @@ def build_reference(
         )
     else:
         aper_radii, rin, rout = gaia_aperture_radii(ref, target_index, target_coord)
+    # The default path above already queried (and cached) Gaia; for an explicit
+    # aperture grid we only query when the overlay was requested. Reusing the
+    # per-run cache means this never triggers a second network round-trip.
+    gaia_df = None
+    if not aper_radii_was_custom or plot_gaia_sources:
+        gaia_df = _gaia_catalog_df(ref, target_index, target_coord, pixel_scale)
     logger.info(
         f"reference {Path(ref_file).name}: FWHM {float(ref.fwhm):.2f} px, "
         f"target idx {target_index}"
@@ -637,6 +651,7 @@ def build_reference(
         rin=rin,
         rout=rout,
         scale=scale,
+        gaia_df=gaia_df,
     )
 
 
@@ -702,7 +717,8 @@ def photometry_sequence(
                 ),
                 peak=lambda im: (
                     im.computed["peaks"][target_index]
-                    if "peaks" in im.computed and len(im.computed["peaks"]) > target_index
+                    if "peaks" in im.computed
+                    and len(im.computed["peaks"]) > target_index
                     else float("nan")
                 ),
             ),
@@ -727,6 +743,7 @@ def run_band(
     target_index_override: int | None = None,
     cids: list[int] | None = None,
     min_area: int = MIN_STAR_AREA,
+    plot_gaia_sources: bool = False,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -746,6 +763,7 @@ def run_band(
         cutout_size=cutout_size,
         target_index_override=target_index_override,
         min_area=min_area,
+        plot_gaia_sources=plot_gaia_sources,
     )
     ref = reference["ref"]
 
@@ -794,6 +812,7 @@ def run_band(
         rin=reference["rin"],
         rout=reference["rout"],
         scale=reference["scale"],
+        gaia_df=reference.get("gaia_df"),
     )
 
 
@@ -944,6 +963,96 @@ def photometry_df(diff: Fluxes, bjd: np.ndarray) -> pd.DataFrame:
 # --------------------------- plots ---------------------------
 
 
+def _overlay_gaia_sources(
+    ax,
+    cutout,
+    gaia_df,
+    target_coord=None,
+    color="cyan",
+    label_mag=True,
+    marker_size=45,
+    fontsize=4,
+    legend_label="Gaia sources",
+) -> int:
+    """Overlay queried Gaia source positions on a target cutout.
+
+    Gaia ``ra``/``dec`` are projected into the cutout's own pixel frame via its
+    WCS and clipped to the cutout bounds, so the markers line up with whatever
+    ``origin="lower"`` image the axis already shows.  When *target_coord* is
+    given, the target itself is plotted with a distinct marker (no text label)
+    and neighbouring sources are annotated with their **delta** G magnitude
+    (``Gmag - target_Gmag``) instead of the absolute value.
+
+    Failures (missing catalog, missing/invalid WCS) degrade to a no-op rather
+    than breaking the figure.
+
+    Returns the number of Gaia sources drawn.
+    """
+    if gaia_df is None or not len(gaia_df) or getattr(cutout, "wcs", None) is None:
+        return 0
+    try:
+        coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
+        x, y = cutout.wcs.world_to_pixel(coords)
+    except Exception as exc:  # noqa: BLE001 - overlay must not break the plot
+        logger.warning(f"Gaia overlay skipped ({exc})")
+        return 0
+    ny, nx = cutout.data.shape
+    inside = np.isfinite(x) & np.isfinite(y) & (x >= 0) & (x < nx) & (y >= 0) & (y < ny)
+    x, y = x[inside], y[inside]
+    if not len(x):
+        return 0
+
+    # Identify the target among the visible Gaia sources (nearest to target_coord).
+    target_mask = np.zeros(len(x), dtype=bool)
+    target_mag = np.nan
+    if target_coord is not None:
+        try:
+            seps = target_coord.separation(coords[inside])
+            nearest = int(np.argmin(seps))
+            target_mask[nearest] = True
+            if "phot_g_mean_mag" in gaia_df:
+                mags_all = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[inside]
+                target_mag = mags_all[nearest]
+        except Exception:  # noqa: BLE001
+            pass
+
+    neighbour = ~target_mask
+
+    # Plot the target marker (no label).
+    if target_mask.any():
+        ax.scatter(
+            x[target_mask], y[target_mask],
+            marker="+", s=marker_size, c=color, lw=0.9, zorder=10,
+        )
+    # Plot neighbour markers with legend.
+    if neighbour.any():
+        ax.scatter(
+            x[neighbour], y[neighbour],
+            marker="+", s=marker_size, c=color, lw=0.9, zorder=9,
+            label=legend_label,
+        )
+
+    if label_mag and "phot_g_mean_mag" in gaia_df:
+        mags = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[inside]
+        for i, (xi, yi, mag) in enumerate(zip(x, y, mags)):
+            if target_mask[i] or not np.isfinite(mag):
+                continue  # skip the target (no text label)
+            if np.isfinite(target_mag):
+                label_text = f"{mag - target_mag:+.1f}"
+            else:
+                label_text = f"{mag:.1f}"
+            ax.annotate(
+                label_text,
+                (xi, yi),
+                xytext=(3, 3),
+                textcoords="offset points",
+                fontsize=fontsize,
+                color=color,
+                zorder=9,
+            )
+    return int(len(x))
+
+
 def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
     ref = r["ref"]
     fig = plt.figure(figsize=(7, 7), constrained_layout=True)
@@ -989,18 +1098,32 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
     _savefig(fig, path)
 
 
-def plot_apertures(r, path: Path) -> None:
+def plot_apertures(
+    r, path: Path, plot_gaia_sources: bool = False, target_coord=None,
+) -> None:
     ref = r["ref"]
     coords = ref.sources[r["target_index"]].coords
     c = ref.cutout(coords, GAIA_CUTOUT, reset_index=False)
     radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
     fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
     c.show(ax=ax, zscale=True, sources=False)
-    target_source = next((s for s in c.sources if s.i == r["target_index"]), c.sources[0])
+    target_source = next(
+        (s for s in c.sources if s.i == r["target_index"]), c.sources[0]
+    )
     for radius in radii_pix:
         target_source.plot(radius, label=False, c="r")
     target_source.plot(rin_pix, label=False, c="y")
     target_source.plot(rout_pix, label=False, c="y")
+    if plot_gaia_sources:
+        n = _overlay_gaia_sources(
+            ax, c, r.get("gaia_df"),
+            target_coord=target_coord,
+            marker_size=100,
+            fontsize=7,
+            legend_label="Gaia (delta mag)",
+        )
+        if n:
+            ax.legend(loc="upper right", fontsize=7, framealpha=0.6)
     ax.set_title(f"{r['band']} apertures zoom on target (tID={r['target_index']})")
     _savefig(fig, path)
 
@@ -1221,6 +1344,8 @@ def plot_stacks(
     instrument: str,
     date: str,
     target_index: int,
+    plot_gaia_sources: bool = False,
+    target_coord=None,
 ) -> None:
     """Per-band target cutout (from the reference image) plus radial profile."""
     bands = list(band_results.keys())
@@ -1233,11 +1358,17 @@ def plot_stacks(
         r = band_results[band]
         ref = r["ref"]
         diff = r["diff"]
-        c = ref.cutout(ref.sources[r["target_index"]].coords, GAIA_CUTOUT, reset_index=False)
+        c = ref.cutout(
+            ref.sources[r["target_index"]].coords, GAIA_CUTOUT, reset_index=False
+        )
         center = np.array(c.data.shape)[::-1] / 2
         axes[row, 0].imshow(_zscale(c.data), cmap="Greys_r", origin="lower")
         axes[row, 0].set_title(f"target zoom ({band})")
         axes[row, 0].axis("off")
+        if plot_gaia_sources:
+            _overlay_gaia_sources(
+                axes[row, 0], c, r.get("gaia_df"), target_coord=target_coord,
+            )
 
         radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
         prof = _radial_profile(c.data, center)
@@ -1296,7 +1427,7 @@ def _gif_frame(
     # Vertical grid lines
     for x in range(grid_spacing, width, grid_spacing):
         pts.extend((x, y) for y in range(0, height, dot_spacing))
-    
+
     if pts:
         draw.point(pts, fill=(255, 255, 255))
 
@@ -1400,6 +1531,20 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
     return DEFAULT_BROAD_BANDS
 
 
+def _normalize_toi_name(name: str) -> str:
+    """Convert TOI names to MAST-compatible format.
+
+    The obslog and FITS headers store zero-padded TOI names like
+    ``TOI07475.01`` or ``TOI-05486.01``, but MAST/SIMBAD expects the
+    standard ``TOI-7475`` format (no zero-padding, mandatory hyphen,
+    no ``.01`` suffix).
+    """
+    m = re.match(r"^TOI-?0*(\d+)(?:\.\d+)?$", name, re.IGNORECASE)
+    if m:
+        return f"TOI-{m.group(1)}"
+    return name
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--target_name", "--target-name", required=True)
@@ -1483,7 +1628,9 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(radii scaled by each image's FWHM).",
     )
     ap.add_argument("--glob", default="*.fits", help="FITS glob pattern.")
-    ap.add_argument("--gif_stride", "--gif-stride", type=int, default=DEFAULT_GIF_STRIDE)
+    ap.add_argument(
+        "--gif_stride", "--gif-stride", type=int, default=DEFAULT_GIF_STRIDE
+    )
     ap.add_argument(
         "--gif",
         dest="make_gif",
@@ -1797,17 +1944,22 @@ def main(argv=None) -> int:
     if args.target_coord is not None:
         ra_str, dec_str = args.target_coord
         if ":" in ra_str:
-            target_coord = SkyCoord(ra_str, dec_str, frame="icrs", unit=(u.hourangle, u.deg))
+            target_coord = SkyCoord(
+                ra_str, dec_str, frame="icrs", unit=(u.hourangle, u.deg)
+            )
         else:
             target_coord = SkyCoord(ra_str, dec_str, frame="icrs", unit=u.deg)
         logger.info(f"target_coord from --target_coord: {target_coord}")
     else:
+        mast_name = _normalize_toi_name(args.target_name)
         try:
-            target_coord = Mast().resolve_object(args.target_name)
+            target_coord = Mast().resolve_object(mast_name)
         except Exception as e:
-            logger.warning(f"MAST resolution failed for {args.target_name}: {e}. Retrying with space-separated name.")
+            logger.warning(
+                f"MAST resolution failed for {mast_name}: {e}. Retrying with space-separated name."
+            )
             try:
-                target_coord = Mast().resolve_object(args.target_name.replace("-", " "))
+                target_coord = Mast().resolve_object(mast_name.replace("-", " "))
             except Exception:
                 raise e
         logger.info(f"target radec: {target_coord}")
@@ -1857,6 +2009,7 @@ def main(argv=None) -> int:
                 target_index_override=args.tID,
                 cids=args.cID,
                 min_area=args.min_star_area,
+                plot_gaia_sources=args.plot_gaia_sources,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
@@ -1882,7 +2035,12 @@ def main(argv=None) -> int:
         plot_ref_image(
             r, target_coord, instrument, args.results_dir / f"{stem}_ref.png"
         )
-        plot_apertures(r, args.results_dir / f"{stem}_apertures.png")
+        plot_apertures(
+            r,
+            args.results_dir / f"{stem}_apertures.png",
+            plot_gaia_sources=args.plot_gaia_sources,
+            target_coord=target_coord,
+        )
         plot_alignment(
             r,
             r["files"][-1],
@@ -1935,6 +2093,8 @@ def main(argv=None) -> int:
         instrument,
         date,
         target_index=target_index,
+        plot_gaia_sources=args.plot_gaia_sources,
+        target_coord=target_coord,
     )
     save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz")
 
