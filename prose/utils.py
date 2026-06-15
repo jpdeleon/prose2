@@ -717,7 +717,29 @@ def check_skycoord(skycoord):
     return skycoord
 
 
-def gaia_query(center, fov, *args, limit=10000, circular=True):
+def _run_with_timeout(func, timeout):
+    """Run *func* (blocking I/O) under a hard wall-clock *timeout* in seconds.
+
+    astroquery's synchronous TAP calls have no timeout and hang indefinitely
+    when the remote service stalls, blocking the whole pipeline. We run the
+    call in a worker thread and abandon it if it overruns. ``socket`` default
+    timeout is set so the abandoned thread's connection actually closes instead
+    of lingering. Raises ``concurrent.futures.TimeoutError`` on overrun.
+    """
+    import concurrent.futures
+    import socket
+
+    previous_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(timeout)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return executor.submit(func).result(timeout=timeout)
+    finally:
+        socket.setdefaulttimeout(previous_timeout)
+        executor.shutdown(wait=False)
+
+
+def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=30):
     """
     https://gea.esac.esa.int/archive/documentation/GEDR3/Gaia_archive/chap_datamodel/sec_dm_main_tables/ssec_dm_gaia_source.html
     """
@@ -747,22 +769,52 @@ def gaia_query(center, fov, *args, limit=10000, circular=True):
     fields = ",".join(args) if isinstance(args, (tuple, list)) else args
 
     if circular:
-        job = Gaia.launch_job(
+        official_query = (
             f"select top {limit} {fields} from gaiadr2.gaia_source where "
             "1=CONTAINS("
             f"POINT('ICRS', {ra}, {dec}), "
             f"CIRCLE('ICRS',ra, dec, {radius}))"
             "order by phot_g_mean_mag"
         )
+        vizier_query = (
+            f"select top {limit} {fields} from \"I/345/gaia2\" where "
+            "1=CONTAINS("
+            f"POINT('ICRS', {ra}, {dec}), "
+            f"CIRCLE('ICRS',ra, dec, {radius}))"
+            "order by phot_g_mean_mag"
+        )
     else:
-        job = Gaia.launch_job(
+        official_query = (
             f"select top {limit} {fields} from gaiadr2.gaia_source where "
             f"ra BETWEEN {ra-ra_fov/2} AND {ra+ra_fov/2} AND "
             f"dec BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2} "
             "order by phot_g_mean_mag"
         )
+        vizier_query = (
+            f"select top {limit} {fields} from \"I/345/gaia2\" where "
+            f"ra BETWEEN {ra-ra_fov/2} AND {ra+ra_fov/2} AND "
+            f"dec BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2} "
+            "order by phot_g_mean_mag"
+        )
 
-    return job.get_results()
+    def _official():
+        return Gaia.launch_job(official_query).get_results()
+
+    def _vizier():
+        from astroquery.utils.tap import TapPlus
+
+        vizier_tap = TapPlus(url="https://tapvizier.u-strasbg.fr/TAPVizieR/tap")
+        return vizier_tap.launch_job(vizier_query).get_results()
+
+    try:
+        return _run_with_timeout(_official, timeout)
+    except Exception as e:
+        import logging
+
+        logging.getLogger("prose").warning(
+            f"Official Gaia TAP query failed ({e}); trying VizieR mirror"
+        )
+        return _run_with_timeout(_vizier, timeout)
 
 
 def full_class_name(o):

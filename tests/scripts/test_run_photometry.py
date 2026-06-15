@@ -81,6 +81,16 @@ def test_gif_frame_downsamples_large_image_preserving_aspect():
     assert frame.shape[:2] == (100, 50)  # aspect ratio preserved
 
 
+def test_gif_frame_has_white_dotted_grid():
+    data = np.zeros((100, 100))
+    frame = rp._gif_frame(data)
+    # Check that some grid points are drawn and are white
+    assert np.all(frame[50, 0] == 255)
+    assert np.all(frame[50, 5] == 255)
+    # Check that non-grid points are not white (e.g. background black)
+    assert not np.all(frame[50, 2] == 255)
+
+
 class _FakeDiff:
     """Minimal stand-in for a differential ``Fluxes`` object."""
 
@@ -114,7 +124,7 @@ def test_photometry_df_renames_columns_and_adds_bjd():
         "GJD_UTC",
         "BJD_TDB",
         "Flux",
-        "Flux_Err",
+        "Err",
         "Airmass",
         "Dx(pix)",
         "Dy(pix)",
@@ -124,10 +134,10 @@ def test_photometry_df_renames_columns_and_adds_bjd():
     ):
         assert col in out.columns
     np.testing.assert_allclose(out["BJD_TDB"], bjd)
-    np.testing.assert_allclose(out["Flux_Err"], 0.001)
+    np.testing.assert_allclose(out["Err"], 0.001)
 
-    assert out.columns.tolist()[:3] == ["BJD_TDB", "Flux", "Flux_Err"], (
-        "BJD_TDB, Flux, Flux_Err must be the three leftmost columns"
+    assert out.columns.tolist()[:3] == ["BJD_TDB", "Flux", "Err"], (
+        "BJD_TDB, Flux, Err must be the three leftmost columns"
     )
 
 
@@ -274,12 +284,31 @@ def test_differential_photometry_cids_uses_diff_not_autodiff():
     assert result.weights[0, 4] == 0.0  # star 4 was masked out
 
 
-def test_differential_photometry_cids_rejects_invalid_index(tmp_path, monkeypatch):
-    """cids that are out of range should propagate as an error from Fluxes.diff."""
+def test_differential_photometry_drops_out_of_range_cids(caplog):
+    """Out-of-range cids are dropped with a warning; valid ones are still used."""
+    rng = np.random.default_rng(7)
+    fluxes = _make_fluxes(3, 10, rng)  # sources 0, 1, 2 only
+
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        result = rp.differential_photometry(fluxes, target_index=0, cids=[1, 99])
+
+    assert result is not None
+    assert "99" in caplog.text and "out of range" in caplog.text
+    # only the in-range comparison (star 1) is used
+    assert result.weights[0, 1] == 1.0
+    assert result.weights[0, 2] == 0.0
+
+
+def test_differential_photometry_all_cids_out_of_range_falls_back_to_auto(caplog):
+    """When every cid is out of range we fall back to automatic selection."""
     rng = np.random.default_rng(7)
     fluxes = _make_fluxes(3, 10, rng)
-    with pytest.raises(IndexError):
-        rp.differential_photometry(fluxes, target_index=0, cids=[1, 99])
+
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        result = rp.differential_photometry(fluxes, target_index=0, cids=[99, 100])
+
+    assert result is not None  # autodiff fallback, no crash
+    assert "auto-selection" in caplog.text
 
 
 # --------------------------- build_reference target_index_override ---------------------------

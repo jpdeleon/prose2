@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from prose import FITSImage
 from prose.core.image import Buffer, Image
@@ -61,3 +62,36 @@ def test_init_header():
     hdr = dict(FILTER="B")
 
     assert Image(d, header=hdr).header == hdr
+
+
+def test_parse_sexagesimal_seconds_overflow():
+    # MuSCAT2/TCS headers can write a seconds field >= 60 (e.g. +20:11:181),
+    # which astropy's Angle rejects. We carry the overflow arithmetically.
+    import astropy.units as u
+
+    from prose.core.image import _parse_sexagesimal
+
+    # DEC "+20:11:181" -> 20 + 11/60 + 181/3600 deg
+    assert _parse_sexagesimal("+20:11:181", u.deg).deg == pytest.approx(20.233611, abs=1e-5)
+    # RA "4:06:38" in hourangle -> (4 + 6/60 + 38/3600) * 15 deg
+    assert _parse_sexagesimal("4:06:38", u.hourangle).deg == pytest.approx(61.658333, abs=1e-5)
+
+
+def test_parse_sexagesimal_sign_and_canonical():
+    import astropy.units as u
+
+    from prose.core.image import _parse_sexagesimal
+
+    # Negative declination keeps its sign.
+    assert _parse_sexagesimal("-05:30:00", u.deg).deg == pytest.approx(-5.5)
+    # A canonical (in-range) sexagesimal string still parses correctly.
+    assert _parse_sexagesimal("+28:17:45", u.deg).deg == pytest.approx(28.295833, abs=1e-5)
+
+
+def test_parse_sexagesimal_decimal_fallback():
+    import astropy.units as u
+
+    from prose.core.image import _parse_sexagesimal
+
+    # Plain decimal strings (no colons) defer to astropy unchanged.
+    assert _parse_sexagesimal("61.6", u.deg).deg == pytest.approx(61.6)

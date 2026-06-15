@@ -205,7 +205,7 @@ class Image:
         unit = str_to_astropy_unit(self.metadata[unit_name])
         if name in ["ra", "dec"]:
             if value is not None:
-                return Angle(value, unit).to(u.deg)
+                return _parse_sexagesimal(value, unit)
             else:
                 return None
         if value is not None:
@@ -672,6 +672,29 @@ class Image:
 
 def str_to_astropy_unit(unit_string):
     return u.__dict__[unit_string]
+
+
+def _parse_sexagesimal(value, unit):
+    """Parse a coordinate into an :class:`~astropy.coordinates.Angle` in degrees,
+    tolerating a seconds field outside the canonical ``[0, 60)`` range.
+
+    Some telescope control systems (e.g. MuSCAT2/TCS) write the seconds field of
+    a sexagesimal coordinate beyond 60 — for example a declination of
+    ``+20:11:181`` — which astropy's ``Angle`` rejects outright. When the value
+    is such a colon-separated string we carry the overflow arithmetically
+    (``d + m/60 + s/3600`` in the native *unit*); otherwise we defer to ``Angle``.
+    """
+    if isinstance(value, str) and ":" in value:
+        text = value.strip()
+        sign = -1.0 if text.startswith("-") else 1.0
+        fields = text.lstrip("+-").split(":")
+        try:
+            d, m, s = (list(map(float, fields)) + [0.0, 0.0])[:3]
+        except ValueError:
+            return Angle(value, unit).to(u.deg)
+        magnitude = abs(d) + m / 60.0 + s / 3600.0
+        return Angle(sign * magnitude, unit).to(u.deg)
+    return Angle(value, unit).to(u.deg)
 
 
 def FITSImage(

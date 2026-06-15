@@ -478,7 +478,7 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
 
     try:
         c = ref.cutout(ref.sources[target_index].coords, GAIA_CUTOUT, reset_index=False)
-        c.metadata["pixel_scale"] = pixscale * u.arcsec  # required before Gaia query
+        c.metadata["pixel_scale"] = float(pixscale)  # required before Gaia query
         c = catalogs.GaiaCatalog(mode="replace")(c)
         df = c.catalogs["gaia"]
         if save_cached_df(cache_path, df):  # refresh cache whenever online
@@ -784,8 +784,18 @@ def differential_photometry(
     """
     fluxes = fluxes.copy()
     fluxes.target = target_index
+    n_sources = fluxes.fluxes.shape[1]
     if cids is not None:
-        mask = np.zeros(fluxes.fluxes.shape[1], dtype=bool)
+        valid_cids = [c for c in cids if 0 <= c < n_sources]
+        dropped = [c for c in cids if c not in valid_cids]
+        if dropped:
+            logger.warning(
+                f"ignoring comparison ID(s) {dropped} out of range "
+                f"(only {n_sources} sources detected); using {valid_cids or 'auto-selection'}"
+            )
+        cids = valid_cids
+    if cids:
+        mask = np.zeros(n_sources, dtype=bool)
         mask[target_index] = True
         mask[list(cids)] = True
         fluxes = fluxes.mask_stars(mask)
@@ -795,7 +805,7 @@ def differential_photometry(
     fluxes = fluxes.sigma_clipping_data(bkg=SIGMA_BKG, fwhm=SIGMA_FWHM)
     if fluxes.time is None or len(fluxes.time) == 0:
         return None
-    if cids is not None:
+    if cids:
         return fluxes.diff(comps=np.array(cids))
     return fluxes.autodiff()
 
