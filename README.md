@@ -1,106 +1,127 @@
-# prose
+# prose2
 
-<p align="center" style="margin-bottom:-50px">
-    <img src="docs/_static/prose3.png" width="450">
-</p>
+prose2 extends the [prose](https://github.com/lgrcia/prose) astronomical
+image-processing framework with an **end-to-end, command-line multi-band
+photometry pipeline**: `prose/scripts/run_photometry.py`.
 
-<p align="center">
-  Modular image processing pipelines for Astronomy
-  <br>
-  <p align="center">
-    <a href="https://github.com/lgrcia/prose"><img src="https://img.shields.io/badge/github-lgrcia/prose-03A487.svg?style=flat" alt="github"/></a>
-    <a href="https://github.com/lgrcia/prose/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgray.svg?style=flat" alt="license"/></a>
-    <a href="https://arxiv.org/abs/2111.02814"><img src="https://img.shields.io/badge/paper-B166A9.svg?style=flat" alt="paper"/></a>
-    <a href="https://prose.readthedocs.io/en/latest"><img src="https://img.shields.io/badge/documentation-black.svg?style=flat" alt="documentation"/></a>
-  </p>
-</p>
+> For the base prose package — `Sequence`s, `blocks`, and the core pipeline
+> concepts — see the original
+> [prose README](https://github.com/lgrcia/prose/blob/main/README.md) and
+> [documentation](https://prose.readthedocs.io/en/latest). prose2 reuses that
+> machinery; this README documents only the `run_photometry` tool.
 
- *prose* is a Python package to build modular image processing pipelines for Astronomy.
+## `run_photometry`
 
-*powered by [astropy](https://www.astropy.org/) and [photutils](https://photutils.readthedocs.io)*!
-
-## Example
-
-Here is a quick example pipeline to characterize the point-spread-function (PSF) of an example image
-
-
-```python
-import matplotlib.pyplot as plt
-from prose import Sequence, blocks
-from prose.simulations import example_image
-
-# getting the example image
-image = example_image()
-
-sequence = Sequence(
-    [
-        blocks.PointSourceDetection(),  # stars detection
-        blocks.Cutouts(shape=21),  # cutouts extraction
-        blocks.MedianEPSF(),  # PSF building
-        blocks.Moffat2D(),  # PSF modeling
-    ]
-)
-
-sequence.run(image)
-
-# plotting
-image.show()  # detected stars
-
-# effective PSF parameters
-image.epsf.params
-```
-
-While being run on a single image, a Sequence is designed to be run on list of images (paths) and provides the architecture to build powerful pipelines. For more details check [Quickstart](https://prose.readthedocs.io/en/latest/ipynb/quickstart.html) and [What is a pipeline?](https://prose.readthedocs.io/en/latest/ipynb/core.html)
-
-## Example Datasets
-* sinistro: 250523
-* muscat4 (broadband): 250416, 250512
-* muscat3 (narrowband): 240122
-* muscat4: 240128 (supply tID manually)
-
-## End-to-end photometry script (LCO MuSCAT3/4)
-
-`prose/scripts/run_photometry.py` runs the full multi-band reduction
-demonstrated in `notebooks/prose_muscat34_template.ipynb` as a command-line
-tool. Given a directory of calibrated (BANZAI-reduced) science frames for a
-single target, it groups frames per band, builds per-band reference images,
-identifies the target, sizes the sky annulus and apertures from Gaia
-contamination, runs
-parallel aperture photometry, performs automatic differential photometry,
-converts GJD-UTC to BJD-TDB, and writes per-band CSV/PNG/GIF products plus
-multi-band `lightcurves`, `covariates`, `stacks` plots, an `.npz` archive,
-and a timestamped log.
+Given a directory of science frames for a single target, `run_photometry`
+produces calibrated multi-band light curves with a single command:
 
 ```shell
 python -m prose.scripts.run_photometry \
     --target_name TOI-6715 \
     --data_dir /data/MuSCAT4/250416 \
-    --results_dir output 
+    --results_dir output
 ```
 
-By default (no `--ref_band`) each band self-references its own first frame,
-which is the correct choice for MuSCAT3/4 where every band is a separate
-camera. Pass `--ref_band gp` to instead align all bands to one band's frame.
+### Pipeline
 
-Key options: `--ref_band`, `--refid` (reference-frame index per band),
-`--gif` (render a per-band quick-look GIF; off by default since GIF rendering
-is the slowest stage) with `--gif_stride`, `--test_run` (first 10 frames per
-band), and `--use_barycorrpy` (otherwise BJD-TDB uses astropy
-light-travel-time). BJD conversion requires `astroplan`.
+```mermaid
+flowchart TD
+    A["Frames<br/>--data_dir"] --> B{"Instrument?"}
+    B -->|"MuSCAT / MuSCAT2<br/>(raw)"| C["Calibrate dark/flat<br/>+ WCS solve (twirl + Gaia)"]
+    B -->|"MuSCAT3/4, Sinistro<br/>(calibrated BANZAI)"| D["Group frames per band"]
+    C --> D
+    D --> E["Per-band reference<br/>+ source detection"]
+    E --> F["Identify target<br/>WCS / Gaia x-match or --tID"]
+    F --> G["Sky annulus from Gaia<br/>contamination + aperture radii"]
+    G --> H["Parallel aperture photometry<br/>(SequenceParallel)"]
+    H --> I["Differential photometry<br/>(Broeg 2005 or --cID)"]
+    I --> J["GJD-UTC → BJD-TDB"]
+    J --> K[("Products<br/>CSV / PNG / GIF / NPZ / log")]
+
+    click C "#supported-instruments--input" "Calibration & instrument support"
+    click F "#options" "Target selection options"
+    click G "#custom-aperture-grid" "Custom aperture grid"
+    click I "#reliability-notes" "Comparison-star handling"
+    click K "#output-products" "Output products"
+
+    classDef io fill:#e8f0fe,stroke:#4285f4,color:#111;
+    classDef proc fill:#e6f4ea,stroke:#34a853,color:#111;
+    class A,K io;
+    class C,D,E,F,G,H,I,J proc;
+```
+
+> Tip: on GitHub the diagram pans/zooms, and the highlighted nodes are
+> clickable — they jump to the matching section below.
+
+### What it does
+
+For each photometric band it:
+
+1. groups frames per band for the requested target,
+2. builds a per-band reference image and detects sources,
+3. identifies the target via WCS / Gaia cross-match (or an explicit `--tID`),
+4. sizes the sky annulus to exclude Gaia contaminants (≥10 % of the target
+   flux, Δmag < 2.5) and sets aperture radii from the target FWHM up to that
+   annulus,
+5. runs aperture photometry in parallel (`prose.SequenceParallel`),
+6. performs automatic differential photometry (Broeg et al. 2005), or uses the
+   comparison stars you pass with `--cID`,
+7. converts GJD-UTC to BJD-TDB (astropy light-travel by default;
+   `--use_barycorrpy` to use barycorrpy — requires `astroplan`), and
+8. writes per-band and multi-band data products.
+
+### Supported instruments & input
+
+| Instrument | Input | Notes |
+|---|---|---|
+| LCO MuSCAT3 / MuSCAT4 | calibrated BANZAI frames (e.g. `*-e91.fits`) | each band is a separate camera; bands self-reference by default |
+| LCO Sinistro | calibrated BANZAI frames | single band (supply `--tID` manually for some datasets) |
+| MuSCAT (1) | raw frames | calibrated on the fly (dark/flat) and WCS-solved via twirl + Gaia; pass `--muscat_calib_dir` to keep the calibrated FITS |
+| MuSCAT2 | raw frames | calibrated on the fly and WCS-solved; pass `--muscat2_calib_dir` |
+
+Multi-camera MuSCAT bands each self-reference their own first frame, which is
+correct when every band is a separate camera. Pass `--ref_band gp` to instead
+align all bands to one band's frame.
+
+### Output products
+
+Everything is written to `--results_dir`:
+
+- **per band:** `…_ref.png`, `…_apertures.png`, `…_alignment.png`,
+  `…_{band}.csv`, and an optional `….gif`
+- **multi-band:** `…_lightcurves.png`, `…_raw_flux.png`, `…_covariates.png`,
+  `…_stacks.png`
+- a single `….npz` archive and a timestamped `.log`
+
+### Options
+
+| Group | Options |
+|---|---|
+| Target | `--target_name` (required), `--target_coord`, `--tID`, `--cID` |
+| Input / output | `--data_dir`, `--results_dir`, `--glob`, `--overwrite` |
+| Bands & reference | `--bands`, `--ref_band`, `--refid` |
+| Apertures | `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
+| Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--ccd_trim` |
+| Time & plots | `--use_barycorrpy`, `--bin_size_minutes`, `--plot_gaia_sources`, `--gif`, `--gif_stride` |
+| MuSCAT raw calibration | `--muscat_calib_dir`, `--muscat2_calib_dir` |
+| Run control | `--test_run`, `--test_run_frames`, `--verbose` |
+
+`--gif` is off by default because GIF rendering is the slowest stage; throttle
+it with `--gif_stride`. `--test_run` reduces each band to its first few frames
+(`--test_run_frames`) for a quick smoke test.
 
 ### Custom aperture grid
 
-By default the aperture runs from the target FWHM up to the inner sky
-annulus. The sky annulus is nominally 6–10×FWHM but is shifted inward to
-exclude any Gaia source contributing ≥10% of the target flux (Δmag < 2.5),
-and `rout` is clamped to 100 px when the FWHM is large (defocus). The Gaia
-result is cached under `~/.cache/prose_photometry/gaia/` (keyed by target
-coordinates); if Gaia is unreachable on a later run the cached result is
-reused, and if no cache exists an FWHM-only annulus is used. To set an
-explicit grid (and skip the Gaia query entirely), use
-`--aper_radii MIN,MAX,DR` together with `--annulus RIN,ROUT`. The grid is
-**inclusive of MAX** (`10,20,2` → `[10, 12, 14, 16, 18, 20]`). `--aper_unit`
-selects the unit for both flags:
+By default the aperture runs from the target FWHM up to the inner sky annulus.
+The sky annulus is nominally 6–10×FWHM but is shifted inward to exclude any
+Gaia source contributing ≥10% of the target flux (Δmag < 2.5), and `rout` is
+clamped to 100 px when the FWHM is large (defocus). The Gaia result is cached
+under `~/.cache/prose_photometry/gaia/` (keyed by target coordinates); if Gaia
+is unreachable on a later run the cached result is reused, and if no cache
+exists an FWHM-only annulus is used. To set an explicit grid (and skip the Gaia
+query entirely), use `--aper_radii MIN,MAX,DR` together with
+`--annulus RIN,ROUT`. The grid is **inclusive of MAX** (`10,20,2` →
+`[10, 12, 14, 16, 18, 20]`). `--aper_unit` selects the unit for both flags:
 
 ```shell
 # radii in pixels
@@ -115,28 +136,46 @@ python -m prose.scripts.run_photometry ... \
 `--annulus` is required whenever `--aper_radii` is given, and `--annulus` /
 `--aper_unit` only apply together with `--aper_radii`.
 
+### Reliability notes
+
+- **Malformed coordinates.** MuSCAT2/TCS headers can write a sexagesimal
+  seconds field outside `[0, 60)` (e.g. DEC `+20:11:181`); these are parsed by
+  carrying the overflow instead of failing, so WCS solving and Gaia queries
+  proceed.
+- **Network timeouts.** Every external query (Gaia, SIMBAD, MAST/TIC, and the
+  BJD service) is bounded by a wall-clock timeout
+  (`prose.utils.NETWORK_TIMEOUT_S`, 30 s) so an unreachable service degrades to
+  a cached result or skips astrometry rather than hanging the run.
+- **Comparison-star bounds.** Out-of-range `--cID` values are dropped with a
+  warning and fall back to automatic selection rather than crashing.
+
+## Example datasets
+
+* sinistro: 250523
+* muscat4 (broadband): 250416, 250512
+* muscat3 (narrowband): 240122
+* muscat4: 240128 (supply `--tID` manually)
+
 ## Installation
 
-### latest
-
-*prose* is written for python 3 and can be installed from [pypi](https://pypi.org/project/prose/) with:
+prose2 builds on prose (Python 3). Install prose from
+[PyPI](https://pypi.org/project/prose/):
 
 ```shell
 pip install prose
 ```
 
-For the latest version
+or the latest development version:
 
 ```shell
 pip install 'prose @ git+https://github.com/lgrcia/prose'
 ```
 
-## Contributions
-See our [contributions guidelines](docs/CONTRIBUTING.md)
-
 ## Attribution
 
-If you find `prose` useful for your research, cite [Garcia et. al 2022](https://ui.adsabs.harvard.edu/abs/2022MNRAS.509.4817G). The BibTeX entry for the paper is:
+`run_photometry` is built on prose. If you use it for research, please cite
+[Garcia et al. 2022](https://ui.adsabs.harvard.edu/abs/2022MNRAS.509.4817G):
+
 ```
 @ARTICLE{prose,
        author = {{Garcia}, Lionel J. and {Timmermans}, Mathilde and {Pozuelos}, Francisco J. and {Ducrot}, Elsa and {Gillon}, Micha{\"e}l and {Delrez}, Laetitia and {Wells}, Robert D. and {Jehin}, Emmanu{\"e}l},
@@ -157,4 +196,5 @@ archivePrefix = {arXiv},
 }
 ```
 
-and read about how to cite the dependencies of your sequences [here](https://prose.readthedocs.io/en/latest/ipynb/acknowledgement.html).
+See also how to cite the dependencies of your sequences
+[here](https://prose.readthedocs.io/en/latest/ipynb/acknowledgement.html).
