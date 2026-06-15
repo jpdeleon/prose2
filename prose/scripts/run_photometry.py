@@ -165,14 +165,37 @@ MAX_TIME_OFFSET_MIN = 2 * 8.4
 # report their time axis in MJD; prose flags this via Telescope.jd_scale == "mjd".
 MJD_TO_JD = 2_400_000.5
 
-# band color map
-BAND_COLORS = {"g": "blue", "r": "green", "i": "orange", "z": "red"}
+# Band color map. Keyed by the full band token so Sloan broadband,
+# narrow-band, and Johnson (B/V/R) filters each get a distinct color instead of
+# collapsing onto the leading-letter color (which left B/V/R all black and every
+# *_narrow sharing its broadband sibling's color).
+BAND_COLORS = {
+    # Sloan broadband
+    "gp": "blue",
+    "rp": "green",
+    "ip": "orange",
+    "zs": "red",
+    # narrow-band (distinct from their broadband siblings)
+    "g_narrow": "teal",
+    "r_narrow": "olive",
+    "i_narrow": "gold",
+    "z_narrow": "maroon",
+    "g_wide": "navy",
+    "Na_D": "magenta",
+    # Johnson
+    "B": "cyan",
+    "V": "purple",
+    "R": "brown",
+}
+
+# Fallback for unmapped tokens: color by the leading Sloan letter, else black.
+_BROADBAND_FALLBACK = {"g": "blue", "r": "green", "i": "orange", "z": "red"}
 
 
 def band_color(band: str) -> str:
-    if band == "Na_D":
-        return BAND_COLORS["r"]
-    return BAND_COLORS.get(band[0], "k")
+    if band in BAND_COLORS:
+        return BAND_COLORS[band]
+    return _BROADBAND_FALLBACK.get((band[:1] or "").lower(), "k")
 
 
 logger = logging.getLogger("prose_run_photometry")
