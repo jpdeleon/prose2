@@ -1130,6 +1130,7 @@ from astropy.wcs import utils as wcsutils
 from astroquery.mast import Catalogs
 
 from prose.telescope import Telescope
+from prose.utils import NETWORK_TIMEOUT_S, _run_with_timeout
 
 
 def _show_tics(data, header=None, telescope_kw="TELESCOP", r=12 * u.arcminute):
@@ -1145,7 +1146,10 @@ def _show_tics(data, header=None, telescope_kw="TELESCOP", r=12 * u.arcminute):
     )
 
     coord = skycoord
-    tic_data = Catalogs.query_region(coord, r, "TIC", verbose=False)
+    tic_data = _run_with_timeout(
+        lambda: Catalogs.query_region(coord, r, "TIC", verbose=False),
+        NETWORK_TIMEOUT_S,
+    )
     tic_data.sort("Jmag")
 
     skycoords = SkyCoord(ra=tic_data["ra"], dec=tic_data["dec"], unit="deg")

@@ -11,7 +11,7 @@ from twirl.geometry import sparsify
 
 from prose import Block
 from prose.core.source import Sources
-from prose.utils import cross_match, gaia_query
+from prose.utils import NETWORK_TIMEOUT_S, _run_with_timeout, cross_match, gaia_query
 
 __all__ = ["GaiaCatalog", "TESSCatalog"]
 
@@ -328,8 +328,11 @@ class TESSCatalog(_CatalogBlock):
 
     def get_catalog(self, image):
         max_fov = image.fov.max() * np.sqrt(2) / 2
-        table = Catalogs.query_region(
-            image.skycoord, radius=max_fov, catalog="TIC", verbose=False
+        table = _run_with_timeout(
+            lambda: Catalogs.query_region(
+                image.skycoord, radius=max_fov, catalog="TIC", verbose=False
+            ),
+            NETWORK_TIMEOUT_S,
         )
         table["ra"].unit = "deg"
         table["dec"].unit = "deg"

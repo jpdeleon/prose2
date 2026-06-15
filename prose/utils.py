@@ -21,6 +21,11 @@ from astroquery.simbad import Simbad
 
 earth2sun = (c.R_earth / c.R_sun).value
 
+# Default wall-clock timeout (seconds) for external network queries (Gaia,
+# SIMBAD, MAST, BJD service). Bounds otherwise-unbounded calls so an
+# unreachable service cannot hang the pipeline indefinitely.
+NETWORK_TIMEOUT_S = 30
+
 FOV_IN_ARCMIN = {
     'sinistro_full': 26.5, # CONFMODE= 'full_frame'
     'sinistro_2x2': 13,    # CONFMODE= 'central_2k_2x2'
@@ -139,7 +144,10 @@ def get_simbad_data(target_coord, inst, fov_arcmin=None):
     cache_path = coord_cache_path("simbad", target_coord, inst, f"{fov:g}")
     try:
         print(f"Querying SIMBAD sources within {fov:.2f} arcmin of ({target_coord.to_string('decimal')})")
-        result = Simbad.query_region(target_coord, radius=fov * u.arcmin)
+        result = _run_with_timeout(
+            lambda: Simbad.query_region(target_coord, radius=fov * u.arcmin),
+            NETWORK_TIMEOUT_S,
+        )
         if result is None:
             print("No sources found.")
             result_df = None
@@ -551,12 +559,13 @@ def split(x, dt, fill=None):
         return [np.hstack(fx) for fx in filled_xs]
 
 
-def jd_to_bjd(jd, ra, dec):
+def jd_to_bjd(jd, ra, dec, timeout=NETWORK_TIMEOUT_S):
     """
     Convert JD to BJD using http://astroutils.astronomy.ohio-state.edu (Eastman et al. 2010)
     """
     bjd = urllib.request.urlopen(
-        f"http://astroutils.astronomy.ohio-state.edu/time/convert.php?JDS={','.join(jd.astype(str))}&RA={ra}&DEC={dec}&FUNCTION=utc2bjd"
+        f"http://astroutils.astronomy.ohio-state.edu/time/convert.php?JDS={','.join(jd.astype(str))}&RA={ra}&DEC={dec}&FUNCTION=utc2bjd",
+        timeout=timeout,
     ).read()
     bjd = bjd.decode("utf-8")
     return np.array(bjd.split("\n"))[0:-1].astype(float)
@@ -739,7 +748,7 @@ def _run_with_timeout(func, timeout):
         executor.shutdown(wait=False)
 
 
-def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=30):
+def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=NETWORK_TIMEOUT_S):
     """
     https://gea.esac.esa.int/archive/documentation/GEDR3/Gaia_archive/chap_datamodel/sec_dm_main_tables/ssec_dm_gaia_source.html
     """
