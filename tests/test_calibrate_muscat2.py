@@ -252,6 +252,45 @@ class TestCLI:
         assert (out_dir / "master_flat.png").is_file()
 
 
+# ---------- exposure-matched dark selection ----------
+
+
+class TestExposureMatching:
+    def test_read_exposures_from_headers(self, tmp_path):
+        a = tmp_path / "MCT20_0001.fits"
+        _fake_fits(a, "DARK", exptime=12.5)
+        assert cm.read_exposures([str(a)])[str(a)] == pytest.approx(12.5)
+
+    def test_group_by_exposure(self):
+        groups = cm.group_by_exposure(["a", "b"], {"a": 12.5, "b": 20.0})
+        assert groups[12.5] == ["a"] and groups[20.0] == ["b"]
+
+    def test_selects_matching_subset(self, tmp_path):
+        m = tmp_path / "MCT20_0001.fits"
+        x = tmp_path / "MCT20_0002.fits"
+        _fake_fits(m, "DARK", exptime=20.0)
+        _fake_fits(x, "DARK", exptime=12.5)
+        darks, status = cm.select_darks_for_exposure([str(m), str(x)], 20.0)
+        assert status == "matched" and darks == [str(m)]
+
+    def test_no_match_falls_back_with_warning(self, tmp_path, caplog):
+        d = tmp_path / "MCT20_0001.fits"
+        _fake_fits(d, "DARK", exptime=12.5)
+        with caplog.at_level("WARNING", logger="calibrate_muscat2"):
+            darks, status = cm.select_darks_for_exposure([str(d)], 20.0)
+        assert status == "no-match" and darks == [str(d)]
+        assert any("no darks match" in r.message.lower() for r in caplog.records)
+
+    def test_fixture_is_no_match_but_still_calibrates(self, fake_data_dir, tmp_path):
+        """Fixture darks (12.5s) differ from science (20s): no-match fallback runs."""
+        darks, flats = cm.find_files(fake_data_dir)
+        sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
+        _, status = cm.select_darks_for_exposure(darks[0], 20.0, "g")
+        assert status == "no-match"
+        cm.calibrate_band(darks[0], flats[0], sciences[0], tmp_path, "g")
+        assert len(list(tmp_path.glob("*_calibrated.fits"))) == len(sciences[0])
+
+
 # ---------- main ----------
 
 

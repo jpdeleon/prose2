@@ -239,9 +239,11 @@ def frames_from_obslog(data_dir, instrument: str | None = None) -> list[dict] | 
     columns. *instrument* defaults to ``data_dir.parent.name`` and ``<date>`` to
     ``data_dir.name`` (instrument is lowercased to match the obslog layout).
 
-    Returns a list of ``{"frame", "object", "filter", "ccd", "path"}`` dicts for
-    every logged frame whose ``.fits`` file exists in *data_dir*, or ``None`` when
-    no obslog directory is present, so callers can fall back to a header scan.
+    Returns a list of ``{"frame", "object", "filter", "exposure", "ccd", "path"}``
+    dicts for every logged frame whose ``.fits`` file exists in *data_dir*, or
+    ``None`` when no obslog directory is present, so callers can fall back to a
+    header scan. ``exposure`` is the ``EXPTIME (s)`` column as a float, or ``None``
+    when absent/unparseable.
     """
     data_dir = Path(data_dir)
     instrument = (instrument or data_dir.parent.name).lower()
@@ -260,16 +262,33 @@ def frames_from_obslog(data_dir, instrument: str | None = None) -> list[dict] | 
         except (IndexError, ValueError):
             ccd = None
         with open(ccd_csv) as f:
-            for row in csv.DictReader(f):
+            reader = csv.DictReader(f)
+            # Exposure column carries a unit, e.g. "EXPTIME (s)"; match defensively.
+            exp_col = next(
+                (
+                    name
+                    for name in (reader.fieldnames or [])
+                    if name and name.strip().upper().startswith("EXPTIME")
+                ),
+                None,
+            )
+            for row in reader:
                 frame = (row.get("FRAME") or "").strip()
                 fname = f"{frame}.fits"
                 if not frame or fname not in on_disk:
                     continue
+                exposure: float | None = None
+                if exp_col is not None:
+                    try:
+                        exposure = float((row.get(exp_col) or "").strip())
+                    except (TypeError, ValueError):
+                        exposure = None
                 records.append(
                     {
                         "frame": frame,
                         "object": (row.get("OBJECT") or "").strip(),
                         "filter": (row.get("FILTER") or "").strip(),
+                        "exposure": exposure,
                         "ccd": ccd,
                         "path": str(data_dir / fname),
                     }

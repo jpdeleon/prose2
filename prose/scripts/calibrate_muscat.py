@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -45,6 +46,15 @@ from prose.utils import frames_from_obslog, scan_fits_headers
 logger = logging.getLogger("calibrate_muscat")
 
 CCD_BANDS = {0: "gp", 1: "rp", 2: "zs"}
+
+# Exposure-time matching for dark selection. ``blocks.Calibration`` rescales the
+# master dark by the science exposure (``dark_rate * exp_time``) assuming a
+# zero-bias pedestal. With no master bias supplied (the MuSCAT case), that model
+# is only exact when the darks share the science frames' exposure, so we select
+# exposure-matched darks rather than mixing exposures.
+EXPOSURE_KEY = "EXPTIME"
+EXPOSURE_RTOL = 1e-3
+EXPOSURE_ATOL = 1e-2
 
 
 class SaveCalibratedFITS(blocks.Block):
@@ -193,10 +203,17 @@ def _solve_wcs(image) -> object | None:
     sparse_gaias = sparse_gaias[:30]
 
     try:
+        import astropy.wcs.utils as wcsutils
         wcs = twirl.compute_wcs(stars, sparse_gaias)
+        if wcs is not None:
+            # Validate pixel scale: expected ~0.36 arcsec/pixel for MuSCAT
+            scales = wcsutils.proj_plane_pixel_scales(wcs) * 3600.0
+            if not (0.32 < scales[0] < 0.40 and 0.32 < scales[1] < 0.40):
+                logger.warning(f"WCS: solved pixel scales {scales} deviate significantly from expected ~0.36 arcsec/pixel; rejecting WCS solution")
+                wcs = None
     except Exception as e:
         logger.warning(f"WCS: twirl.compute_wcs failed ({e})")
-        return None
+        wcs = None
 
     return wcs
 
@@ -225,6 +242,111 @@ def save_master_plots(
             dpi=150,
         )
         plt.close(fig)
+
+
+def read_exposures(paths: list[str]) -> dict[str, float | None]:
+    """Map each FITS path to its exposure (float), or ``None`` if unresolved.
+
+    Mirrors :func:`find_frames`: the obslog ``EXPTIME (s)`` column is preferred
+    (no FITS reads), and a parallel header scan resolves only the frames the
+    obslog does not cover.
+    """
+    exposures: dict[str, float | None] = {}
+    if not paths:
+        return exposures
+
+    records = frames_from_obslog(Path(paths[0]).parent)
+    obslog = (
+        {rec["path"]: rec.get("exposure") for rec in records}
+        if records is not None
+        else {}
+    )
+
+    missing = [fp for fp in paths if obslog.get(fp) is None]
+    for fp in paths:
+        exposures[fp] = obslog.get(fp)
+
+    if missing:
+        for fp, header in scan_fits_headers(
+            missing, keys=(EXPOSURE_KEY,), description="Reading exposure times"
+        ):
+            raw = header.get(EXPOSURE_KEY, "")
+            try:
+                exposures[fp] = float(raw)
+            except (TypeError, ValueError):
+                exposures[fp] = None
+    return exposures
+
+
+def group_by_exposure(
+    paths: list[str], exposures: dict[str, float | None]
+) -> dict[float | None, list[str]]:
+    """Group *paths* by rounded exposure; unknown exposures bucket under ``None``."""
+    groups: dict[float | None, list[str]] = defaultdict(list)
+    for fp in paths:
+        exp = exposures.get(fp)
+        groups[None if exp is None else round(exp, 3)].append(fp)
+    return groups
+
+
+def select_darks_for_exposure(
+    darks: list[str], science_exposure: float | None, band: str = "?"
+) -> tuple[list[str], str]:
+    """Return the darks whose exposure matches *science_exposure*.
+
+    Falls back to all darks (with a warning) when the science exposure is unknown
+    or no dark matches it, because ``blocks.Calibration`` rescales the master dark
+    by exposure assuming a zero-bias pedestal — only exposure-matched darks are
+    guaranteed correct when no master bias is supplied. Returns ``(darks, status)``
+    where status is one of ``matched``, ``no-darks``, ``science-exposure-unknown``
+    or ``no-match``.
+    """
+    if not darks:
+        return darks, "no-darks"
+
+    exposures = read_exposures(darks)
+
+    if science_exposure is None:
+        logger.warning(
+            f"[{band}] science exposure unknown; using all {len(darks)} darks "
+            "without exposure matching"
+        )
+        return darks, "science-exposure-unknown"
+
+    matched = [
+        fp
+        for fp in darks
+        if exposures.get(fp) is not None
+        and np.isclose(
+            exposures[fp], science_exposure, rtol=EXPOSURE_RTOL, atol=EXPOSURE_ATOL
+        )
+    ]
+    if matched:
+        if len(matched) < len(darks):
+            others = sorted(
+                {
+                    round(e, 3)
+                    for e in exposures.values()
+                    if e is not None
+                    and not np.isclose(
+                        e, science_exposure, rtol=EXPOSURE_RTOL, atol=EXPOSURE_ATOL
+                    )
+                }
+            )
+            info(
+                f"[{band}] {len(matched)}/{len(darks)} darks match science exposure "
+                f"{science_exposure:g}s (ignoring darks at {others}s)"
+            )
+        return matched, "matched"
+
+    available = sorted({e for e in exposures.values() if e is not None})
+    logger.warning(
+        f"[{band}] no darks match science exposure {science_exposure:g}s "
+        f"(dark exposures present: {available}s). Master dark will be "
+        "exposure-rescaled assuming a zero-bias pedestal; supply exposure-matched "
+        "darks or a master bias to avoid a scaling error."
+    )
+    return darks, "no-match"
 
 
 def calibrate_band(
@@ -256,6 +378,12 @@ def calibrate_band(
         f"[{band}] {len(darks)} darks, {len(flats)} flats, "
         f"{len(sciences)} science frames"
     )
+
+    # Select darks matching the science exposure so the master dark is not built
+    # from a mix of exposures (see ``select_darks_for_exposure``).
+    sci_exposures = read_exposures(sciences[:1])
+    science_exposure = next(iter(sci_exposures.values()), None)
+    darks, _ = select_darks_for_exposure(darks, science_exposure, band)
 
     info(f"[{band}] building master calibration frames")
     calib = blocks.Calibration(
