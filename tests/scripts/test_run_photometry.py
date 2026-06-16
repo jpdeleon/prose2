@@ -444,3 +444,120 @@ def test_plot_ref_image_handles_empty_simbad(tmp_path, monkeypatch):
     out = tmp_path / "ref.png"
     rp.plot_ref_image(r, target_coord, "muscat4", out)
     assert out.exists()
+
+
+# --------------------------- Gaia source overlay ---------------------------
+
+
+class _FakeCutout:
+    """Minimal cutout stand-in exposing ``.wcs`` and ``.data`` for overlays."""
+
+    def __init__(self, wcs, data):
+        self.wcs = wcs
+        self.data = data
+
+
+def _tan_wcs(crpix=(10, 10)):
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = list(crpix)
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    return w
+
+
+def test_overlay_gaia_sources_noop_without_catalog():
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    # None catalog and an object without a WCS both degrade to a no-op.
+    assert (
+        rp._overlay_gaia_sources(ax, _FakeCutout(_tan_wcs(), np.ones((20, 20))), None)
+        == 0
+    )
+    assert (
+        rp._overlay_gaia_sources(
+            ax, object(), pd.DataFrame({"ra": [0.0], "dec": [0.0]})
+        )
+        == 0
+    )
+    plt.close(fig)
+
+
+def test_overlay_gaia_sources_clips_to_cutout_bounds():
+    import matplotlib.pyplot as plt
+
+    cutout = _FakeCutout(_tan_wcs(), np.ones((20, 20)))
+    # (0, 0) maps inside the 20x20 cutout; (10, 10) deg lands far outside.
+    df = pd.DataFrame(
+        {"ra": [0.0, 10.0], "dec": [0.0, 10.0], "phot_g_mean_mag": [12.0, 13.0]}
+    )
+    fig, ax = plt.subplots()
+    n = rp._overlay_gaia_sources(ax, cutout, df)
+    plt.close(fig)
+    assert n == 1
+
+
+def test_overlay_gaia_sources_handles_bad_wcs_gracefully():
+    import matplotlib.pyplot as plt
+
+    class _BoomWCS:
+        def world_to_pixel(self, *a, **k):
+            raise ValueError("bad wcs")
+
+    cutout = _FakeCutout(_BoomWCS(), np.ones((20, 20)))
+    df = pd.DataFrame({"ra": [0.0], "dec": [0.0]})
+    fig, ax = plt.subplots()
+    assert rp._overlay_gaia_sources(ax, cutout, df) == 0
+    plt.close(fig)
+
+
+def test_build_reference_stores_gaia_df_when_requested(tmp_path, monkeypatch):
+    """``plot_gaia_sources`` fetches the Gaia catalog even with custom apertures."""
+    _patch_ref_seq(monkeypatch)
+    fake = pd.DataFrame({"ra": [0.0], "dec": [0.0]})
+    monkeypatch.setattr(rp, "_gaia_catalog_df", lambda *a, **kw: fake)
+
+    fpath = _write_minimal_fits(tmp_path)
+    from astropy.coordinates import SkyCoord
+
+    result = rp.build_reference(
+        fpath,
+        SkyCoord(0, 0, unit="deg"),
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=0,
+        plot_gaia_sources=True,
+    )
+    assert result["gaia_df"] is fake
+
+
+def test_build_reference_skips_gaia_df_for_custom_apertures(tmp_path, monkeypatch):
+    """Custom apertures without the overlay flag never query Gaia."""
+    _patch_ref_seq(monkeypatch)
+    called = False
+
+    def _spy(*a, **kw):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(rp, "_gaia_catalog_df", _spy)
+
+    fpath = _write_minimal_fits(tmp_path)
+    from astropy.coordinates import SkyCoord
+
+    result = rp.build_reference(
+        fpath,
+        SkyCoord(0, 0, unit="deg"),
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=0,
+        plot_gaia_sources=False,
+    )
+    assert result["gaia_df"] is None
+    assert not called

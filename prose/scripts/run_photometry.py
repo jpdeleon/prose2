@@ -619,6 +619,27 @@ def build_reference(
         cutout_size=cutout_size,
         min_area=min_area,
     ).run(ref, show_progress=False)
+
+    if target_index_override is None and target_coord is not None and ref.wcs is not None:
+        coords = np.array([s.coords for s in ref.sources])
+        match_found = False
+        if len(coords) > 0:
+            stars_radec = ref.wcs.pixel_to_world(*coords.T)
+            idx, d2d, _ = target_coord.match_to_catalog_sky(stars_radec)
+            if float(np.atleast_1d(d2d.arcsec)[0]) < 5.0:
+                match_found = True
+
+        if not match_found:
+            tx, ty = ref.wcs.world_to_pixel(target_coord)
+            logger.info(
+                f"Target not found in detected sources (separation > 5 arcsec). "
+                f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f})"
+            )
+            from prose.core.source import PointSource, Sources
+            new_idx = len(ref.sources)
+            new_source = PointSource(coords=np.array([tx, ty]), i=new_idx)
+            ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
+
     target_index = (
         target_index_override
         if target_index_override is not None
