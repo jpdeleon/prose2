@@ -640,6 +640,16 @@ def build_reference(
             new_source = PointSource(coords=np.array([tx, ty]), i=new_idx)
             ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
 
+            # Centroid the force-added source on the reference image
+            try:
+                from prose.blocks import CentroidQuadratic, Cutouts
+                ref = Cutouts(shape=cutout_size)(ref)
+                ref = CentroidQuadratic()(ref)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to refine centroid of force-added target source: {e}"
+                )
+
     target_index = (
         target_index_override
         if target_index_override is not None
