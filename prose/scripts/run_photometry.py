@@ -159,6 +159,13 @@ SIGMA_BKG = 3
 SIGMA_FWHM = 3
 BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
+# Maximum pixel distance for cross-matching sources between bands.  When
+# --ref_band is set, all bands are aligned to the same reference frame so the
+# same physical star appears at nearly the same pixel position in every band.
+# A tolerance of 5 px comfortably covers residual alignment offsets while
+# avoiding spurious matches in crowded fields.
+_CROSSMATCH_TOLERANCE_PX = 5.0
+
 # GJD->BJD sanity bound (light travel time should be well under this)
 MAX_TIME_OFFSET_MIN = 2 * 8.4
 
@@ -773,12 +780,20 @@ def run_band(
     n_stars_align: int | None = None,
     target_index_override: int | None = None,
     cids: list[int] | None = None,
+    avoid_cids: list[int] | None = None,
+    ref_source_positions: np.ndarray | None = None,
     min_area: int = MIN_STAR_AREA,
     plot_gaia_sources: bool = False,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
     inside ``build_reference``.
+
+    When ``avoid_cids`` is given and ``ref_source_positions`` is set, the
+    index list is cross-matched from the reference band's source catalog
+    (pixel positions) to this band's sources via nearest-neighbor search.
+    When ``ref_source_positions`` is ``None`` (the reference band itself),
+    indices apply directly.
     """
     logger.info(f"[{band}] {len(files)} frames; building reference")
     reference = build_reference(
@@ -797,6 +812,43 @@ def run_band(
         plot_gaia_sources=plot_gaia_sources,
     )
     ref = reference["ref"]
+
+    # Cross-match avoid_cids from ref-band index space -> this band's indices
+    mapped_avoid: list[int] | None = None
+    if avoid_cids:
+        if ref_source_positions is not None:
+            this_positions = np.array([s.coords for s in ref.sources])
+            mapped_avoid = []
+            for idx in avoid_cids:
+                if idx >= len(ref_source_positions):
+                    logger.warning(
+                        f"[{band}] avoid_cid {idx}: out of range "
+                        f"(ref band has {len(ref_source_positions)} sources)"
+                    )
+                    continue
+                delta = this_positions - ref_source_positions[idx]  # (N, 2)
+                dist = np.sqrt(np.sum(delta ** 2, axis=1))
+                nearest = int(np.argmin(dist))
+                if dist[nearest] < _CROSSMATCH_TOLERANCE_PX:
+                    mapped_avoid.append(nearest)
+                else:
+                    logger.warning(
+                        f"[{band}] avoid_cid {idx}: nearest source is "
+                        f"{dist[nearest]:.1f} px away (> {_CROSSMATCH_TOLERANCE_PX} px); skipping"
+                    )
+        else:
+            # ref_source_positions is None -> this IS the ref band -> indices apply directly
+            mapped_avoid = list(avoid_cids)
+
+        # Filter avoided indices from explicit comparison list
+        if cids is not None and mapped_avoid:
+            cids = [c for c in cids if c not in mapped_avoid]
+            if not cids:
+                logger.warning(
+                    f"[{band}] all explicit cIDs are in avoid list; "
+                    f"falling back to auto-selection"
+                )
+                cids = None
 
     phot = photometry_sequence(
         ref,
@@ -822,7 +874,9 @@ def run_band(
         return None
     fluxes.target = reference["target_index"]
 
-    diff = differential_photometry(fluxes, reference["target_index"], cids=cids)
+    diff = differential_photometry(
+        fluxes, reference["target_index"], cids=cids, avoid_cids=mapped_avoid
+    )
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
         return None
@@ -848,12 +902,19 @@ def run_band(
 
 
 def differential_photometry(
-    fluxes: Fluxes, target_index: int, cids: list[int] | None = None
+    fluxes: Fluxes,
+    target_index: int,
+    cids: list[int] | None = None,
+    avoid_cids: list[int] | None = None,
 ):
     """Clean NaN comparison stars, sigma-clip, and run differential photometry.
 
     When ``cids`` is given only those stars are used as comparisons and the
     automatic selection (Broeg et al. 2005) is skipped.
+
+    When ``avoid_cids`` is given, those stars are excluded from the comparison
+    pool in both explicit and auto modes.  The caller is responsible for
+    cross-mapping indices from the reference band to the current band.
     """
     fluxes = fluxes.copy()
     fluxes.target = target_index
@@ -871,10 +932,17 @@ def differential_photometry(
         mask = np.zeros(n_sources, dtype=bool)
         mask[target_index] = True
         mask[list(cids)] = True
+        if avoid_cids:
+            mask[list(avoid_cids)] = False
         fluxes = fluxes.mask_stars(mask)
     else:
-        nan_stars = np.any(np.isnan(fluxes.fluxes), axis=(0, 2))
-        fluxes = fluxes.mask_stars(~nan_stars)
+        keep = ~np.any(np.isnan(fluxes.fluxes), axis=(0, 2))
+        if avoid_cids:
+            keep = np.array(keep, dtype=bool)
+            valid_avoid = [a for a in avoid_cids if 0 <= a < n_sources]
+            if valid_avoid:
+                keep[valid_avoid] = False
+        fluxes = fluxes.mask_stars(keep)
     fluxes = fluxes.sigma_clipping_data(bkg=SIGMA_BKG, fwhm=SIGMA_FWHM)
     if fluxes.time is None or len(fluxes.time) == 0:
         return None
@@ -1635,6 +1703,15 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Comparison star indices for differential photometry (default: auto-selected).",
     )
     ap.add_argument(
+        "--avoid_cids",
+        "--avoid-cids",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Star indices to exclude as comparisons. Requires --ref_band; "
+        "indices refer to the reference band's source catalog (default: none).",
+    )
+    ap.add_argument(
         "--data_dir",
         "--data-dir",
         required=True,
@@ -1841,6 +1918,9 @@ def main(argv=None) -> int:
     assert args.tID not in (args.cID or []), (
         f"tID={args.tID} must not be in cID={args.cID}"
     )
+    assert args.tID not in (args.avoid_cids or []), (
+        f"tID={args.tID} must not be in avoid_cids={args.avoid_cids}"
+    )
 
     # guard against clobbering an existing reduction (check before the log
     # file is created so the directory's own log does not count as a product)
@@ -2045,8 +2125,27 @@ def main(argv=None) -> int:
     scale = args.aper_unit == "fwhm"
     arin, arout = args.annulus if args.annulus is not None else (None, None)
 
+    if args.avoid_cids and self_reference:
+        logger.warning(
+            "--avoid_cids requires --ref_band to unify star indices across "
+            "bands; ignoring --avoid_cids"
+        )
+        args.avoid_cids = None
+
+    # When --avoid_cids is set and --ref_band is used, process the reference
+    # band first and collect its source positions so they can be cross-matched
+    # to the other bands' source catalogs (all bands are aligned to the same
+    # reference frame, so pixel positions correspond).
+    ordered_bands = list(active_bands)
+    if not self_reference and args.avoid_cids:
+        ref_band = args.ref_band if args.ref_band in active_bands else active_bands[0]
+        if ref_band in ordered_bands:
+            ordered_bands.remove(ref_band)
+            ordered_bands.insert(0, ref_band)
+
     band_results = {}
-    for band in active_bands:
+    ref_source_positions: np.ndarray | None = None
+    for band in ordered_bands:
         band_files = sciences[band]
         if self_reference:
             ref_files, default_refid = band_files, 0
@@ -2071,6 +2170,8 @@ def main(argv=None) -> int:
                 n_stars_align=args.n_stars_align,
                 target_index_override=args.tID,
                 cids=args.cID,
+                avoid_cids=args.avoid_cids,
+                ref_source_positions=ref_source_positions,
                 min_area=args.min_star_area,
                 plot_gaia_sources=args.plot_gaia_sources,
             )
@@ -2079,6 +2180,10 @@ def main(argv=None) -> int:
             continue
         if res is not None:
             band_results[band] = res
+            if not self_reference and args.avoid_cids and band == ref_band:
+                ref_source_positions = np.array(
+                    [s.coords for s in res["ref"].sources]
+                )
 
     if not band_results:
         logger.error("no bands reduced successfully; aborting")

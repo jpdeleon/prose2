@@ -245,6 +245,48 @@ def test_parse_cID_default_is_None():
     assert args.cID is None
 
 
+def test_parse_avoid_cids_accepts_int_list():
+    args = rp.parse_args(
+        [
+            "--target_name",
+            "T1",
+            "--data_dir",
+            ".",
+            "--results_dir",
+            ".",
+            "--avoid_cids",
+            "3",
+            "7",
+            "12",
+        ]
+    )
+    assert args.avoid_cids == [3, 7, 12]
+
+
+def test_parse_avoid_cids_accepts_dash_form():
+    args = rp.parse_args(
+        [
+            "--target_name",
+            "T1",
+            "--data_dir",
+            ".",
+            "--results_dir",
+            ".",
+            "--avoid-cids",
+            "5",
+            "9",
+        ]
+    )
+    assert args.avoid_cids == [5, 9]
+
+
+def test_parse_avoid_cids_default_is_None():
+    args = rp.parse_args(
+        ["--target_name", "T1", "--data_dir", ".", "--results_dir", "."]
+    )
+    assert args.avoid_cids is None
+
+
 # --------------------------- differential_photometry with cids ---------------------------
 
 
@@ -309,6 +351,44 @@ def test_differential_photometry_all_cids_out_of_range_falls_back_to_auto(caplog
 
     assert result is not None  # autodiff fallback, no crash
     assert "auto-selection" in caplog.text
+
+
+# --------------------------- differential_photometry with avoid_cids ---------------------------
+
+
+def test_differential_photometry_avoid_cids_excludes_from_auto():
+    """avoid_cids zeroes out the weight of excluded stars in auto mode."""
+    rng = np.random.default_rng(42)
+    fluxes = _make_fluxes(6, 20, rng)
+
+    result = rp.differential_photometry(fluxes, target_index=0, avoid_cids=[2, 4])
+
+    assert result is not None
+    assert result.weights is not None
+    assert result.weights[0, 0] == 0.0  # target is never a comparison
+    assert result.weights[0, 2] == 0.0  # avoided
+    assert result.weights[0, 4] == 0.0  # avoided
+
+
+def test_differential_photometry_avoid_cids_out_of_range_ignored_in_auto(caplog):
+    """Out-of-range avoid_cids do not crash in auto mode."""
+    rng = np.random.default_rng(7)
+    fluxes = _make_fluxes(3, 10, rng)
+
+    result = rp.differential_photometry(fluxes, target_index=0, avoid_cids=[999, -1])
+
+    assert result is not None
+
+
+def test_differential_photometry_avoid_cids_target_itself_warns(caplog):
+    """avoid_cids containing the target star triggers a warning."""
+    rng = np.random.default_rng(42)
+    fluxes = _make_fluxes(4, 10, rng)
+
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        result = rp.differential_photometry(fluxes, target_index=0, avoid_cids=[0])
+
+    assert result is not None
 
 
 # --------------------------- build_reference target_index_override ---------------------------
@@ -439,7 +519,7 @@ def test_plot_ref_image_handles_empty_simbad(tmp_path, monkeypatch):
 
     ref = FITSImage(fpath)
     ref.sources = Sources(np.array([[10, 10]]))
-    r = {"ref": ref, "band": "gp"}
+    r = {"ref": ref, "band": "gp", "target_index": 0}
     target_coord = __import__("astropy").coordinates.SkyCoord(0, 0, unit="deg")
     out = tmp_path / "ref.png"
     rp.plot_ref_image(r, target_coord, "muscat4", out)
