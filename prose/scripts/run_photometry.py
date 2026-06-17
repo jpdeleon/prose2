@@ -1028,6 +1028,22 @@ def _overlay_gaia_sources(
         logger.warning(f"Gaia overlay skipped ({exc})")
         return 0
     ny, nx = cutout.data.shape
+
+    # Correct for WCS error: the cutout is centered on the target's refined
+    # centroid (sources[i].coords), so the target should be at (nx/2, ny/2).
+    # If the original FITS-header WCS has any error (it was never updated
+    # after centroid refinement), the WCS-predicted position of target_coord
+    # will be offset from the actual centroid.  Apply a uniform pixel shift
+    # to align WCS-projected Gaia positions with the refined centroids.
+    if target_coord is not None:
+        try:
+            tx, ty = cutout.wcs.world_to_pixel(target_coord)
+            dx = nx / 2 - tx
+            dy = ny / 2 - ty
+            x += dx
+            y += dy
+        except Exception:  # noqa: BLE001
+            pass
     inside = np.isfinite(x) & np.isfinite(y) & (x >= 0) & (x < nx) & (y >= 0) & (y < ny)
     x, y = x[inside], y[inside]
     if not len(x):
@@ -1089,13 +1105,17 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
     fig = plt.figure(figsize=(7, 7), constrained_layout=True)
     ax = fig.add_subplot(111, projection=ref.wcs)
     ref.show(ax=ax, frame=True)
-    ra_pix, dec_pix = ref.wcs.wcs_world2pix(
-        [[target_coord.ra.deg, target_coord.dec.deg]], 0
-    )[0]
-    ax.scatter(ra_pix, dec_pix, s=120, ec="r", fc="none", zorder=10)
+    target_idx = r["target_index"]
+    if 0 <= target_idx < len(ref.sources):
+        tpix = ref.sources[target_idx].coords
+    else:
+        tpix = ref.wcs.wcs_world2pix(
+            [[target_coord.ra.deg, target_coord.dec.deg]], 0
+        )[0]
+    ax.scatter(tpix[0], tpix[1], s=120, ec="r", fc="none", zorder=10)
     ax.annotate(
         "Target",
-        (ra_pix, dec_pix),
+        (tpix[0], tpix[1]),
         xytext=(8, 8),
         textcoords="offset points",
         fontsize=8,
