@@ -67,7 +67,6 @@ import matplotlib
 
 matplotlib.use("Agg")  # headless: write figures without a display
 
-import imageio.v2 as imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -79,8 +78,9 @@ from astropy.visualization import ZScaleInterval
 from astroquery.mast import Mast
 from rich.progress import track
 
-from prose import FITSImage, Fluxes, Sequence, Telescope, blocks
+from prose import FITSImage, Fluxes, Sequence, blocks
 from prose.blocks import catalogs
+from prose.core.block import Block
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
 from prose.utils import (
@@ -375,9 +375,6 @@ def aper_radii_pix(r: dict):
         fwhm = float(r["ref"].fwhm)
         return radii * fwhm, rin * fwhm, rout * fwhm
     return radii, rin, rout
-
-
-from prose.core.block import Block
 
 
 class MeasurePeaks(Block):
@@ -814,10 +811,14 @@ def run_band(
     ref = reference["ref"]
 
     # Cross-match avoid_cids from ref-band index space -> this band's indices
+    # via nearest-neighbor KDTree (ref_source_positions is pre-populated from
+    # the reference band, so all bands share the same alignment frame).
     mapped_avoid: list[int] | None = None
     if avoid_cids:
         if ref_source_positions is not None:
             this_positions = np.array([s.coords for s in ref.sources])
+            from scipy.spatial import KDTree
+            tree = KDTree(this_positions)
             mapped_avoid = []
             for idx in avoid_cids:
                 if idx >= len(ref_source_positions):
@@ -826,18 +827,15 @@ def run_band(
                         f"(ref band has {len(ref_source_positions)} sources)"
                     )
                     continue
-                delta = this_positions - ref_source_positions[idx]  # (N, 2)
-                dist = np.sqrt(np.sum(delta ** 2, axis=1))
-                nearest = int(np.argmin(dist))
-                if dist[nearest] < _CROSSMATCH_TOLERANCE_PX:
-                    mapped_avoid.append(nearest)
+                dist, nearest = tree.query(ref_source_positions[idx])
+                if dist < _CROSSMATCH_TOLERANCE_PX:
+                    mapped_avoid.append(int(nearest))
                 else:
                     logger.warning(
                         f"[{band}] avoid_cid {idx}: nearest source is "
-                        f"{dist[nearest]:.1f} px away (> {_CROSSMATCH_TOLERANCE_PX} px); skipping"
+                        f"{dist:.1f} px away (> {_CROSSMATCH_TOLERANCE_PX} px); skipping"
                     )
         else:
-            # ref_source_positions is None -> this IS the ref band -> indices apply directly
             mapped_avoid = list(avoid_cids)
 
         # Filter avoided indices from explicit comparison list
@@ -1569,6 +1567,7 @@ def _gif_frame(
 
 def make_gif(files, path: Path, stride: int) -> None:
     """Render a quick-look GIF per band without matplotlib."""
+    import imageio.v2 as imageio
     sampled = files[:: max(1, stride)]
     if not sampled:
         return
@@ -1645,9 +1644,7 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
     candidates = sorted(data_dir.glob("*.fits")) or sorted(data_dir.rglob("*.fits"))
     for fp in candidates[:50]:
         try:
-            from astropy.io import fits
-
-            hdr = fits.getheader(fp, memmap=True)
+            hdr = fits.getheader(fp)
             if str(hdr.get("OBJECT", "")).strip() != target_name:
                 continue
             raw = str(hdr.get("FILTER", "")).strip()
