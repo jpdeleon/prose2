@@ -1125,6 +1125,16 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
     ref.sources.plot(ax=ax, c="yellow")
     ax.set_title(f"{r['band']} reference", y=1.08)
 
+    # Compute WCS offset from the target's refined centroid, same as
+    # _overlay_gaia_sources does, so SIMBAD markers align with detected stars.
+    wcs_offset = np.array([0.0, 0.0])
+    try:
+        wpix = ref.wcs.world_to_pixel(target_coord)
+        if 0 <= target_idx < len(ref.sources):
+            wcs_offset = ref.sources[target_idx].coords - wpix
+    except Exception:  # noqa: BLE001
+        pass
+
     simbad = get_simbad_data(target_coord, instrument)
     if simbad is not None and not simbad.empty:
         simbad = simbad[simbad.OTYPE != "Star"]
@@ -1135,6 +1145,8 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
             x_pix, y_pix = ref.wcs.wcs_world2pix(
                 np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
             ).T
+            x_pix += wcs_offset[0]
+            y_pix += wcs_offset[1]
             ax.scatter(x_pix, y_pix, marker="D", s=40, ec="cyan", fc="none", lw=1)
             for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
                 ax.annotate(
