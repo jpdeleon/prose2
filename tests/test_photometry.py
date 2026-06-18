@@ -20,6 +20,9 @@ def test_AperturePhotometryAnnulusBackground():
     ref = images[0]
     ref = blocks.PointSourceDetection(False, 0, 0)(ref)
 
+    center = np.array(shape) / 2
+    target_idx = int(np.argmin([np.linalg.norm(s.coords - center) for s in ref.sources]))
+
     def set_sources(im):
         im.sources = ref.sources.copy()
 
@@ -35,5 +38,5 @@ def test_AperturePhotometryAnnulusBackground():
     photometry.run(images)
     fluxes = photometry[-1].fluxes
     fluxes.aperture = 0
-    fluxes.target = 14
+    fluxes.target = target_idx
     assert np.allclose(true_y, fluxes.flux)

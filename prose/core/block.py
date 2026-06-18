@@ -67,6 +67,10 @@ class Block(object):
     def _check_require(self, image):
         for _require in self.read:
             if _require == "sources":
+                if image._sources is None:
+                    raise AttributeError(
+                        f"[{self.__class__.__name__}] Image must have attribute 'sources'"
+                    )
                 if len(image.sources) == 0:
                     image.discard = True
                     return

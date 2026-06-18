@@ -1723,7 +1723,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=Path,
         help="Full output directory for all products (CSV/PNG/GIF/NPZ/log).",
     )
-    ap.add_argument("--bands", nargs="+", default=None)
+    ap.add_argument("--bands", nargs="+", default=DEFAULT_BANDS)
     ap.add_argument(
         "--ref_band",
         "--ref-band",
