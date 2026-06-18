@@ -1,0 +1,38 @@
+name: MuSCAT2_g
+names:
+- MuSCAT2
+- muscat2
+- TCS
+keyword_telescope: TELESCOP
+keyword_object: OBJECT
+keyword_image_type: IMAGETYP
+keyword_light_images: light
+keyword_dark_images: dark
+keyword_flat_images: flat
+keyword_bias_images: bias
+keyword_observation_date: DATE-OBS
+keyword_exposure_time: EXPTIME
+keyword_filter: FILTER
+keyword_airmass: AIRMASS
+keyword_fwhm: FWHM
+keyword_seeing: SEEING
+keyword_ra: RA
+keyword_dec: DEC
+keyword_jd: JD
+keyword_bjd: BJD
+keyword_flip: PIERSIDE
+ra_unit: deg
+dec_unit: deg
+jd_scale: mjd
+bjd_scale: utc
+mjd: 0
+trimming: [0, 0]
+read_noise: 4.08
+gain: 1.04
+altitude: 2387
+diameter: 152
+pixel_scale: 0.44
+latlong: [28.3005, -16.5109]
+saturation: 62000
+hdu: 0
+camera_name: PIXIS 1024B_eXcelon (ch1 g)

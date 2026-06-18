@@ -2,6 +2,9 @@
 # apple
 **/.DS_Store
 
+data/*.pdf
+data/*.xml
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
