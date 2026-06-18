@@ -488,6 +488,30 @@ def test_build_reference_target_index_override_None_still_calls_find(
     assert result["target_index"] >= 0
 
 
+def test_build_reference_uses_center_when_wcs_projects_target_to_nan(
+    tmp_path, monkeypatch, caplog
+):
+    """Some failed TAN projections return NaN instead of raising."""
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        result = rp.build_reference(
+            fpath,
+            SkyCoord(180, 0, unit="deg"),
+            aper_radii=np.array([3.0, 4.0, 5.0]),
+            rin=8.0,
+            rout=12.0,
+            target_index_override=None,
+        )
+
+    coords = np.array([s.coords for s in result["ref"].sources], dtype=float)
+    assert np.all(np.isfinite(coords))
+    assert any("non-finite coordinates" in r.message for r in caplog.records)
+
+
 def test_plot_ref_image_handles_empty_simbad(tmp_path, monkeypatch):
     from astropy.io import fits
     from astropy.wcs import WCS
@@ -615,6 +639,52 @@ def test_build_reference_stores_gaia_df_when_requested(tmp_path, monkeypatch):
     assert result["gaia_df"] is fake
 
 
+def test_build_reference_does_not_store_gaia_df_without_usable_wcs(
+    tmp_path, monkeypatch, caplog
+):
+    """Gaia overlays require a usable reference WCS."""
+    from astropy.coordinates import SkyCoord
+    from astropy.io import fits
+
+    _patch_ref_seq(monkeypatch)
+    called = False
+
+    def _spy(*a, **kw):
+        nonlocal called
+        called = True
+        return pd.DataFrame({"ra": [0.0], "dec": [0.0]})
+
+    monkeypatch.setattr(rp, "_gaia_catalog_df", _spy)
+
+    fpath = tmp_path / "no_wcs.fits"
+    hdr = fits.Header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fits.writeto(fpath, np.ones((20, 20)), header=hdr)
+
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        result = rp.build_reference(
+            fpath,
+            SkyCoord(0, 0, unit="deg"),
+            aper_radii=np.array([3.0, 4.0, 5.0]),
+            rin=8.0,
+            rout=12.0,
+            target_index_override=0,
+            plot_gaia_sources=True,
+        )
+
+    assert result["gaia_df"] is None
+    assert not called
+    assert any("no usable WCS" in r.message for r in caplog.records)
+
+
 def test_build_reference_skips_gaia_df_for_custom_apertures(tmp_path, monkeypatch):
     """Custom apertures without the overlay flag never query Gaia."""
     _patch_ref_seq(monkeypatch)
@@ -641,3 +711,98 @@ def test_build_reference_skips_gaia_df_for_custom_apertures(tmp_path, monkeypatc
     )
     assert result["gaia_df"] is None
     assert not called
+
+
+# --------------------------- header overwrite of .telescope parameters ---------------------------
+
+
+def test_build_reference_overwrites_pixel_scale_and_saturation(tmp_path, monkeypatch):
+    _patch_ref_seq(monkeypatch)
+
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["TELID"] = "2m0a"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    hdr["PIXSCALE"] = 0.5
+    hdr["GAIN"] = 1.9
+    hdr["CONFMODE"] = "full_frame"
+    hdr["SATURATE"] = 64000
+    hdr["MAXLIN"] = 60000
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+
+    from astropy.coordinates import SkyCoord
+
+    coord = SkyCoord(0, 0, unit="deg")
+    result = rp.build_reference(
+        fpath,
+        coord,
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=0,
+    )
+    ref = result["ref"]
+    assert abs(ref.telescope.pixel_scale - 0.5) < 1e-6
+    assert ref.telescope.saturation is not None
+
+
+def test_build_reference_overwrites_pixel_scale_with_fallback_when_no_header(
+    tmp_path, monkeypatch
+):
+    _patch_ref_seq(monkeypatch)
+
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+
+    from astropy.coordinates import SkyCoord
+
+    coord = SkyCoord(0, 0, unit="deg")
+    result = rp.build_reference(
+        fpath,
+        coord,
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=0,
+    )
+    ref = result["ref"]
+    assert abs(ref.telescope.pixel_scale - 0.267) < 1e-6
+    assert ref.telescope.saturation is None

@@ -565,6 +565,57 @@ def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoor
     return aper_radii, rin, rout
 
 
+def _finite_world_to_pixel(wcs, coord: SkyCoord | None) -> tuple[float, float] | None:
+    if wcs is None or coord is None or not hasattr(wcs, "world_to_pixel"):
+        return None
+    try:
+        x, y = wcs.world_to_pixel(coord)
+        x = float(np.asarray(x))
+        y = float(np.asarray(y))
+    except Exception:
+        return None
+    if not np.all(np.isfinite([x, y])):
+        return None
+    return x, y
+
+
+def _wcs_can_project(wcs, coord: SkyCoord | None) -> bool:
+    return _finite_world_to_pixel(wcs, coord) is not None
+
+
+def _image_center_xy(ref: FITSImage) -> tuple[float, float]:
+    return ref.data.shape[1] / 2, ref.data.shape[0] / 2
+
+
+def _target_pixel_or_center(
+    ref: FITSImage, target_coord: SkyCoord
+) -> tuple[float, float]:
+    pix = _finite_world_to_pixel(getattr(ref, "wcs", None), target_coord)
+    if pix is not None:
+        return pix
+    if getattr(ref, "wcs", None) is None:
+        logger.warning(
+            "WCS-based target localization unavailable; forcing target at image center"
+        )
+    else:
+        logger.warning(
+            "WCS-based target localization returned non-finite coordinates; "
+            "forcing target at image center"
+        )
+    return _image_center_xy(ref)
+
+
+def _skycoord_has_finite_data(coord) -> bool:
+    if not isinstance(coord, SkyCoord):
+        return False
+    try:
+        return bool(
+            np.all(np.isfinite(coord.ra.deg)) and np.all(np.isfinite(coord.dec.deg))
+        )
+    except Exception:
+        return False
+
+
 def build_reference(
     ref_file,
     target_coord,
@@ -591,10 +642,11 @@ def build_reference(
 
     If ``target_index_override`` is given, it bypasses the Gaia cross-match.
 
-    When ``plot_gaia_sources`` is set, the Gaia catalog around the target is
-    fetched (or reused from cache) and returned under ``gaia_df`` so the
-    aperture/stack zoom plots can overlay Gaia source positions, even when the
-    Gaia contamination heuristic is bypassed by an explicit aperture grid.
+    When ``plot_gaia_sources`` is set and the reference WCS can project the
+    target coordinate, the Gaia catalog around the target is fetched (or reused
+    from cache) and returned under ``gaia_df`` so the aperture/stack zoom plots
+    can overlay Gaia source positions, even when the Gaia contamination
+    heuristic is bypassed by an explicit aperture grid.
     """
     ref = FITSImage(ref_file)
     instrument = get_instrument(ref.header)
@@ -628,13 +680,26 @@ def build_reference(
         coords = np.array([s.coords for s in ref.sources])
         match_found = False
         if len(coords) > 0:
-            stars_radec = ref.wcs.pixel_to_world(*coords.T)
-            idx, d2d, _ = target_coord.match_to_catalog_sky(stars_radec)
-            if float(np.atleast_1d(d2d.arcsec)[0]) < 5.0:
-                match_found = True
+            try:
+                stars_radec = ref.wcs.pixel_to_world(*coords.T)
+            except Exception as e:
+                stars_radec = None
+                logger.warning(
+                    f"WCS-based source projection failed ({e}); "
+                    "skipping astrometric match"
+                )
+            if _skycoord_has_finite_data(stars_radec):
+                idx, d2d, _ = target_coord.match_to_catalog_sky(stars_radec)
+                if float(np.atleast_1d(d2d.arcsec)[0]) < 5.0:
+                    match_found = True
+            else:
+                logger.warning(
+                    f"WCS returned non-SkyCoord from pixel_to_world "
+                    f"(type={type(stars_radec).__name__}); skipping astrometric match"
+                )
 
         if not match_found:
-            tx, ty = ref.wcs.world_to_pixel(target_coord)
+            tx, ty = _target_pixel_or_center(ref, target_coord)
             logger.info(
                 f"Target not found in detected sources (separation > 5 arcsec). "
                 f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f})"
@@ -673,7 +738,10 @@ def build_reference(
     # aperture grid we only query when the overlay was requested. Reusing the
     # per-run cache means this never triggers a second network round-trip.
     gaia_df = None
-    if not aper_radii_was_custom or plot_gaia_sources:
+    overlay_wcs_ok = _wcs_can_project(getattr(ref, "wcs", None), target_coord)
+    if plot_gaia_sources and not overlay_wcs_ok:
+        logger.warning("Gaia overlay skipped: reference image has no usable WCS")
+    if (not aper_radii_was_custom or plot_gaia_sources) and overlay_wcs_ok:
         gaia_df = _gaia_catalog_df(ref, target_index, target_coord, pixel_scale)
     logger.info(
         f"reference {Path(ref_file).name}: FWHM {float(ref.fwhm):.2f} px, "
@@ -1673,6 +1741,27 @@ def _normalize_toi_name(name: str) -> str:
     return name
 
 
+def _calibration_args(
+    args: argparse.Namespace, calib_dir: Path, bands: list[str] | None
+) -> list[str]:
+    calib_args = [
+        "--data_dir",
+        str(args.data_dir),
+        "--target",
+        args.target_name,
+        "--output_dir",
+        str(calib_dir),
+    ]
+    if bands:
+        calib_args.extend(["--bands", *bands])
+    calib_args.append("--solve_wcs")
+    if args.test_run:
+        calib_args.append("--test_run")
+    if args.verbose:
+        calib_args.append("--verbose")
+    return calib_args
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--target_name", "--target-name", required=True)
@@ -2030,19 +2119,10 @@ def main(argv=None) -> int:
                 )
         if need_calib:
             logger.info(f"{calib_label}: running calibration")
-            calib_args = [
-                "--data_dir",
-                str(args.data_dir),
-                "--target",
-                args.target_name,
-                "--output_dir",
-                str(calib_dir),
-                "--solve_wcs",
-            ]
-            if args.test_run:
-                calib_args.append("--test_run")
-            if args.verbose:
-                calib_args.append("--verbose")
+            calibration_bands = (
+                list(args.bands) if set(args.bands).issubset(default_bands) else None
+            )
+            calib_args = _calibration_args(args, calib_dir, calibration_bands)
             # Forward main logger's FileHandlers to the calibration logger so WCS and calibration details get written to the target's .log file
             calib_mod.logger.setLevel(logging.INFO)
             for h in logger.handlers:
@@ -2141,6 +2221,7 @@ def main(argv=None) -> int:
             ordered_bands.insert(0, ref_band)
 
     band_results = {}
+    failed_bands = []
     ref_source_positions: np.ndarray | None = None
     for band in ordered_bands:
         band_files = sciences[band]
@@ -2174,6 +2255,7 @@ def main(argv=None) -> int:
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
+            failed_bands.append(band)
             continue
         if res is not None:
             band_results[band] = res
@@ -2182,8 +2264,12 @@ def main(argv=None) -> int:
                     [s.coords for s in res["ref"].sources]
                 )
 
+    elapsed = time_module.time() - t0
     if not band_results:
-        logger.error("no bands reduced successfully; aborting")
+        logger.error(
+            f"photometry FAILED: 0/{len(ordered_bands)} bands reduced "
+            f"({elapsed:.0f}s elapsed)"
+        )
         return 1
 
     stem_multi = build_stem(args.target_name, instrument, date)
@@ -2263,8 +2349,11 @@ def main(argv=None) -> int:
     )
     save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz")
 
-    elapsed = time_module.time() - t0
-    logger.info(f"done  ({elapsed:.0f}s elapsed)")
+    n_fail = len(failed_bands)
+    logger.info(
+        f"photometry SUCCEEDED: {len(band_results)}/{len(ordered_bands)} bands "
+        f"({elapsed:.0f}s elapsed{f', failed={failed_bands}' if n_fail else ''})"
+    )
     return 0
 
 

@@ -327,6 +327,40 @@ class TestMain:
         assert (out_dir / "master_dark.png").is_file()
         assert (out_dir / "master_flat.png").is_file()
 
+    def test_bands_limits_calibrated_ccds(self, tmp_path, monkeypatch):
+        (tmp_path / "MCT20_0001.fits").touch()
+        calls = []
+        empty_frames = {ccd: [] for ccd in cm.CCD_BANDS}
+
+        monkeypatch.setattr(
+            cm,
+            "find_frames",
+            lambda data_dir, target: (empty_frames, empty_frames, empty_frames),
+        )
+        monkeypatch.setattr(cm, "save_master_plots", lambda frames, output_dir: None)
+
+        def fake_calibrate_band(darks, flats, sciences, output_dir, band, **kwargs):
+            calls.append(band)
+            return np.zeros((1, 1)), np.ones((1, 1))
+
+        monkeypatch.setattr(cm, "calibrate_band", fake_calibrate_band)
+
+        rc = cm.main(
+            [
+                "--data_dir",
+                str(tmp_path),
+                "--target",
+                "TOI00663.02",
+                "--output_dir",
+                str(tmp_path / "out"),
+                "--bands",
+                "zs",
+            ]
+        )
+
+        assert rc == 0
+        assert calls == ["zs"]
+
     def test_main_without_target(self, fake_data_dir, tmp_path):
         out_dir = tmp_path / "out"
         rc = cm.main(

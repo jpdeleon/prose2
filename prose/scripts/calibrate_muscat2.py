@@ -493,6 +493,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument("--verbose", action="store_true", help="Log to console")
     ap.add_argument(
+        "--bands",
+        nargs="+",
+        choices=sorted(set(CCD_BANDS.values())),
+        default=None,
+        help="Bands to calibrate. Defaults to all MuSCAT2 bands.",
+    )
+    ap.add_argument(
         "--solve_wcs",
         "--solve-wcs",
         action="store_true",
@@ -524,7 +531,10 @@ def main(argv: list[str] | None = None) -> int:
 
     master_darks: list[tuple[str, np.ndarray]] = []
     master_flats: list[tuple[str, np.ndarray]] = []
+    requested_bands = set(args.bands) if args.bands else None
     for ccd, band in CCD_BANDS.items():
+        if requested_bands is not None and band not in requested_bands:
+            continue
         md, mf = calibrate_band(
             darks[ccd],
             flats[ccd],

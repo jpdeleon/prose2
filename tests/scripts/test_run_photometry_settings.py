@@ -95,6 +95,25 @@ def test_parse_args_custom_bands_list():
     assert args.bands == ["g_narrow", "Na_D", "i_narrow"]
 
 
+def test_calibration_args_forward_requested_bands():
+    args = rp.parse_args(_argv("--bands", "zs", "--test_run", "--verbose"))
+    calib_args = rp._calibration_args(args, Path("/tmp/cal"), ["zs"])
+
+    assert calib_args[
+        calib_args.index("--bands") + 1 : calib_args.index("--solve_wcs")
+    ] == ["zs"]
+    assert "--test_run" in calib_args
+    assert "--verbose" in calib_args
+
+
+def test_calibration_args_can_omit_band_filter():
+    args = rp.parse_args(_argv("--bands", "g_narrow"))
+    calib_args = rp._calibration_args(args, Path("/tmp/cal"), None)
+
+    assert "--bands" not in calib_args
+    assert "--solve_wcs" in calib_args
+
+
 def test_parse_args_ref_band_and_refid():
     args = rp.parse_args(_argv("--ref_band", "gp", "--refid", "3"))
     assert args.ref_band == "gp"
