@@ -1031,6 +1031,9 @@ def normalize_time_to_jd(time: np.ndarray, jd_scale: str | None) -> np.ndarray:
     """
     t = np.asarray(time, dtype=float)
     if jd_scale is not None and jd_scale.lower() == "mjd":
+        finite = t[np.isfinite(t)]
+        if len(finite) and np.nanmedian(finite) > MJD_TO_JD:
+            return t
         return t + MJD_TO_JD
     return t
 
@@ -2268,12 +2271,15 @@ def main(argv=None) -> int:
             logger.exception(f"[{band}] reduction failed: {exc}")
             failed_bands.append(band)
             continue
-        if res is not None:
-            band_results[band] = res
-            if not self_reference and args.avoid_cids and band == ref_band:
-                ref_source_positions = np.array(
-                    [s.coords for s in res["ref"].sources]
-                )
+        if res is None:
+            logger.error(
+                f"[{band}] reduction produced no output; marking band failed"
+            )
+            failed_bands.append(band)
+            continue
+        band_results[band] = res
+        if not self_reference and args.avoid_cids and band == ref_band:
+            ref_source_positions = np.array([s.coords for s in res["ref"].sources])
 
     elapsed = time_module.time() - t0
     if not band_results:
@@ -2365,10 +2371,16 @@ def main(argv=None) -> int:
     save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz")
 
     n_fail = len(failed_bands)
-    logger.info(
-        f"photometry SUCCEEDED: {len(band_results)}/{len(ordered_bands)} bands "
-        f"({elapsed:.0f}s elapsed{f', failed={failed_bands}' if n_fail else ''})"
-    )
+    if n_fail:
+        logger.error(
+            f"photometry PARTIAL FAILURE: {len(band_results)}/{len(ordered_bands)} "
+            f"bands reduced ({elapsed:.0f}s elapsed); failed/skipped={failed_bands}"
+        )
+    else:
+        logger.info(
+            f"photometry SUCCEEDED: {len(band_results)}/{len(ordered_bands)} bands "
+            f"({elapsed:.0f}s elapsed)"
+        )
     return 0
 
 
