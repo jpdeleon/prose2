@@ -123,7 +123,11 @@ class AlignReferenceSources(Block):
             if "transform" not in image.computed:
                 self._transform_block.run(image)
 
-            new_sources_coords = image.transform.inverse(sources.coords.copy())
+            try:
+                new_sources_coords = image.transform.inverse(sources.coords.copy())
+            except np.linalg.LinAlgError:
+                image.discard = True
+                return
 
             # check if alignment potentially failed
             if self.discard_tolerance is not None:

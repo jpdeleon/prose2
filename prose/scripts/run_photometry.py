@@ -1100,7 +1100,7 @@ def compute_bjd_tdb(
             f"GJD->BJD offset {offset_min:.2f} min exceeds {MAX_TIME_OFFSET_MIN:.1f} min"
         )
     else:
-        logger.info(f"GJD-TDB offset {offset_min:.2f} min")
+        logger.info(f"GJD_UTC --> BJD_TDB offset {offset_min:.2f} min")
     return bjd
 
 
@@ -1329,7 +1329,7 @@ def plot_apertures(
             target_coord=target_coord,
             marker_size=100,
             fontsize=7,
-            legend_label=r"Gaia ($\delta$ mag)",
+            legend_label=r"Gaia ($\Delta$ mag)",
         )
         if n:
             ax.legend(loc="upper right", fontsize=7, framealpha=0.6)
