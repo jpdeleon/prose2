@@ -512,7 +512,9 @@ def test_build_reference_uses_center_when_wcs_projects_target_to_nan(
     assert any("non-finite coordinates" in r.message for r in caplog.records)
 
 
-def test_plot_ref_image_handles_empty_simbad(tmp_path, monkeypatch):
+def test_plot_ref_image_handles_empty_simbad_and_omits_avoided_sources(
+    tmp_path, monkeypatch
+):
     from astropy.io import fits
     from astropy.wcs import WCS
 
@@ -542,12 +544,23 @@ def test_plot_ref_image_handles_empty_simbad(tmp_path, monkeypatch):
     from prose.core.source import Sources
 
     ref = FITSImage(fpath)
-    ref.sources = Sources(np.array([[10, 10]]))
+    ref.sources = Sources(np.array([[10, 10], [5, 5], [15, 15]]))
     r = {"ref": ref, "band": "gp", "target_index": 0}
     target_coord = __import__("astropy").coordinates.SkyCoord(0, 0, unit="deg")
     out = tmp_path / "ref.png"
-    rp.plot_ref_image(r, target_coord, "muscat4", out)
+
+    plotted_ids = []
+    original_plot = Sources.plot
+
+    def record_plotted_ids(self, *args, **kwargs):
+        plotted_ids.extend(source.i for source in self.sources)
+        return original_plot(self, *args, **kwargs)
+
+    monkeypatch.setattr(Sources, "plot", record_plotted_ids)
+    rp.plot_ref_image(r, target_coord, "muscat4", out, avoid_cids=[1])
+
     assert out.exists()
+    assert plotted_ids == [0, 2]
 
 
 # --------------------------- Gaia source overlay ---------------------------

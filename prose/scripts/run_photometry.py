@@ -958,6 +958,7 @@ def run_band(
         files=files,
         fluxes=fluxes,
         diff=diff,
+        avoid_cids=mapped_avoid,
         target_index=reference["target_index"],
         aper_radii=np.asarray(reference["aper_radii"]),
         rin=reference["rin"],
@@ -1234,11 +1235,17 @@ def _overlay_gaia_sources(
     return int(len(x))
 
 
-def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
+def plot_ref_image(
+    r,
+    target_coord,
+    instrument,
+    path: Path,
+    avoid_cids: list[int] | None = None,
+) -> None:
     ref = r["ref"]
     fig = plt.figure(figsize=(7, 7), constrained_layout=True)
     ax = fig.add_subplot(111, projection=ref.wcs)
-    ref.show(ax=ax, frame=True)
+    ref.show(ax=ax, frame=True, sources=False)
     target_idx = r["target_index"]
     if 0 <= target_idx < len(ref.sources):
         tpix = ref.sources[target_idx].coords
@@ -1256,7 +1263,9 @@ def plot_ref_image(r, target_coord, instrument, path: Path) -> None:
         color="r",
         zorder=10,
     )
-    ref.sources.plot(ax=ax, c="yellow")
+    avoided = set(avoid_cids or [])
+    plotted_source_ids = [i for i in range(len(ref.sources)) if i not in avoided]
+    ref.sources[plotted_source_ids].plot(ax=ax, c="yellow")
     ax.set_title(f"{r['band']} reference", y=1.08)
 
     # Compute WCS offset from the target's refined centroid, same as
@@ -1794,8 +1803,9 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=int,
         nargs="+",
         default=None,
-        help="Star indices to exclude as comparisons. Requires --ref_band; "
-        "indices refer to the reference band's source catalog (default: none).",
+        help="Star indices to exclude as comparisons and from ref.png. "
+        "Requires --ref_band; indices refer to the reference band's source "
+        "catalog (default: none).",
     )
     ap.add_argument(
         "--data_dir",
@@ -2284,7 +2294,11 @@ def main(argv=None) -> int:
         logger.info(f"wrote {csv_path}")
 
         plot_ref_image(
-            r, target_coord, instrument, args.results_dir / f"{stem}_ref.png"
+            r,
+            target_coord,
+            instrument,
+            args.results_dir / f"{stem}_ref.png",
+            avoid_cids=r.get("avoid_cids"),
         )
         plot_apertures(
             r,

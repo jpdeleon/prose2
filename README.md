@@ -97,7 +97,7 @@ Everything is written to `--results_dir`:
 
 | Group | Options |
 |---|---|
-| Target | `--target_name` (required), `--target_coord`, `--tID`, `--cID` |
+| Target | `--target_name` (required), `--target_coord`, `--tID`, `--cID`, `--avoid_cids` |
 | Input / output | `--data_dir`, `--results_dir`, `--glob`, `--overwrite` |
 | Bands & reference | `--bands`, `--ref_band`, `--refid` |
 | Apertures | `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
@@ -155,6 +155,8 @@ python -m prose.scripts.run_photometry ... \
   a cached result or skips astrometry rather than hanging the run.
 - **Comparison-star bounds.** Out-of-range `--cID` values are dropped with a
   warning and fall back to automatic selection rather than crashing.
+- **Avoided stars.** With `--ref_band`, IDs passed to `--avoid_cids` are
+  excluded from comparison-star selection and omitted from each `…_ref.png`.
 
 ## Example datasets
 
