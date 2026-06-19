@@ -617,6 +617,27 @@ def test_overlay_gaia_sources_clips_to_cutout_bounds():
     assert n == 1
 
 
+def test_overlay_gaia_sources_delta_mag_omits_positive_sign():
+    import matplotlib.pyplot as plt
+
+    cutout = _FakeCutout(_tan_wcs(), np.ones((20, 20)))
+    df = pd.DataFrame(
+        {
+            "ra": [0.0, 0.01],
+            "dec": [0.0, 0.0],
+            "phot_g_mean_mag": [12.0, 13.0],
+        }
+    )
+    fig, ax = plt.subplots()
+    rp._overlay_gaia_sources(
+        ax, cutout, df, target_coord=rp.SkyCoord(0.0, 0.0, unit="deg")
+    )
+    labels = [annotation.get_text() for annotation in ax.texts]
+    plt.close(fig)
+
+    assert labels == ["1.0"]
+
+
 def test_overlay_gaia_sources_handles_bad_wcs_gracefully():
     import matplotlib.pyplot as plt
 

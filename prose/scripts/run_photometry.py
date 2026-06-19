@@ -1220,7 +1220,7 @@ def _overlay_gaia_sources(
             if target_mask[i] or not np.isfinite(mag):
                 continue  # skip the target (no text label)
             if np.isfinite(target_mag):
-                label_text = f"{mag - target_mag:+.1f}"
+                label_text = f"{mag - target_mag:.1f}"
             else:
                 label_text = f"{mag:.1f}"
             ax.annotate(
@@ -1326,7 +1326,7 @@ def plot_apertures(
             target_coord=target_coord,
             marker_size=100,
             fontsize=7,
-            legend_label="Gaia (delta mag)",
+            legend_label=r"Gaia ($\delta$ mag)",
         )
         if n:
             ax.legend(loc="upper right", fontsize=7, framealpha=0.6)
@@ -1574,6 +1574,7 @@ def plot_stacks(
         if plot_gaia_sources:
             _overlay_gaia_sources(
                 axes[row, 0], c, r.get("gaia_df"), target_coord=target_coord,
+                label_mag=False,
             )
 
         radii_pix, rin_pix, rout_pix = aper_radii_pix(r)

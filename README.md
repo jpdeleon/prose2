@@ -111,11 +111,13 @@ it with `--gif_stride`. `--test_run` reduces each band to its first few frames
 (`--test_run_frames`) for a quick smoke test.
 
 `--plot_gaia_sources` overlays the queried Gaia source positions (projected
-into each cutout's WCS and labelled with their `G` magnitude) on the target
-zoom panels of the `*_apertures.png` and `*_stacks.png` figures, so you can see
-which Gaia stars the sky annulus was sized to exclude. It reuses the per-run
-Gaia cache, so the only extra query happens when you combine it with an
-explicit `--aper_radii` grid (which otherwise skips Gaia entirely).
+into each cutout's WCS) on the target zoom panels of the `*_apertures.png` and
+`*_stacks.png` figures. Neighbouring sources are labelled with their delta G
+magnitude in the aperture plot; the stack plot shows markers without magnitude
+text. This lets you see which Gaia stars the sky annulus was sized to exclude.
+It reuses the per-run Gaia cache, so the only extra query happens when you
+combine it with an explicit `--aper_radii` grid (which otherwise skips Gaia
+entirely).
 
 ### Custom aperture grid
 
