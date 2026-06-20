@@ -155,8 +155,10 @@ CONTAM_MARGIN_PIX = 2  # keep annulus/aperture this far inside a contaminant [pi
 GAIA_CUTOUT = (200, 200)  # cutout around target for the Gaia query [pix]
 
 # differential-photometry cleaning
-SIGMA_BKG = 3
-SIGMA_FWHM = 3
+SIGMA_BKG = 5
+SIGMA_FWHM = 5
+SIGMA_DX = 5
+SIGMA_DY = 5
 BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
 # Maximum pixel distance for cross-matching sources between bands.  When
@@ -1010,7 +1012,13 @@ def differential_photometry(
             if valid_avoid:
                 keep[valid_avoid] = False
         fluxes = fluxes.mask_stars(keep)
-    fluxes = fluxes.sigma_clipping_data(bkg=SIGMA_BKG, fwhm=SIGMA_FWHM)
+    n_before = len(fluxes.time) if fluxes.time is not None else 0
+    fluxes = fluxes.sigma_clipping_data(bkg=SIGMA_BKG, fwhm=SIGMA_FWHM, dx=SIGMA_DX, dy=SIGMA_DY)
+    n_after = len(fluxes.time) if fluxes.time is not None else 0
+    clipped = n_before - n_after
+    logger.info(
+        f"!!! SIGMA CLIPPING: {clipped} / {n_before} frames clipped (bkg={SIGMA_BKG}, fwhm={SIGMA_FWHM}, dx={SIGMA_DX}, dy={SIGMA_DY}) !!!"
+    )
     if fluxes.time is None or len(fluxes.time) == 0:
         return None
     if cids:
@@ -1890,8 +1898,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--test-run",
         dest="test_run",
         action="store_true",
-        help=f"Quick smoke test: use only the first {TEST_RUN_FRAMES} frames "
-        "of each band.",
+        help=f"Quick smoke test: use {TEST_RUN_FRAMES} frames per band "
+        "starting from --refid (or frame 0 if unset).",
     )
     ap.add_argument(
         "--test_run_frames",
@@ -1989,12 +1997,36 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(default: <data_dir>_calibrated).",
     )
     ap.add_argument(
-        "--muscat2_calib_dir",
-        "--muscat2-calib-dir",
-        type=Path,
-        default=None,
-        help="Output directory for MuSCAT2 calibrated FITS files "
-        "(default: <data_dir>_calibrated).",
+        "--sig_bkg",
+        "--sig-bkg",
+        type=float,
+        default=SIGMA_BKG,
+        dest="sig_bkg",
+        help="Sigma threshold for sky background outlier clipping (default: %(default)s).",
+    )
+    ap.add_argument(
+        "--sig_fwhm",
+        "--sig-fwhm",
+        type=float,
+        default=SIGMA_FWHM,
+        dest="sig_fwhm",
+        help="Sigma threshold for FWHM outlier clipping (default: %(default)s).",
+    )
+    ap.add_argument(
+        "--sig_dx",
+        "--sig-dx",
+        type=float,
+        default=SIGMA_DX,
+        dest="sig_dx",
+        help="Sigma threshold for drift X outlier clipping (default: %(default)s).",
+    )
+    ap.add_argument(
+        "--sig_dy",
+        "--sig-dy",
+        type=float,
+        default=SIGMA_DY,
+        dest="sig_dy",
+        help="Sigma threshold for drift Y outlier clipping (default: %(default)s).",
     )
     args = ap.parse_args(argv)
 
@@ -2014,6 +2046,12 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+
+    global SIGMA_BKG, SIGMA_FWHM, SIGMA_DX, SIGMA_DY
+    SIGMA_BKG = args.sig_bkg
+    SIGMA_FWHM = args.sig_fwhm
+    SIGMA_DX = args.sig_dx
+    SIGMA_DY = args.sig_dy
 
     assert args.tID not in (args.cID or []), (
         f"tID={args.tID} must not be in cID={args.cID}"
@@ -2086,8 +2124,9 @@ def main(argv=None) -> int:
 
     if args.test_run:
         nrf = args.test_run_frames
-        sciences = {b: fs[:nrf] for b, fs in sciences.items()}
-        logger.info(f"test-run: limiting to first {nrf} frames per band")
+        start = args.refid if args.refid is not None else 0
+        sciences = {b: fs[start:start + nrf] for b, fs in sciences.items()}
+        logger.info(f"test-run: limiting to {nrf} frames per band starting at index {start}")
     counts = {b: len(sciences.get(b, [])) for b in args.bands}
     logger.info(f"frames per band: {counts}")
     active_bands = [b for b in args.bands if sciences.get(b)]
@@ -2158,7 +2197,9 @@ def main(argv=None) -> int:
             filter_aliases=INSTRUMENT_FILTER_ALIASES.get(calib_label),
         )
         if args.test_run:
-            sciences = {b: fs[: args.test_run_frames] for b, fs in sciences.items()}
+            nrf = args.test_run_frames
+            start = args.refid if args.refid is not None else 0
+            sciences = {b: fs[start:start + nrf] for b, fs in sciences.items()}
         counts = {b: len(sciences.get(b, [])) for b in args.bands}
         logger.info(f"frames per band: {counts}")
         active_bands = [b for b in args.bands if sciences.get(b)]
