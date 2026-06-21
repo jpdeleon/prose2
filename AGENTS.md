@@ -54,6 +54,10 @@ Do not track large files locally and in git history. Update .gitignore if needed
 Keep its memmaps instance-scoped, addressed by absolute paths, and explicitly
 cleaned up; fixed names in the caller's working directory race across runs.
 
+`run_photometry --tID` is a zero-based detected-source index. When it equals
+the detected-source count and `--target_coord` is present, the pipeline appends
+the coordinate-selected target at that next index; larger IDs are invalid.
+
 ## Session limit
 When the prompt starts `session limit`, it means we hit a session limit and restarted. 
 The goal is marked with `goal`. Based on git status, the modified files are marked with

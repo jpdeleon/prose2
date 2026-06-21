@@ -631,6 +631,29 @@ def _target_pixel_or_center(
     return _image_center_xy(ref)
 
 
+def _append_target_source(
+    ref: FITSImage, target_coord: SkyCoord, cutout_size: int
+) -> tuple[FITSImage, int]:
+    """Append the coordinate-selected target and return its source index."""
+    tx, ty = _target_pixel_or_center(ref, target_coord)
+    target_index = len(ref.sources)
+    logger.info(
+        f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f}) "
+        f"as source {target_index}"
+    )
+    from prose.core.source import PointSource, Sources
+
+    new_source = PointSource(coords=np.array([tx, ty]), i=target_index)
+    ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
+
+    try:
+        ref = blocks.Cutouts(shape=cutout_size)(ref)
+        ref = blocks.CentroidQuadratic()(ref)
+    except Exception as e:
+        logger.warning(f"Failed to refine centroid of force-added target source: {e}")
+    return ref, target_index
+
+
 def _skycoord_has_finite_data(coord) -> bool:
     if not isinstance(coord, SkyCoord):
         return False
@@ -702,6 +725,7 @@ def build_reference(
         min_area=min_area,
     ).run(ref, show_progress=False)
 
+    forced_target_index = None
     if target_index_override is None and target_coord is not None and ref.wcs is not None:
         coords = np.array([s.coords for s in ref.sources])
         match_found = False
@@ -725,30 +749,32 @@ def build_reference(
                 )
 
         if not match_found:
-            tx, ty = _target_pixel_or_center(ref, target_coord)
             logger.info(
-                f"Target not found in detected sources (separation > 5 arcsec). "
-                f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f})"
+                "Target not found in detected sources (separation > 5 arcsec)"
             )
-            from prose.core.source import PointSource, Sources
-            new_idx = len(ref.sources)
-            new_source = PointSource(coords=np.array([tx, ty]), i=new_idx)
-            ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
+            ref, forced_target_index = _append_target_source(
+                ref, target_coord, cutout_size
+            )
 
-            # Centroid the force-added source on the reference image
-            try:
-                from prose.blocks import CentroidQuadratic, Cutouts
-                ref = Cutouts(shape=cutout_size)(ref)
-                ref = CentroidQuadratic()(ref)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to refine centroid of force-added target source: {e}"
-                )
+    if target_index_override is not None:
+        n_sources = len(ref.sources)
+        if target_index_override == n_sources and target_coord is not None:
+            ref, _ = _append_target_source(ref, target_coord, cutout_size)
+        elif not 0 <= target_index_override < n_sources:
+            raise ValueError(
+                f"tID={target_index_override} is out of range for {n_sources} "
+                f"detected sources; use 0-{n_sources - 1}, or {n_sources} with "
+                "--target_coord to force-add the target"
+            )
 
     target_index = (
         target_index_override
         if target_index_override is not None
-        else find_target_index(ref, target_coord)
+        else (
+            forced_target_index
+            if forced_target_index is not None
+            else find_target_index(ref, target_coord)
+        )
     )
     aper_radii_was_custom = aper_radii is not None
     if aper_radii_was_custom:
