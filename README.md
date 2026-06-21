@@ -76,8 +76,8 @@ For each photometric band it:
 |---|---|---|
 | LCO MuSCAT3 / MuSCAT4 | calibrated BANZAI frames (e.g. `*-e91.fits`) | each band is a separate camera; bands self-reference by default |
 | LCO Sinistro | calibrated BANZAI frames | single band (supply `--tID` manually for some datasets) |
-| MuSCAT (1) | raw frames | calibrated on the fly (dark/flat) and WCS-solved via twirl + Gaia; pass `--muscat_calib_dir` to keep the calibrated FITS |
-| MuSCAT2 | raw frames | calibrated on the fly and WCS-solved; pass `--muscat2_calib_dir` |
+| MuSCAT (1) | raw frames | calibrated on the fly (dark/flat) and WCS-solved via twirl + Gaia; pass `--calib_dir` to keep the calibrated FITS |
+| MuSCAT2 | raw frames | calibrated on the fly and WCS-solved; pass `--calib_dir` |
 
 Multi-camera MuSCAT bands each self-reference their own first frame, which is
 correct when every band is a separate camera. Pass `--ref_band gp` to instead
@@ -103,12 +103,24 @@ Everything is written to `--results_dir`:
 | Apertures | `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
 | Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--ccd_trim` |
 | Time & plots | `--use_barycorrpy`, `--bin_size_minutes`, `--plot_gaia_sources`, `--gif`, `--gif_stride` |
-| MuSCAT raw calibration | `--muscat_calib_dir`, `--muscat2_calib_dir` |
+| Light-curve cleaning | `--sig_bkg`, `--sig_fwhm`, `--sig_dx`, `--sig_dy` |
+| MuSCAT raw calibration | `--calib_dir` |
 | Run control | `--test_run`, `--test_run_frames`, `--verbose` |
 
 `--gif` is off by default because GIF rendering is the slowest stage; throttle
-it with `--gif_stride`. `--test_run` reduces each band to its first few frames
-(`--test_run_frames`) for a quick smoke test.
+it with `--gif_stride`. `--test_run` reduces each band to `--test_run_frames`
+frames for a quick smoke test — centered on the `--refid` frame when given,
+otherwise the first frames of each band.
+
+`--refid` selects the reference frame by its **FITS file number** (the 4-digit
+number after the date in the filename, e.g. `1480` for `MCT20_1911191480.fits`),
+matching the closest science frame in each band (default: 0 for self-reference,
+the middle frame when `--ref_band` is set).
+
+The `--sig_*` flags sigma-clip the differential light curve on the sky
+background (`--sig_bkg`), FWHM (`--sig_fwhm`), and drift in X/Y (`--sig_dx`,
+`--sig_dy`). All four are **disabled by default**; pass a sigma threshold to
+clip outliers (e.g. cloud-affected frames) on that axis.
 
 `--plot_gaia_sources` overlays the queried Gaia source positions (projected
 into each cutout's WCS) on the target zoom panels of the `*_apertures.png` and
