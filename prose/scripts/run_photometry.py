@@ -379,6 +379,24 @@ def aper_radii_pix(r: dict):
     return radii, rin, rout
 
 
+class MinimumSources(Block):
+    """Discard frames where too few sources were detected (e.g. cloud)."""
+
+    def __init__(self, min_sources=1, name=None):
+        super().__init__(name=name, read=["sources"])
+        self.min_sources = min_sources
+        self._parallel_friendly = True
+
+    def run(self, image):
+        if len(image.sources) < self.min_sources:
+            im_id = getattr(image, "path", getattr(image, "filename", f"frame {image.i}"))
+            logger.warning(
+                f"discarding {im_id}: "
+                f"{len(image.sources)} sources < {self.min_sources}"
+            )
+            image.discard = True
+
+
 class MeasurePeaks(Block):
     def __init__(self, name=None):
         super().__init__(name=name)
@@ -793,6 +811,7 @@ def photometry_sequence(
             min_area=min_area,
             min_separation=min_star_separation,
         ),
+        MinimumSources(min_sources=3),
         blocks.Cutouts(shape=cutout_size),
         blocks.MedianEPSF(),
         blocks.Gaussian2D(ref),
