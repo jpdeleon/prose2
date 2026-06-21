@@ -154,11 +154,11 @@ CONTAM_DMAG = 2.5  # neighbour contaminates if Gmag - target < this (>=10% targe
 CONTAM_MARGIN_PIX = 2  # keep annulus/aperture this far inside a contaminant [pix]
 GAIA_CUTOUT = (200, 200)  # cutout around target for the Gaia query [pix]
 
-# differential-photometry cleaning
-SIGMA_BKG = 5
-SIGMA_FWHM = 5
-SIGMA_DX = 5
-SIGMA_DY = 5
+# differential-photometry cleaning — None means the axis is not clipped
+SIGMA_BKG = None
+SIGMA_FWHM = None
+SIGMA_DX = None
+SIGMA_DY = None
 BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
 # Maximum pixel distance for cross-matching sources between bands.  When
@@ -1019,11 +1019,19 @@ def differential_photometry(
                 keep[valid_avoid] = False
         fluxes = fluxes.mask_stars(keep)
     n_before = len(fluxes.time) if fluxes.time is not None else 0
-    fluxes = fluxes.sigma_clipping_data(bkg=SIGMA_BKG, fwhm=SIGMA_FWHM, dx=SIGMA_DX, dy=SIGMA_DY)
+    sigma_kwargs = {
+        k: v for k, v in dict(bkg=SIGMA_BKG, fwhm=SIGMA_FWHM, dx=SIGMA_DX, dy=SIGMA_DY).items()
+        if v is not None
+    }
+    fluxes = fluxes.sigma_clipping_data(**sigma_kwargs)
     n_after = len(fluxes.time) if fluxes.time is not None else 0
     clipped = n_before - n_after
+    def _fmt(v):
+        return str(v) if v is not None else "off"
     logger.info(
-        f"!!! SIGMA CLIPPING: {clipped} / {n_before} frames clipped (bkg={SIGMA_BKG}, fwhm={SIGMA_FWHM}, dx={SIGMA_DX}, dy={SIGMA_DY}) !!!"
+        f"!!! SIGMA CLIPPING: {clipped} / {n_before} frames clipped "
+        f"(bkg={_fmt(SIGMA_BKG)}, fwhm={_fmt(SIGMA_FWHM)}, "
+        f"dx={_fmt(SIGMA_DX)}, dy={_fmt(SIGMA_DY)}) !!!"
     )
     if fluxes.time is None or len(fluxes.time) == 0:
         return None
@@ -1755,6 +1763,30 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
     return DEFAULT_BROAD_BANDS
 
 
+def _fits_file_number(path: Path) -> int | None:
+    """Extract the FITS frame number from a (calibrated) file path.
+
+    Raw FITS:   MCT20_1911191480.fits                -> 1480
+    Calibrated: MCT20_1911191480_calibrated.fits      -> 1480
+    """
+    m = re.search(r"_(\d{6})(\d{4})(?:_calibrated)?\.fits$", str(path))
+    if m:
+        return int(m.group(2))
+    return None
+
+
+def _find_frame_by_number(files: list[Path], number: int) -> int:
+    """Return the index of the file whose FITS frame number is closest to *number*."""
+    best_i, best_delta = 0, float("inf")
+    for i, fp in enumerate(files):
+        n = _fits_file_number(fp)
+        if n is not None:
+            d = abs(n - number)
+            if d < best_delta:
+                best_i, best_delta = i, d
+    return best_i
+
+
 def _normalize_toi_name(name: str) -> str:
     """Convert TOI names to MAST-compatible format.
 
@@ -1854,8 +1886,10 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--refid",
         type=int,
         default=None,
-        help="Reference-frame index within a band (default: 0 for "
-        "self-reference, middle frame when --ref_band is set).",
+        help="Reference-frame FITS file number (the 4-digit number after the "
+        "date in the filename, e.g. 1480 for MCT20_1911191480.fits). "
+        "Searches each band's science frames for the closest match "
+        "(default: 0 for self-reference, middle frame when --ref_band is set).",
     )
     ap.add_argument(
         "--aper_radii",
@@ -1906,7 +1940,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         dest="test_run",
         action="store_true",
         help=f"Quick smoke test: use {TEST_RUN_FRAMES} frames per band "
-        "starting from --refid (or frame 0 if unset).",
+        "centered on the --refid frame (or the first frames if unset). "
+        "--refid is interpreted as a FITS file number.",
     )
     ap.add_argument(
         "--test_run_frames",
@@ -1914,7 +1949,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=int,
         default=TEST_RUN_FRAMES,
         dest="test_run_frames",
-        help=f"Number of frames per band in test-run mode (default: {TEST_RUN_FRAMES}).",
+        help=f"Number of frames per band in test-run mode (default: {TEST_RUN_FRAMES}). "
+        "Together with --refid a window of this size is centered on the matched frame.",
     )
     ap.add_argument(
         "--min_star_separation",
@@ -1996,44 +2032,45 @@ def parse_args(argv=None) -> argparse.Namespace:
         "the directory already contains outputs).",
     )
     ap.add_argument(
-        "--muscat_calib_dir",
-        "--muscat-calib-dir",
+        "--calib_dir",
+        "--calib-dir",
         type=Path,
         default=None,
-        help="Output directory for MuSCAT calibrated FITS files "
+        help="Output directory for calibrated FITS files produced during the "
+        "MuSCAT/MuSCAT2 (and future instrument) calibration step "
         "(default: <data_dir>_calibrated).",
     )
     ap.add_argument(
         "--sig_bkg",
         "--sig-bkg",
         type=float,
-        default=SIGMA_BKG,
+        default=None,
         dest="sig_bkg",
-        help="Sigma threshold for sky background outlier clipping (default: %(default)s).",
+        help="Sigma threshold for sky background outlier clipping (default: disabled).",
     )
     ap.add_argument(
         "--sig_fwhm",
         "--sig-fwhm",
         type=float,
-        default=SIGMA_FWHM,
+        default=None,
         dest="sig_fwhm",
-        help="Sigma threshold for FWHM outlier clipping (default: %(default)s).",
+        help="Sigma threshold for FWHM outlier clipping (default: disabled).",
     )
     ap.add_argument(
         "--sig_dx",
         "--sig-dx",
         type=float,
-        default=SIGMA_DX,
+        default=None,
         dest="sig_dx",
-        help="Sigma threshold for drift X outlier clipping (default: %(default)s).",
+        help="Sigma threshold for drift X outlier clipping (default: disabled).",
     )
     ap.add_argument(
         "--sig_dy",
         "--sig-dy",
         type=float,
-        default=SIGMA_DY,
+        default=None,
         dest="sig_dy",
-        help="Sigma threshold for drift Y outlier clipping (default: %(default)s).",
+        help="Sigma threshold for drift Y outlier clipping (default: disabled).",
     )
     args = ap.parse_args(argv)
 
@@ -2131,9 +2168,16 @@ def main(argv=None) -> int:
 
     if args.test_run:
         nrf = args.test_run_frames
-        start = args.refid if args.refid is not None else 0
-        sciences = {b: fs[start:start + nrf] for b, fs in sciences.items()}
-        logger.info(f"test-run: limiting to {nrf} frames per band starting at index {start}")
+        if args.refid is not None:
+            new_sciences = {}
+            for b, fs in sciences.items():
+                start = max(0, _find_frame_by_number(fs, args.refid) - nrf // 2)
+                new_sciences[b] = fs[start:start + nrf]
+            sciences = new_sciences
+        else:
+            sciences = {b: fs[:nrf] for b, fs in sciences.items()}
+        total = sum(len(v) for v in sciences.values())
+        logger.info(f"test-run: limiting to {nrf} frames per band (refid={args.refid})")
     counts = {b: len(sciences.get(b, [])) for b in args.bands}
     logger.info(f"frames per band: {counts}")
     active_bands = [b for b in args.bands if sciences.get(b)]
@@ -2148,13 +2192,12 @@ def main(argv=None) -> int:
         is_muscat = instrument == "muscat"
         calib_label = "muscat" if is_muscat else "muscat2"
         calib_mod = calibrate_muscat if is_muscat else calibrate_muscat2
-        calib_arg_name = "muscat_calib_dir" if is_muscat else "muscat2_calib_dir"
         default_bands = ["gp", "rp", "zs"] if is_muscat else ["gp", "rp", "ip", "zs"]
 
         if args.bands is None:
             args.bands = default_bands
             logger.info(f"{calib_label} bands: {args.bands}")
-        calib_dir = getattr(args, calib_arg_name) or args.data_dir.with_name(
+        calib_dir = args.calib_dir or args.data_dir.with_name(
             args.data_dir.name + "_calibrated"
         )
         calib_dir.mkdir(parents=True, exist_ok=True)
@@ -2205,8 +2248,14 @@ def main(argv=None) -> int:
         )
         if args.test_run:
             nrf = args.test_run_frames
-            start = args.refid if args.refid is not None else 0
-            sciences = {b: fs[start:start + nrf] for b, fs in sciences.items()}
+            if args.refid is not None:
+                new_sciences = {}
+                for b, fs in sciences.items():
+                    start = max(0, _find_frame_by_number(fs, args.refid) - nrf // 2)
+                    new_sciences[b] = fs[start:start + nrf]
+                sciences = new_sciences
+            else:
+                sciences = {b: fs[:nrf] for b, fs in sciences.items()}
         counts = {b: len(sciences.get(b, [])) for b in args.bands}
         logger.info(f"frames per band: {counts}")
         active_bands = [b for b in args.bands if sciences.get(b)]
@@ -2291,7 +2340,10 @@ def main(argv=None) -> int:
             ref_files, default_refid = band_files, 0
         else:
             ref_files, default_refid = sciences[ref_band], len(sciences[ref_band]) // 2
-        refid = args.refid if args.refid is not None else default_refid
+        if args.refid is not None:
+            refid = _find_frame_by_number(ref_files, args.refid)
+        else:
+            refid = default_refid
         refid = min(refid, len(ref_files) - 1)
         try:
             res = run_band(
