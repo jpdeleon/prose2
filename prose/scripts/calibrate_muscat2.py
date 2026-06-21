@@ -417,48 +417,33 @@ def calibrate_band(
         shared=True,
         verbose=True,
     )
+    try:
+        md = calib.get_master("dark")
+        mf = calib.get_master("flat")
+        wcs = None
+        if solve_wcs:
+            info(f"[{band}] solving WCS on first science frame")
+            first = FITSImage(sciences[0])
+            calib.run(first)
+            wcs = _solve_wcs(first)
+            if wcs is not None:
+                info(f"[{band}] WCS solved successfully")
+            else:
+                info(f"[{band}] WCS solving failed; continuing without astrometry")
 
-    wcs = None
-    if solve_wcs:
-        info(f"[{band}] solving WCS on first science frame")
-        first = FITSImage(sciences[0])
-        calib.run(first)
-        wcs = _solve_wcs(first)
-        if wcs is not None:
-            info(f"[{band}] WCS solved successfully")
-        else:
-            info(f"[{band}] WCS solving failed; continuing without astrometry")
+        seq = SequenceParallel(
+            [
+                calib,
+                SaveCalibratedFITS(output_dir, wcs=wcs),
+            ],
+            name=f"[{band}] calibrating",
+        )
 
-    seq = SequenceParallel(
-        [
-            calib,
-            SaveCalibratedFITS(output_dir, wcs=wcs),
-        ],
-        name=f"[{band}] calibrating",
-    )
-
-    seq.run(sciences)
+        seq.run(sciences)
+    finally:
+        calib.cleanup_shared()
 
     info(f"[{band}] done  ({len(sciences)} frames -> {output_dir})")
-
-    md = (
-        calib.master_dark
-        if hasattr(calib, "master_dark")
-        else np.array(
-            np.memmap(
-                "__dark.array", dtype="float32", mode="r", shape=calib.shapes["dark"]
-            )
-        )
-    )
-    mf = (
-        calib.master_flat
-        if hasattr(calib, "master_flat")
-        else np.array(
-            np.memmap(
-                "__flat.array", dtype="float32", mode="r", shape=calib.shapes["flat"]
-            )
-        )
-    )
 
     return md, mf
 

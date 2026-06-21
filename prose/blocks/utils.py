@@ -1,3 +1,5 @@
+import shutil
+import tempfile
 from functools import partial
 from pathlib import Path
 from typing import Union
@@ -45,7 +47,7 @@ class MaskSaturatedPixels(Block):
         sat_level = self.saturation_level
         if sat_level is None and hasattr(image, 'saturation_level'):
             sat_level = image.saturation_level
-        
+
         if sat_level is None:
             raise ValueError("No saturation level provided or found in image")
         
@@ -312,8 +314,19 @@ class Calibration(Block):
         self.master_dark = self._produce_master(check_input(darks), "dark")
         self.master_flat = self._produce_master(check_input(flats), "flat")
 
+        self._shared_dir = None
+        self._shared_paths = {}
         if shared:
-            self._share()
+            self._shared_dir = Path(tempfile.mkdtemp(prefix="prose-calibration-"))
+            self._shared_paths = {
+                image_type: self._shared_dir / f"{image_type}.array"
+                for image_type in ("bias", "dark", "flat")
+            }
+            try:
+                self._share()
+            except Exception:
+                self.cleanup_shared()
+                raise
         self.verbose = verbose
 
         self.calibration = self._calibration_shared if shared else self._calibration
@@ -395,13 +408,22 @@ class Calibration(Block):
 
     def _calibration_shared(self, image, exp_time):
         bias = np.memmap(
-            "__bias.array", dtype="float32", mode="r", shape=self.shapes["bias"]
+            self._shared_paths["bias"],
+            dtype="float32",
+            mode="r",
+            shape=self.shapes["bias"],
         )
         dark = np.memmap(
-            "__dark.array", dtype="float32", mode="r", shape=self.shapes["dark"]
+            self._shared_paths["dark"],
+            dtype="float32",
+            mode="r",
+            shape=self.shapes["dark"],
         )
         flat = np.memmap(
-            "__flat.array", dtype="float32", mode="r", shape=self.shapes["flat"]
+            self._shared_paths["flat"],
+            dtype="float32",
+            mode="r",
+            shape=self.shapes["flat"],
         )
         with np.errstate(divide="ignore", invalid="ignore"):
             return (image - (dark * exp_time + bias)) / flat
@@ -424,14 +446,41 @@ class Calibration(Block):
         for imtype in ["bias", "dark", "flat"]:
             data = self.__dict__[f"master_{imtype}"]
             m = np.memmap(
-                f"__{imtype}.array", dtype="float32", mode="w+", shape=data.shape
+                self._shared_paths[imtype],
+                dtype="float32",
+                mode="w+",
+                shape=data.shape,
             )
             if data.ndim == 2:
                 m[:, :] = data[:, :]
             else:
                 m[:] = data[:]
+            m.flush()
 
             del self.__dict__[f"master_{imtype}"]
+
+    def get_master(self, image_type):
+        """Return a copy of a master calibration image, shared or in-memory."""
+        attribute = f"master_{image_type}"
+        if hasattr(self, attribute):
+            return np.array(getattr(self, attribute), copy=True)
+        return np.array(
+            np.memmap(
+                self._shared_paths[image_type],
+                dtype="float32",
+                mode="r",
+                shape=self.shapes[image_type],
+            )
+        )
+
+    def cleanup_shared(self):
+        """Remove this instance's shared calibration files."""
+        if self._shared_dir is not None:
+            shutil.rmtree(self._shared_dir, ignore_errors=True)
+            self._shared_dir = None
+
+    def terminate(self):
+        self.cleanup_shared()
 
     @property
     def citations(self):
