@@ -570,6 +570,12 @@ def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoor
 def _finite_world_to_pixel(wcs, coord: SkyCoord | None) -> tuple[float, float] | None:
     if wcs is None or coord is None or not hasattr(wcs, "world_to_pixel"):
         return None
+    # image.wcs always returns a WCS() object (never None), even when the FITS
+    # header has no celestial keywords. WCS(None) may still return finite pixel
+    # coordinates for any input, so we must check has_celestial before trusting
+    # the projection.
+    if not getattr(wcs, "has_celestial", False):
+        return None
     try:
         x, y = wcs.world_to_pixel(coord)
         x = float(np.asarray(x))
@@ -1165,7 +1171,8 @@ def _overlay_gaia_sources(
 
     Returns the number of Gaia sources drawn.
     """
-    if gaia_df is None or not len(gaia_df) or getattr(cutout, "wcs", None) is None:
+    cutout_wcs = getattr(cutout, "wcs", None)
+    if gaia_df is None or not len(gaia_df) or cutout_wcs is None or not getattr(cutout_wcs, "has_celestial", False):
         return 0
     try:
         coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")

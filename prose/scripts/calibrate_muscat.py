@@ -3,7 +3,8 @@
 Given a raw data directory containing DARK, FLAT, and OBJECT frames
 (identified from FITS ``OBJECT`` keyword), this script:
 
-1. Groups calibration and science frames per CCD/band (g, r, z_s)
+1. Groups calibration and science frames by band, from the FITS ``FILTER``
+   keyword (g, r, i, z_s), independent of CCD index
 2. Builds master dark and master flat for each band
 3. Calibrates all science frames (master-dark subtraction, flat division)
 4. Optionally solves WCS astrometry (via twirl + Gaia) per band
@@ -47,6 +48,31 @@ logger = logging.getLogger("calibrate_muscat")
 
 CCD_BANDS = {0: "gp", 1: "rp", 2: "zs"}
 
+# Canonical band ordering for deterministic, instrument-agnostic iteration.
+BAND_ORDER = ("gp", "rp", "ip", "zs")
+
+# FITS ``FILTER`` value (lower-cased) -> canonical band. Bands are assigned from
+# the actual filter rather than the CCD index, because the CCD<->filter layout
+# is not fixed across MuSCAT datasets: some nights expose e.g. r on CCD0 and z_s
+# on CCD1 with no g channel, so the nominal ``{0: g, 1: r, 2: z_s}`` mapping
+# mislabels them. ``CCD_BANDS`` is only a fallback when the filter is missing.
+FILTER_TO_BAND = {
+    "g": "gp", "gp": "gp",
+    "r": "rp", "rp": "rp",
+    "i": "ip", "ip": "ip",
+    "z": "zs", "z_s": "zs", "zs": "zs",
+}
+
+
+def _band_from(filter_value, ccd) -> str | None:
+    """Resolve a canonical band from the FITS ``FILTER`` value, falling back to
+    the CCD index when the filter is missing or unrecognised."""
+    if filter_value is not None:
+        band = FILTER_TO_BAND.get(str(filter_value).strip().lower())
+        if band is not None:
+            return band
+    return CCD_BANDS.get(ccd)
+
 # Exposure-time matching for dark selection. ``blocks.Calibration`` rescales the
 # master dark by the science exposure (``dark_rate * exp_time``) assuming a
 # zero-bias pedestal. With no master bias supplied (the MuSCAT case), that model
@@ -85,54 +111,61 @@ class SaveCalibratedFITS(blocks.Block):
 def find_frames(
     data_dir: Path, target: str | None = None
 ) -> tuple[dict, dict, dict]:
-    """Return ``(darks, flats, sciences)`` mapping CCD index (0-2) to file paths.
+    """Return ``(darks, flats, sciences)`` mapping canonical band to file paths.
 
-    Resolution mirrors ``run_photometry``: the MuSCAT obslog is used when present
-    (no FITS reads at all), otherwise a parallel header scan classifies frames by
-    ``OBJECT``. ``sciences`` stays empty when *target* is ``None``.
+    Frames are grouped by their FITS ``FILTER`` (via :func:`_band_from`), not by
+    CCD index, so datasets whose CCD<->filter layout differs from the nominal
+    ``{0: g, 1: r, 2: z_s}`` are still labelled correctly. Resolution mirrors
+    ``run_photometry``: the MuSCAT obslog is used when present (no FITS reads at
+    all), otherwise a parallel header scan classifies frames by
+    ``OBJECT``/``FILTER``. ``sciences`` stays empty when *target* is ``None``.
     """
-    darks: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
-    flats: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
-    sciences: dict[int, list[str]] = {c: [] for c in CCD_BANDS}
+    darks: dict[str, list[str]] = defaultdict(list)
+    flats: dict[str, list[str]] = defaultdict(list)
+    sciences: dict[str, list[str]] = defaultdict(list)
 
-    def _bucket(ccd, obj: str, path: str) -> None:
-        if ccd not in CCD_BANDS:
+    def _bucket(band: str | None, obj: str, path: str) -> None:
+        if band is None:
             return
         if obj == "DARK":
-            darks[ccd].append(path)
+            darks[band].append(path)
         elif obj == "FLAT":
-            flats[ccd].append(path)
+            flats[band].append(path)
         elif target is not None and obj == target:
-            sciences[ccd].append(path)
+            sciences[band].append(path)
 
     records = frames_from_obslog(data_dir)
     if records is not None:
         logger.info(f"obslog: {len(records)} frames (skipping header scan)")
         for rec in records:
-            _bucket(rec["ccd"], rec["object"], rec["path"])
-        return darks, flats, sciences
+            _bucket(
+                _band_from(rec.get("filter"), rec.get("ccd")),
+                rec["object"],
+                rec["path"],
+            )
+        return dict(darks), dict(flats), dict(sciences)
 
     files = sorted(Path(data_dir).glob("MSCT?_*.fits"))
     for fp, header in scan_fits_headers(
-        files, keys=("OBJECT",), description="Scanning calibration files"
+        files, keys=("OBJECT", "FILTER"), description="Scanning calibration files"
     ):
         prefix = Path(fp).stem.split("_")[0]
         try:
             ccd = int(prefix[4])
         except (IndexError, ValueError):
-            continue
-        _bucket(ccd, header.get("OBJECT", ""), fp)
-    return darks, flats, sciences
+            ccd = None
+        _bucket(_band_from(header.get("FILTER"), ccd), header.get("OBJECT", ""), fp)
+    return dict(darks), dict(flats), dict(sciences)
 
 
 def find_files(data_dir: Path) -> tuple[dict, dict]:
-    """Return ``(darks, flats)`` per CCD (thin wrapper over :func:`find_frames`)."""
+    """Return ``(darks, flats)`` per band (thin wrapper over :func:`find_frames`)."""
     darks, flats, _ = find_frames(data_dir)
     return darks, flats
 
 
-def find_science_files(data_dir: Path, target: str) -> dict[int, list[str]]:
-    """Return science files per CCD for *target* (see :func:`find_frames`)."""
+def find_science_files(data_dir: Path, target: str) -> dict[str, list[str]]:
+    """Return science files per band for *target* (see :func:`find_frames`)."""
     _, _, sciences = find_frames(data_dir, target)
     return sciences
 
@@ -507,13 +540,17 @@ def main(argv: list[str] | None = None) -> int:
     master_darks: list[tuple[str, np.ndarray]] = []
     master_flats: list[tuple[str, np.ndarray]] = []
     requested_bands = set(args.bands) if args.bands else None
-    for ccd, band in CCD_BANDS.items():
+    present_bands = set(darks) | set(flats) | set(sciences)
+    ordered_bands = [b for b in BAND_ORDER if b in present_bands] + [
+        b for b in sorted(present_bands) if b not in BAND_ORDER
+    ]
+    for band in ordered_bands:
         if requested_bands is not None and band not in requested_bands:
             continue
         md, mf = calibrate_band(
-            darks[ccd],
-            flats[ccd],
-            sciences[ccd],
+            darks.get(band, []),
+            flats.get(band, []),
+            sciences.get(band, []),
             args.output_dir,
             band,
             solve_wcs=args.solve_wcs,
