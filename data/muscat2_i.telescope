@@ -18,7 +18,7 @@ keyword_fwhm: FWHM
 keyword_seeing: SEEING
 keyword_ra: RA
 keyword_dec: DEC
-keyword_jd: JD
+keyword_jd: MJD-STRT
 keyword_bjd: BJD
 keyword_flip: PIERSIDE
 ra_unit: deg
