@@ -2348,12 +2348,10 @@ def main(argv=None) -> int:
                     result = simbad.query_object(args.target_name)
                     if result is None or len(result) == 0:
                         raise ValueError(f"Simbad returned no result for '{args.target_name}'")
-                    from astropy.coordinates import SkyCoord
-                    import astropy.units as _u
                     ra_str = result["RA"][0]
                     dec_str = result["DEC"][0]
                     target_coord = SkyCoord(
-                        ra_str, dec_str, unit=(_u.hourangle, _u.deg), frame="icrs"
+                        ra_str, dec_str, unit=(u.hourangle, u.deg), frame="icrs"
                     )
                     logger.info(f"target_coord resolved via Simbad: {target_coord}")
                 except Exception as simbad_exc:
