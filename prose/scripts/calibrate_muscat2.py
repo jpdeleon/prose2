@@ -82,9 +82,7 @@ class SaveCalibratedFITS(blocks.Block):
         hdu.writeto(out_path, overwrite=True)
 
 
-def find_frames(
-    data_dir: Path, target: str | None = None
-) -> tuple[dict, dict, dict]:
+def find_frames(data_dir: Path, target: str | None = None) -> tuple[dict, dict, dict]:
     """Return ``(darks, flats, sciences)`` mapping CCD index (0-3) to file paths.
 
     Resolution mirrors ``run_photometry``: the MuSCAT obslog is used when present
@@ -234,7 +232,9 @@ def _solve_wcs(image) -> object | None:
             # Validate pixel scale: expected ~0.44 arcsec/pixel for MuSCAT2
             scales = wcsutils.proj_plane_pixel_scales(wcs) * 3600.0
             if not (0.38 < scales[0] < 0.55 and 0.38 < scales[1] < 0.55):
-                logger.warning(f"WCS: solved pixel scales {scales} deviate significantly from expected ~0.44 arcsec/pixel; rejecting WCS solution")
+                logger.warning(
+                    f"WCS: solved pixel scales {scales} deviate significantly from expected ~0.44 arcsec/pixel; rejecting WCS solution"
+                )
                 wcs = None
     except Exception as e:
         logger.warning(f"WCS: twirl.compute_wcs failed ({e})")
@@ -417,48 +417,33 @@ def calibrate_band(
         shared=True,
         verbose=True,
     )
+    try:
+        md = calib.get_master("dark")
+        mf = calib.get_master("flat")
+        wcs = None
+        if solve_wcs:
+            info(f"[{band}] solving WCS on first science frame")
+            first = FITSImage(sciences[0])
+            calib.run(first)
+            wcs = _solve_wcs(first)
+            if wcs is not None:
+                info(f"[{band}] WCS solved successfully")
+            else:
+                info(f"[{band}] WCS solving failed; continuing without astrometry")
 
-    wcs = None
-    if solve_wcs:
-        info(f"[{band}] solving WCS on first science frame")
-        first = FITSImage(sciences[0])
-        calib.run(first)
-        wcs = _solve_wcs(first)
-        if wcs is not None:
-            info(f"[{band}] WCS solved successfully")
-        else:
-            info(f"[{band}] WCS solving failed; continuing without astrometry")
+        seq = SequenceParallel(
+            [
+                calib,
+                SaveCalibratedFITS(output_dir, wcs=wcs),
+            ],
+            name=f"[{band}] calibrating",
+        )
 
-    seq = SequenceParallel(
-        [
-            calib,
-            SaveCalibratedFITS(output_dir, wcs=wcs),
-        ],
-        name=f"[{band}] calibrating",
-    )
-
-    seq.run(sciences)
+        seq.run(sciences)
+    finally:
+        calib.cleanup_shared()
 
     info(f"[{band}] done  ({len(sciences)} frames -> {output_dir})")
-
-    md = (
-        calib.master_dark
-        if hasattr(calib, "master_dark")
-        else np.array(
-            np.memmap(
-                "__dark.array", dtype="float32", mode="r", shape=calib.shapes["dark"]
-            )
-        )
-    )
-    mf = (
-        calib.master_flat
-        if hasattr(calib, "master_flat")
-        else np.array(
-            np.memmap(
-                "__flat.array", dtype="float32", mode="r", shape=calib.shapes["flat"]
-            )
-        )
-    )
 
     return md, mf
 

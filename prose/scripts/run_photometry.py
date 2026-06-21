@@ -154,9 +154,11 @@ CONTAM_DMAG = 2.5  # neighbour contaminates if Gmag - target < this (>=10% targe
 CONTAM_MARGIN_PIX = 2  # keep annulus/aperture this far inside a contaminant [pix]
 GAIA_CUTOUT = (200, 200)  # cutout around target for the Gaia query [pix]
 
-# differential-photometry cleaning
-SIGMA_BKG = 3
-SIGMA_FWHM = 3
+# differential-photometry cleaning — None means the axis is not clipped
+SIGMA_BKG = None
+SIGMA_FWHM = None
+SIGMA_DX = None
+SIGMA_DY = None
 BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
 # Maximum pixel distance for cross-matching sources between bands.  When
@@ -377,6 +379,25 @@ def aper_radii_pix(r: dict):
     return radii, rin, rout
 
 
+class MinimumSources(Block):
+    """Discard frames where too few sources were detected (e.g. cloud)."""
+
+    def __init__(self, min_sources=1, name=None):
+        super().__init__(name=name, read=["sources"])
+        self.min_sources = min_sources
+        self._parallel_friendly = True
+
+    def run(self, image):
+        if len(image.sources) < self.min_sources:
+            im_id = getattr(
+                image, "path", getattr(image, "filename", f"frame {image.i}")
+            )
+            logger.warning(
+                f"discarding {im_id}: {len(image.sources)} sources < {self.min_sources}"
+            )
+            image.discard = True
+
+
 class MeasurePeaks(Block):
     def __init__(self, name=None):
         super().__init__(name=name)
@@ -568,6 +589,12 @@ def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoor
 def _finite_world_to_pixel(wcs, coord: SkyCoord | None) -> tuple[float, float] | None:
     if wcs is None or coord is None or not hasattr(wcs, "world_to_pixel"):
         return None
+    # image.wcs always returns a WCS() object (never None), even when the FITS
+    # header has no celestial keywords. WCS(None) may still return finite pixel
+    # coordinates for any input, so we must check has_celestial before trusting
+    # the projection.
+    if not getattr(wcs, "has_celestial", False):
+        return None
     try:
         x, y = wcs.world_to_pixel(coord)
         x = float(np.asarray(x))
@@ -603,6 +630,29 @@ def _target_pixel_or_center(
             "forcing target at image center"
         )
     return _image_center_xy(ref)
+
+
+def _append_target_source(
+    ref: FITSImage, target_coord: SkyCoord, cutout_size: int
+) -> tuple[FITSImage, int]:
+    """Append the coordinate-selected target and return its source index."""
+    tx, ty = _target_pixel_or_center(ref, target_coord)
+    target_index = len(ref.sources)
+    logger.info(
+        f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f}) "
+        f"as source {target_index}"
+    )
+    from prose.core.source import PointSource, Sources
+
+    new_source = PointSource(coords=np.array([tx, ty]), i=target_index)
+    ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
+
+    try:
+        ref = blocks.Cutouts(shape=cutout_size)(ref)
+        ref = blocks.CentroidQuadratic()(ref)
+    except Exception as e:
+        logger.warning(f"Failed to refine centroid of force-added target source: {e}")
+    return ref, target_index
 
 
 def _skycoord_has_finite_data(coord) -> bool:
@@ -676,7 +726,12 @@ def build_reference(
         min_area=min_area,
     ).run(ref, show_progress=False)
 
-    if target_index_override is None and target_coord is not None and ref.wcs is not None:
+    forced_target_index = None
+    if (
+        target_index_override is None
+        and target_coord is not None
+        and ref.wcs is not None
+    ):
         coords = np.array([s.coords for s in ref.sources])
         match_found = False
         if len(coords) > 0:
@@ -699,30 +754,30 @@ def build_reference(
                 )
 
         if not match_found:
-            tx, ty = _target_pixel_or_center(ref, target_coord)
-            logger.info(
-                f"Target not found in detected sources (separation > 5 arcsec). "
-                f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f})"
+            logger.info("Target not found in detected sources (separation > 5 arcsec)")
+            ref, forced_target_index = _append_target_source(
+                ref, target_coord, cutout_size
             )
-            from prose.core.source import PointSource, Sources
-            new_idx = len(ref.sources)
-            new_source = PointSource(coords=np.array([tx, ty]), i=new_idx)
-            ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
 
-            # Centroid the force-added source on the reference image
-            try:
-                from prose.blocks import CentroidQuadratic, Cutouts
-                ref = Cutouts(shape=cutout_size)(ref)
-                ref = CentroidQuadratic()(ref)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to refine centroid of force-added target source: {e}"
-                )
+    if target_index_override is not None:
+        n_sources = len(ref.sources)
+        if target_index_override == n_sources and target_coord is not None:
+            ref, _ = _append_target_source(ref, target_coord, cutout_size)
+        elif not 0 <= target_index_override < n_sources:
+            raise ValueError(
+                f"tID={target_index_override} is out of range for {n_sources} "
+                f"detected sources; use 0-{n_sources - 1}, or {n_sources} with "
+                "--target_coord to force-add the target"
+            )
 
     target_index = (
         target_index_override
         if target_index_override is not None
-        else find_target_index(ref, target_coord)
+        else (
+            forced_target_index
+            if forced_target_index is not None
+            else find_target_index(ref, target_coord)
+        )
     )
     aper_radii_was_custom = aper_radii is not None
     if aper_radii_was_custom:
@@ -785,6 +840,7 @@ def photometry_sequence(
             min_area=min_area,
             min_separation=min_star_separation,
         ),
+        MinimumSources(min_sources=3),
         blocks.Cutouts(shape=cutout_size),
         blocks.MedianEPSF(),
         blocks.Gaussian2D(ref),
@@ -886,6 +942,7 @@ def run_band(
         if ref_source_positions is not None:
             this_positions = np.array([s.coords for s in ref.sources])
             from scipy.spatial import KDTree
+
             tree = KDTree(this_positions)
             mapped_avoid = []
             for idx in avoid_cids:
@@ -1010,7 +1067,26 @@ def differential_photometry(
             if valid_avoid:
                 keep[valid_avoid] = False
         fluxes = fluxes.mask_stars(keep)
-    fluxes = fluxes.sigma_clipping_data(bkg=SIGMA_BKG, fwhm=SIGMA_FWHM)
+    n_before = len(fluxes.time) if fluxes.time is not None else 0
+    sigma_kwargs = {
+        k: v
+        for k, v in dict(
+            bkg=SIGMA_BKG, fwhm=SIGMA_FWHM, dx=SIGMA_DX, dy=SIGMA_DY
+        ).items()
+        if v is not None
+    }
+    fluxes = fluxes.sigma_clipping_data(**sigma_kwargs)
+    n_after = len(fluxes.time) if fluxes.time is not None else 0
+    clipped = n_before - n_after
+
+    def _fmt(v):
+        return str(v) if v is not None else "off"
+
+    logger.info(
+        f"!!! SIGMA CLIPPING: {clipped} / {n_before} frames clipped "
+        f"(bkg={_fmt(SIGMA_BKG)}, fwhm={_fmt(SIGMA_FWHM)}, "
+        f"dx={_fmt(SIGMA_DX)}, dy={_fmt(SIGMA_DY)}) !!!"
+    )
     if fluxes.time is None or len(fluxes.time) == 0:
         return None
     if cids:
@@ -1100,7 +1176,7 @@ def compute_bjd_tdb(
             f"GJD->BJD offset {offset_min:.2f} min exceeds {MAX_TIME_OFFSET_MIN:.1f} min"
         )
     else:
-        logger.info(f"GJD-TDB offset {offset_min:.2f} min")
+        logger.info(f"GJD_UTC --> BJD_TDB offset {offset_min:.2f} min")
     return bjd
 
 
@@ -1157,7 +1233,13 @@ def _overlay_gaia_sources(
 
     Returns the number of Gaia sources drawn.
     """
-    if gaia_df is None or not len(gaia_df) or getattr(cutout, "wcs", None) is None:
+    cutout_wcs = getattr(cutout, "wcs", None)
+    if (
+        gaia_df is None
+        or not len(gaia_df)
+        or cutout_wcs is None
+        or not getattr(cutout_wcs, "has_celestial", False)
+    ):
         return 0
     try:
         coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
@@ -1196,7 +1278,9 @@ def _overlay_gaia_sources(
             nearest = int(np.argmin(seps))
             target_mask[nearest] = True
             if "phot_g_mean_mag" in gaia_df:
-                mags_all = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[inside]
+                mags_all = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[
+                    inside
+                ]
                 target_mag = mags_all[nearest]
         except Exception:  # noqa: BLE001
             pass
@@ -1206,14 +1290,24 @@ def _overlay_gaia_sources(
     # Plot the target marker (no label).
     if target_mask.any():
         ax.scatter(
-            x[target_mask], y[target_mask],
-            marker="+", s=marker_size, c=color, lw=0.9, zorder=10,
+            x[target_mask],
+            y[target_mask],
+            marker="+",
+            s=marker_size,
+            c=color,
+            lw=0.9,
+            zorder=10,
         )
     # Plot neighbour markers with legend.
     if neighbour.any():
         ax.scatter(
-            x[neighbour], y[neighbour],
-            marker="+", s=marker_size, c=color, lw=0.9, zorder=9,
+            x[neighbour],
+            y[neighbour],
+            marker="+",
+            s=marker_size,
+            c=color,
+            lw=0.9,
+            zorder=9,
             label=legend_label,
         )
 
@@ -1253,9 +1347,9 @@ def plot_ref_image(
     if 0 <= target_idx < len(ref.sources):
         tpix = ref.sources[target_idx].coords
     else:
-        tpix = ref.wcs.wcs_world2pix(
-            [[target_coord.ra.deg, target_coord.dec.deg]], 0
-        )[0]
+        tpix = ref.wcs.wcs_world2pix([[target_coord.ra.deg, target_coord.dec.deg]], 0)[
+            0
+        ]
     ax.scatter(tpix[0], tpix[1], s=120, ec="r", fc="none", zorder=10)
     ax.annotate(
         "Target",
@@ -1308,7 +1402,10 @@ def plot_ref_image(
 
 
 def plot_apertures(
-    r, path: Path, plot_gaia_sources: bool = False, target_coord=None,
+    r,
+    path: Path,
+    plot_gaia_sources: bool = False,
+    target_coord=None,
 ) -> None:
     ref = r["ref"]
     coords = ref.sources[r["target_index"]].coords
@@ -1325,11 +1422,13 @@ def plot_apertures(
     target_source.plot(rout_pix, label=False, c="y")
     if plot_gaia_sources:
         n = _overlay_gaia_sources(
-            ax, c, r.get("gaia_df"),
+            ax,
+            c,
+            r.get("gaia_df"),
             target_coord=target_coord,
             marker_size=100,
             fontsize=7,
-            legend_label=r"Gaia ($\delta$ mag)",
+            legend_label=r"Gaia ($\Delta$ mag)",
         )
         if n:
             ax.legend(loc="upper right", fontsize=7, framealpha=0.6)
@@ -1576,7 +1675,10 @@ def plot_stacks(
         axes[row, 0].axis("off")
         if plot_gaia_sources:
             _overlay_gaia_sources(
-                axes[row, 0], c, r.get("gaia_df"), target_coord=target_coord,
+                axes[row, 0],
+                c,
+                r.get("gaia_df"),
+                target_coord=target_coord,
                 label_mag=False,
             )
 
@@ -1649,6 +1751,7 @@ def _gif_frame(
 def make_gif(files, path: Path, stride: int) -> None:
     """Render a quick-look GIF per band without matplotlib."""
     import imageio.v2 as imageio
+
     sampled = files[:: max(1, stride)]
     if not sampled:
         return
@@ -1738,6 +1841,30 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
         except Exception:
             continue
     return DEFAULT_BROAD_BANDS
+
+
+def _fits_file_number(path: Path) -> int | None:
+    """Extract the FITS frame number from a (calibrated) file path.
+
+    Raw FITS:   MCT20_1911191480.fits                -> 1480
+    Calibrated: MCT20_1911191480_calibrated.fits      -> 1480
+    """
+    m = re.search(r"_(\d{6})(\d{4})(?:_calibrated)?\.fits$", str(path))
+    if m:
+        return int(m.group(2))
+    return None
+
+
+def _find_frame_by_number(files: list[Path], number: int) -> int:
+    """Return the index of the file whose FITS frame number is closest to *number*."""
+    best_i, best_delta = 0, float("inf")
+    for i, fp in enumerate(files):
+        n = _fits_file_number(fp)
+        if n is not None:
+            d = abs(n - number)
+            if d < best_delta:
+                best_i, best_delta = i, d
+    return best_i
 
 
 def _normalize_toi_name(name: str) -> str:
@@ -1839,8 +1966,10 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--refid",
         type=int,
         default=None,
-        help="Reference-frame index within a band (default: 0 for "
-        "self-reference, middle frame when --ref_band is set).",
+        help="Reference-frame FITS file number (the 4-digit number after the "
+        "date in the filename, e.g. 1480 for MCT20_1911191480.fits). "
+        "Searches each band's science frames for the closest match "
+        "(default: 0 for self-reference, middle frame when --ref_band is set).",
     )
     ap.add_argument(
         "--aper_radii",
@@ -1890,8 +2019,9 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--test-run",
         dest="test_run",
         action="store_true",
-        help=f"Quick smoke test: use only the first {TEST_RUN_FRAMES} frames "
-        "of each band.",
+        help=f"Quick smoke test: use {TEST_RUN_FRAMES} frames per band "
+        "centered on the --refid frame (or the first frames if unset). "
+        "--refid is interpreted as a FITS file number.",
     )
     ap.add_argument(
         "--test_run_frames",
@@ -1899,7 +2029,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=int,
         default=TEST_RUN_FRAMES,
         dest="test_run_frames",
-        help=f"Number of frames per band in test-run mode (default: {TEST_RUN_FRAMES}).",
+        help=f"Number of frames per band in test-run mode (default: {TEST_RUN_FRAMES}). "
+        "Together with --refid a window of this size is centered on the matched frame.",
     )
     ap.add_argument(
         "--min_star_separation",
@@ -1981,20 +2112,45 @@ def parse_args(argv=None) -> argparse.Namespace:
         "the directory already contains outputs).",
     )
     ap.add_argument(
-        "--muscat_calib_dir",
-        "--muscat-calib-dir",
+        "--calib_dir",
+        "--calib-dir",
         type=Path,
         default=None,
-        help="Output directory for MuSCAT calibrated FITS files "
+        help="Output directory for calibrated FITS files produced during the "
+        "MuSCAT/MuSCAT2 (and future instrument) calibration step "
         "(default: <data_dir>_calibrated).",
     )
     ap.add_argument(
-        "--muscat2_calib_dir",
-        "--muscat2-calib-dir",
-        type=Path,
+        "--sig_bkg",
+        "--sig-bkg",
+        type=float,
         default=None,
-        help="Output directory for MuSCAT2 calibrated FITS files "
-        "(default: <data_dir>_calibrated).",
+        dest="sig_bkg",
+        help="Sigma threshold for sky background outlier clipping (default: disabled).",
+    )
+    ap.add_argument(
+        "--sig_fwhm",
+        "--sig-fwhm",
+        type=float,
+        default=None,
+        dest="sig_fwhm",
+        help="Sigma threshold for FWHM outlier clipping (default: disabled).",
+    )
+    ap.add_argument(
+        "--sig_dx",
+        "--sig-dx",
+        type=float,
+        default=None,
+        dest="sig_dx",
+        help="Sigma threshold for drift X outlier clipping (default: disabled).",
+    )
+    ap.add_argument(
+        "--sig_dy",
+        "--sig-dy",
+        type=float,
+        default=None,
+        dest="sig_dy",
+        help="Sigma threshold for drift Y outlier clipping (default: disabled).",
     )
     args = ap.parse_args(argv)
 
@@ -2014,6 +2170,12 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+
+    global SIGMA_BKG, SIGMA_FWHM, SIGMA_DX, SIGMA_DY
+    SIGMA_BKG = args.sig_bkg
+    SIGMA_FWHM = args.sig_fwhm
+    SIGMA_DX = args.sig_dx
+    SIGMA_DY = args.sig_dy
 
     assert args.tID not in (args.cID or []), (
         f"tID={args.tID} must not be in cID={args.cID}"
@@ -2086,8 +2248,15 @@ def main(argv=None) -> int:
 
     if args.test_run:
         nrf = args.test_run_frames
-        sciences = {b: fs[:nrf] for b, fs in sciences.items()}
-        logger.info(f"test-run: limiting to first {nrf} frames per band")
+        if args.refid is not None:
+            new_sciences = {}
+            for b, fs in sciences.items():
+                start = max(0, _find_frame_by_number(fs, args.refid) - nrf // 2)
+                new_sciences[b] = fs[start : start + nrf]
+            sciences = new_sciences
+        else:
+            sciences = {b: fs[:nrf] for b, fs in sciences.items()}
+        logger.info(f"test-run: limiting to {nrf} frames per band (refid={args.refid})")
     counts = {b: len(sciences.get(b, [])) for b in args.bands}
     logger.info(f"frames per band: {counts}")
     active_bands = [b for b in args.bands if sciences.get(b)]
@@ -2102,13 +2271,12 @@ def main(argv=None) -> int:
         is_muscat = instrument == "muscat"
         calib_label = "muscat" if is_muscat else "muscat2"
         calib_mod = calibrate_muscat if is_muscat else calibrate_muscat2
-        calib_arg_name = "muscat_calib_dir" if is_muscat else "muscat2_calib_dir"
         default_bands = ["gp", "rp", "zs"] if is_muscat else ["gp", "rp", "ip", "zs"]
 
         if args.bands is None:
             args.bands = default_bands
             logger.info(f"{calib_label} bands: {args.bands}")
-        calib_dir = getattr(args, calib_arg_name) or args.data_dir.with_name(
+        calib_dir = args.calib_dir or args.data_dir.with_name(
             args.data_dir.name + "_calibrated"
         )
         calib_dir.mkdir(parents=True, exist_ok=True)
@@ -2158,7 +2326,15 @@ def main(argv=None) -> int:
             filter_aliases=INSTRUMENT_FILTER_ALIASES.get(calib_label),
         )
         if args.test_run:
-            sciences = {b: fs[: args.test_run_frames] for b, fs in sciences.items()}
+            nrf = args.test_run_frames
+            if args.refid is not None:
+                new_sciences = {}
+                for b, fs in sciences.items():
+                    start = max(0, _find_frame_by_number(fs, args.refid) - nrf // 2)
+                    new_sciences[b] = fs[start : start + nrf]
+                sciences = new_sciences
+            else:
+                sciences = {b: fs[:nrf] for b, fs in sciences.items()}
         counts = {b: len(sciences.get(b, [])) for b in args.bands}
         logger.info(f"frames per band: {counts}")
         active_bands = [b for b in args.bands if sciences.get(b)]
@@ -2243,7 +2419,10 @@ def main(argv=None) -> int:
             ref_files, default_refid = band_files, 0
         else:
             ref_files, default_refid = sciences[ref_band], len(sciences[ref_band]) // 2
-        refid = args.refid if args.refid is not None else default_refid
+        if args.refid is not None:
+            refid = _find_frame_by_number(ref_files, args.refid)
+        else:
+            refid = default_refid
         refid = min(refid, len(ref_files) - 1)
         try:
             res = run_band(
@@ -2272,9 +2451,7 @@ def main(argv=None) -> int:
             failed_bands.append(band)
             continue
         if res is None:
-            logger.error(
-                f"[{band}] reduction produced no output; marking band failed"
-            )
+            logger.error(f"[{band}] reduction produced no output; marking band failed")
             failed_bands.append(band)
             continue
         band_results[band] = res

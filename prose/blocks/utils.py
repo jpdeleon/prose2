@@ -1,3 +1,5 @@
+import shutil
+import tempfile
 from functools import partial
 from pathlib import Path
 from typing import Union
@@ -25,10 +27,11 @@ __all__ = [
     "SelectiveStack",
 ]
 
+
 class MaskSaturatedPixels(Block):
     def __init__(self, saturation_level=None, name=None):
         """Mask saturated pixels in the image.
-        
+
         Parameters
         ----------
         saturation_level : float, optional
@@ -39,36 +42,37 @@ class MaskSaturatedPixels(Block):
         """
         super().__init__(name=name)
         self.saturation_level = saturation_level
-        
+
     def run(self, image):
         # Determine saturation level
         sat_level = self.saturation_level
-        if sat_level is None and hasattr(image, 'saturation_level'):
+        if sat_level is None and hasattr(image, "saturation_level"):
             sat_level = image.saturation_level
-        
+
         if sat_level is None:
             raise ValueError("No saturation level provided or found in image")
-        
+
         # Store original data
-        if not hasattr(image, 'original_data'):
+        if not hasattr(image, "original_data"):
             image.original_data = image.data.copy()
-        
+
         # Mask saturated pixels with NaN or median value
         mask = image.data >= sat_level
         if mask.any():
             # Option 1: Replace with NaN
             # image.data = image.data.copy()
             # image.data[mask] = np.nan
-            
+
             # Option 2: Replace with median (might be better for detection algorithms)
             median_value = np.nanmedian(image.data)
             image.data = image.data.copy()
             image.data[mask] = median_value
-            
+
+
 class RejectSaturatedSources(Block):
     def __init__(self, saturation_level=None, name=None):
         """Filter out saturated sources from the detected sources.
-        
+
         Parameters
         ----------
         saturation_level : float, optional
@@ -79,22 +83,23 @@ class RejectSaturatedSources(Block):
         """
         super().__init__(name=name)
         self.saturation_level = saturation_level
-        
+
     def run(self, image):
         if len(image.sources) == 0:
             return
-            
+
         # Determine saturation level
         sat_level = self.saturation_level
-        if sat_level is None and hasattr(image, 'saturation_level'):
+        if sat_level is None and hasattr(image, "saturation_level"):
             sat_level = image.saturation_level
-        
+
         if sat_level is None:
             raise ValueError("No saturation level provided or found in image")
-            
+
         # Filter out sources with peak values above saturation level
         non_saturated = [s for s in image.sources if s.peak < sat_level]
         image.sources = Sources(non_saturated, type=image.sources.type)
+
 
 # TODO: document and test
 class SortSources(Block):
@@ -312,8 +317,19 @@ class Calibration(Block):
         self.master_dark = self._produce_master(check_input(darks), "dark")
         self.master_flat = self._produce_master(check_input(flats), "flat")
 
+        self._shared_dir = None
+        self._shared_paths = {}
         if shared:
-            self._share()
+            self._shared_dir = Path(tempfile.mkdtemp(prefix="prose-calibration-"))
+            self._shared_paths = {
+                image_type: self._shared_dir / f"{image_type}.array"
+                for image_type in ("bias", "dark", "flat")
+            }
+            try:
+                self._share()
+            except Exception:
+                self.cleanup_shared()
+                raise
         self.verbose = verbose
 
         self.calibration = self._calibration_shared if shared else self._calibration
@@ -395,13 +411,22 @@ class Calibration(Block):
 
     def _calibration_shared(self, image, exp_time):
         bias = np.memmap(
-            "__bias.array", dtype="float32", mode="r", shape=self.shapes["bias"]
+            self._shared_paths["bias"],
+            dtype="float32",
+            mode="r",
+            shape=self.shapes["bias"],
         )
         dark = np.memmap(
-            "__dark.array", dtype="float32", mode="r", shape=self.shapes["dark"]
+            self._shared_paths["dark"],
+            dtype="float32",
+            mode="r",
+            shape=self.shapes["dark"],
         )
         flat = np.memmap(
-            "__flat.array", dtype="float32", mode="r", shape=self.shapes["flat"]
+            self._shared_paths["flat"],
+            dtype="float32",
+            mode="r",
+            shape=self.shapes["flat"],
         )
         with np.errstate(divide="ignore", invalid="ignore"):
             return (image - (dark * exp_time + bias)) / flat
@@ -424,14 +449,41 @@ class Calibration(Block):
         for imtype in ["bias", "dark", "flat"]:
             data = self.__dict__[f"master_{imtype}"]
             m = np.memmap(
-                f"__{imtype}.array", dtype="float32", mode="w+", shape=data.shape
+                self._shared_paths[imtype],
+                dtype="float32",
+                mode="w+",
+                shape=data.shape,
             )
             if data.ndim == 2:
                 m[:, :] = data[:, :]
             else:
                 m[:] = data[:]
+            m.flush()
 
             del self.__dict__[f"master_{imtype}"]
+
+    def get_master(self, image_type):
+        """Return a copy of a master calibration image, shared or in-memory."""
+        attribute = f"master_{image_type}"
+        if hasattr(self, attribute):
+            return np.array(getattr(self, attribute), copy=True)
+        return np.array(
+            np.memmap(
+                self._shared_paths[image_type],
+                dtype="float32",
+                mode="r",
+                shape=self.shapes[image_type],
+            )
+        )
+
+    def cleanup_shared(self):
+        """Remove this instance's shared calibration files."""
+        if self._shared_dir is not None:
+            shutil.rmtree(self._shared_dir, ignore_errors=True)
+            self._shared_dir = None
+
+    def terminate(self):
+        self.cleanup_shared()
 
     @property
     def citations(self):
@@ -452,9 +504,9 @@ class CleanBadPixels(Block):
 
         self.loader = loader
 
-        assert (
-            darks is not None or bad_pixels_map is not None
-        ), "bad_pixels_map or darks must be specified"
+        assert darks is not None or bad_pixels_map is not None, (
+            "bad_pixels_map or darks must be specified"
+        )
         if darks is not None:
             info("buidling bad pixels map")
             if darks is not None:
@@ -593,7 +645,9 @@ class GetFluxes(Get):
             args and kwargs of :py:class:`prose.blocks.Get`
         """
         self._time_key = time
-        get_fluxes = lambda im: im.aperture["fluxes"]
+
+        def get_fluxes(im):
+            return im.aperture["fluxes"]
 
         def get_bkg(im):
             if "annulus" in im.computed.keys():

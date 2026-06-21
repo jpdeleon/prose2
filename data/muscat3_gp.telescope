@@ -18,12 +18,12 @@ keyword_fwhm: FWHM
 keyword_seeing: SEEING
 keyword_ra: RA
 keyword_dec: DEC
-keyword_jd: JD
+keyword_jd: MJD-STRT
 keyword_bjd: BJD
 keyword_flip: PIERSIDE
 ra_unit: deg
 dec_unit: deg
-jd_scale: utc
+jd_scale: mjd
 bjd_scale: utc
 mjd: 0
 trimming: [0, 0]

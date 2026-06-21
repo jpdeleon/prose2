@@ -460,10 +460,51 @@ def test_build_reference_target_index_override_bypasses_gaia(tmp_path, monkeypat
         aper_radii=np.array([3.0, 4.0, 5.0]),
         rin=8.0,
         rout=12.0,
-        target_index_override=42,
+        target_index_override=1,
     )
-    assert result["target_index"] == 42
+    assert result["target_index"] == 1
     assert not called, "find_target_index should not have been called"
+
+
+def test_build_reference_target_override_appends_target_at_next_index(
+    tmp_path, monkeypatch
+):
+    """A manual ID immediately after detected sources denotes a forced target."""
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    result = rp.build_reference(
+        fpath,
+        SkyCoord(0, 0, unit="deg"),
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=2,
+    )
+
+    assert result["target_index"] == 2
+    assert len(result["ref"].sources) == 3
+
+
+def test_build_reference_target_override_rejects_larger_missing_index(
+    tmp_path, monkeypatch
+):
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    with pytest.raises(ValueError, match="tID=4 is out of range for 2"):
+        rp.build_reference(
+            fpath,
+            SkyCoord(0, 0, unit="deg"),
+            aper_radii=np.array([3.0, 4.0, 5.0]),
+            rin=8.0,
+            rout=12.0,
+            target_index_override=4,
+        )
 
 
 def test_build_reference_target_index_override_None_still_calls_find(
