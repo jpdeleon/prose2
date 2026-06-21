@@ -1,3 +1,5 @@
+import os
+import tempfile
 from functools import partial
 from pathlib import Path
 from typing import Union
@@ -312,6 +314,17 @@ class Calibration(Block):
         self.master_dark = self._produce_master(check_input(darks), "dark")
         self.master_flat = self._produce_master(check_input(flats), "flat")
 
+        # Per-instance memmap paths for the shared-calibration path. Hardcoded
+        # names in the CWD let concurrent runs (e.g. several photometry jobs
+        # launched from the same directory) clobber and truncate each other's
+        # master frames, producing garbage calibration and zero detected
+        # sources. A unique temp dir per instance keeps runs isolated.
+        self._cal_dir = tempfile.mkdtemp(prefix="prose_cal_")
+        self._cal_paths = {
+            imtype: os.path.join(self._cal_dir, f"__{imtype}.array")
+            for imtype in ("bias", "dark", "flat")
+        }
+
         if shared:
             self._share()
         self.verbose = verbose
@@ -395,13 +408,13 @@ class Calibration(Block):
 
     def _calibration_shared(self, image, exp_time):
         bias = np.memmap(
-            "__bias.array", dtype="float32", mode="r", shape=self.shapes["bias"]
+            self._cal_paths["bias"], dtype="float32", mode="r", shape=self.shapes["bias"]
         )
         dark = np.memmap(
-            "__dark.array", dtype="float32", mode="r", shape=self.shapes["dark"]
+            self._cal_paths["dark"], dtype="float32", mode="r", shape=self.shapes["dark"]
         )
         flat = np.memmap(
-            "__flat.array", dtype="float32", mode="r", shape=self.shapes["flat"]
+            self._cal_paths["flat"], dtype="float32", mode="r", shape=self.shapes["flat"]
         )
         with np.errstate(divide="ignore", invalid="ignore"):
             return (image - (dark * exp_time + bias)) / flat
@@ -424,7 +437,7 @@ class Calibration(Block):
         for imtype in ["bias", "dark", "flat"]:
             data = self.__dict__[f"master_{imtype}"]
             m = np.memmap(
-                f"__{imtype}.array", dtype="float32", mode="w+", shape=data.shape
+                self._cal_paths[imtype], dtype="float32", mode="w+", shape=data.shape
             )
             if data.ndim == 2:
                 m[:, :] = data[:, :]
