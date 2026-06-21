@@ -160,6 +160,33 @@ python -m prose.scripts.run_photometry ... \
 - **Avoided stars.** With `--ref_band`, IDs passed to `--avoid_cids` are
   excluded from comparison-star selection and omitted from each `…_ref.png`.
 
+### Time handling (GJD-UTC → BJD-TDB)
+
+The per-frame time axis is read from each instrument's header via the
+`prose2/data/*.telescope` definitions (`keyword_jd` + `jd_scale`).  Header
+conventions differ by instrument **and changed over time**, so the telescope
+files are configured per-convention:
+
+| Instrument (era) | Header format | Time keyword | Resolves to |
+|---|---|---|---|
+| MuSCAT (1), all eras | `INSTRUME=MuSCAT`, date-only `DATE-OBS` | `MJD-STRT` | `muscat_*.telescope` |
+| MuSCAT2, all eras | `INSTRUME=MuSCAT2`, date-only `DATE-OBS` | `MJD-STRT` | `muscat2_*.telescope` |
+| MuSCAT3 (≤2020, OAO) | `INSTRUME=MuSCAT3`, date-only `DATE-OBS` | `MJD-STRT` | `muscat3_*.telescope` |
+| MuSCAT3 (≥2021, LCO) / MuSCAT4 | `INSTRUME=ep0x`, full-timestamp `DATE-OBS` | `MJD-OBS` | prose built-in `2m0-0x` |
+
+For the OAO-style MuSCAT/MuSCAT2/MuSCAT3 frames the only time in the header is
+`MJD-STRT` (`DATE-OBS` carries the **date only**), so those telescope files set
+`keyword_jd: MJD-STRT` and `jd_scale: mjd`; `normalize_time_to_jd` then shifts
+MJD→JD. Earlier these files pointed `keyword_jd` at the non-existent `JD`
+keyword, so prose silently fell back to `Time(DATE-OBS).jd` and **collapsed
+every frame to midnight** — a constant, ~hours-wrong time axis (and therefore a
+meaningless BJD). LCO BANZAI frames (MuSCAT3 2021+, all MuSCAT4) match prose's
+built-in `2m0-0x` telescopes instead and carry a full-timestamp `DATE-OBS`, so
+they are unaffected.
+
+> `MJD-STRT` is the **exposure start**, so OAO-style timestamps precede
+> mid-exposure by `EXPTIME/2` (these headers carry no mid-exposure time).
+
 ## Example datasets
 
 * sinistro: 250523
