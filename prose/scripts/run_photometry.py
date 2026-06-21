@@ -76,9 +76,11 @@ from astropy.io import fits
 from astropy.time import Time
 from astropy.visualization import ZScaleInterval
 from astroquery.mast import Mast
+from astroquery.simbad import Simbad
 from rich.progress import track
 
 from prose import FITSImage, Fluxes, Sequence, blocks
+from prose import __version__ as _PROSE_VERSION
 from prose.blocks import catalogs
 from prose.core.block import Block
 from prose.core.sequence import SequenceParallel
@@ -241,6 +243,16 @@ def setup_logger(outdir: Path, verbose: bool = False) -> Path:
     for handler in (file_handler, stream_handler):
         handler.setFormatter(fmt)
         logger.addHandler(handler)
+
+    # --- startup banner (always first entry in the log) ---
+    separator = "=" * 60
+    now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    logger.info(separator)
+    logger.info(f"prose v{_PROSE_VERSION}  |  {now_utc}")
+    logger.info(f"command: photometry (run_photometry)")
+    logger.info(separator)
+    # --- end banner ---
+
     logger.info(f"log file: {log_path}")
     return log_path
 
@@ -1288,63 +1300,76 @@ def plot_ref_image(
     avoid_cids: list[int] | None = None,
 ) -> None:
     ref = r["ref"]
+    # Only trust the reference WCS for celestial decorations (RA/Dec projection
+    # and SIMBAD markers) when it can actually project the target. A rejected or
+    # degenerate solve leaves ref.wcs as a non-None but unusable WCS, which would
+    # otherwise draw a meaningless RA/Dec grid and mis-projected markers; fall
+    # back to a plain pixel frame in that case (mirrors the Gaia overlay guard).
+    wcs_ok = _wcs_can_project(getattr(ref, "wcs", None), target_coord)
     fig = plt.figure(figsize=(7, 7), constrained_layout=True)
-    ax = fig.add_subplot(111, projection=ref.wcs)
+    ax = fig.add_subplot(111, projection=ref.wcs) if wcs_ok else fig.add_subplot(111)
     ref.show(ax=ax, frame=True, sources=False)
     target_idx = r["target_index"]
+    tpix = None
     if 0 <= target_idx < len(ref.sources):
         tpix = ref.sources[target_idx].coords
-    else:
+    elif wcs_ok:
         tpix = ref.wcs.wcs_world2pix(
             [[target_coord.ra.deg, target_coord.dec.deg]], 0
         )[0]
-    ax.scatter(tpix[0], tpix[1], s=120, ec="r", fc="none", zorder=10)
-    ax.annotate(
-        "Target",
-        (tpix[0], tpix[1]),
-        xytext=(8, 8),
-        textcoords="offset points",
-        fontsize=8,
-        color="r",
-        zorder=10,
-    )
+    if tpix is not None:
+        ax.scatter(tpix[0], tpix[1], s=120, ec="r", fc="none", zorder=10)
+        ax.annotate(
+            "Target",
+            (tpix[0], tpix[1]),
+            xytext=(8, 8),
+            textcoords="offset points",
+            fontsize=8,
+            color="r",
+            zorder=10,
+        )
     avoided = set(avoid_cids or [])
     plotted_source_ids = [i for i in range(len(ref.sources)) if i not in avoided]
     ref.sources[plotted_source_ids].plot(ax=ax, c="yellow")
-    ax.set_title(f"{r['band']} reference", y=1.08)
+    title = f"{r['band']} reference"
+    if not wcs_ok:
+        title += " (pixel frame; WCS unusable)"
+    ax.set_title(title, y=1.08)
 
-    # Compute WCS offset from the target's refined centroid, same as
-    # _overlay_gaia_sources does, so SIMBAD markers align with detected stars.
-    wcs_offset = np.array([0.0, 0.0])
-    try:
-        wpix = ref.wcs.world_to_pixel(target_coord)
-        if 0 <= target_idx < len(ref.sources):
-            wcs_offset = ref.sources[target_idx].coords - wpix
-    except Exception:  # noqa: BLE001
-        pass
+    # SIMBAD markers are WCS-projected, so only draw them when the WCS is usable.
+    if wcs_ok:
+        # Compute WCS offset from the target's refined centroid, same as
+        # _overlay_gaia_sources does, so SIMBAD markers align with detected stars.
+        wcs_offset = np.array([0.0, 0.0])
+        try:
+            wpix = ref.wcs.world_to_pixel(target_coord)
+            if 0 <= target_idx < len(ref.sources):
+                wcs_offset = ref.sources[target_idx].coords - wpix
+        except Exception:  # noqa: BLE001
+            pass
 
-    simbad = get_simbad_data(target_coord, instrument)
-    if simbad is not None and not simbad.empty:
-        simbad = simbad[simbad.OTYPE != "Star"]
-        if not simbad.empty:
-            simbad_coords = SkyCoord(
-                ra=simbad.RA, dec=simbad.DEC, unit=(u.hourangle, u.deg)
-            )
-            x_pix, y_pix = ref.wcs.wcs_world2pix(
-                np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
-            ).T
-            x_pix += wcs_offset[0]
-            y_pix += wcs_offset[1]
-            ax.scatter(x_pix, y_pix, marker="D", s=40, ec="cyan", fc="none", lw=1)
-            for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
-                ax.annotate(
-                    label,
-                    (xi, yi),
-                    xytext=(5, 5),
-                    textcoords="offset points",
-                    fontsize=5,
-                    color="cyan",
+        simbad = get_simbad_data(target_coord, instrument)
+        if simbad is not None and not simbad.empty:
+            simbad = simbad[simbad.OTYPE != "Star"]
+            if not simbad.empty:
+                simbad_coords = SkyCoord(
+                    ra=simbad.RA, dec=simbad.DEC, unit=(u.hourangle, u.deg)
                 )
+                x_pix, y_pix = ref.wcs.wcs_world2pix(
+                    np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
+                ).T
+                x_pix += wcs_offset[0]
+                y_pix += wcs_offset[1]
+                ax.scatter(x_pix, y_pix, marker="D", s=40, ec="cyan", fc="none", lw=1)
+                for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
+                    ax.annotate(
+                        label,
+                        (xi, yi),
+                        xytext=(5, 5),
+                        textcoords="offset points",
+                        fontsize=5,
+                        color="cyan",
+                    )
 
     _savefig(fig, path)
 
@@ -2311,7 +2336,32 @@ def main(argv=None) -> int:
             try:
                 target_coord = Mast().resolve_object(mast_name.replace("-", " "))
             except Exception:
-                raise e
+                # Final fallback: try Simbad (resolves EPIC/K2 and other names
+                # that MAST does not know).
+                logger.warning(
+                    f"MAST resolution failed for both '{mast_name}' and "
+                    f"'{mast_name.replace('-', ' ')}'. Trying Simbad."
+                )
+                try:
+                    simbad = Simbad()
+                    simbad.TIMEOUT = 30
+                    result = simbad.query_object(args.target_name)
+                    if result is None or len(result) == 0:
+                        raise ValueError(f"Simbad returned no result for '{args.target_name}'")
+                    from astropy.coordinates import SkyCoord
+                    import astropy.units as _u
+                    ra_str = result["RA"][0]
+                    dec_str = result["DEC"][0]
+                    target_coord = SkyCoord(
+                        ra_str, dec_str, unit=(_u.hourangle, _u.deg), frame="icrs"
+                    )
+                    logger.info(f"target_coord resolved via Simbad: {target_coord}")
+                except Exception as simbad_exc:
+                    logger.error(
+                        f"Simbad resolution also failed for '{args.target_name}': {simbad_exc}. "
+                        "Use --target_coord to supply coordinates manually."
+                    )
+                    raise e
         logger.info(f"target radec: {target_coord}")
 
     # reference seeding: without --ref_band each band self-references its first
