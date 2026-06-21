@@ -389,10 +389,11 @@ class MinimumSources(Block):
 
     def run(self, image):
         if len(image.sources) < self.min_sources:
-            im_id = getattr(image, "path", getattr(image, "filename", f"frame {image.i}"))
+            im_id = getattr(
+                image, "path", getattr(image, "filename", f"frame {image.i}")
+            )
             logger.warning(
-                f"discarding {im_id}: "
-                f"{len(image.sources)} sources < {self.min_sources}"
+                f"discarding {im_id}: {len(image.sources)} sources < {self.min_sources}"
             )
             image.discard = True
 
@@ -726,7 +727,11 @@ def build_reference(
     ).run(ref, show_progress=False)
 
     forced_target_index = None
-    if target_index_override is None and target_coord is not None and ref.wcs is not None:
+    if (
+        target_index_override is None
+        and target_coord is not None
+        and ref.wcs is not None
+    ):
         coords = np.array([s.coords for s in ref.sources])
         match_found = False
         if len(coords) > 0:
@@ -749,9 +754,7 @@ def build_reference(
                 )
 
         if not match_found:
-            logger.info(
-                "Target not found in detected sources (separation > 5 arcsec)"
-            )
+            logger.info("Target not found in detected sources (separation > 5 arcsec)")
             ref, forced_target_index = _append_target_source(
                 ref, target_coord, cutout_size
             )
@@ -939,6 +942,7 @@ def run_band(
         if ref_source_positions is not None:
             this_positions = np.array([s.coords for s in ref.sources])
             from scipy.spatial import KDTree
+
             tree = KDTree(this_positions)
             mapped_avoid = []
             for idx in avoid_cids:
@@ -1065,14 +1069,19 @@ def differential_photometry(
         fluxes = fluxes.mask_stars(keep)
     n_before = len(fluxes.time) if fluxes.time is not None else 0
     sigma_kwargs = {
-        k: v for k, v in dict(bkg=SIGMA_BKG, fwhm=SIGMA_FWHM, dx=SIGMA_DX, dy=SIGMA_DY).items()
+        k: v
+        for k, v in dict(
+            bkg=SIGMA_BKG, fwhm=SIGMA_FWHM, dx=SIGMA_DX, dy=SIGMA_DY
+        ).items()
         if v is not None
     }
     fluxes = fluxes.sigma_clipping_data(**sigma_kwargs)
     n_after = len(fluxes.time) if fluxes.time is not None else 0
     clipped = n_before - n_after
+
     def _fmt(v):
         return str(v) if v is not None else "off"
+
     logger.info(
         f"!!! SIGMA CLIPPING: {clipped} / {n_before} frames clipped "
         f"(bkg={_fmt(SIGMA_BKG)}, fwhm={_fmt(SIGMA_FWHM)}, "
@@ -1225,7 +1234,12 @@ def _overlay_gaia_sources(
     Returns the number of Gaia sources drawn.
     """
     cutout_wcs = getattr(cutout, "wcs", None)
-    if gaia_df is None or not len(gaia_df) or cutout_wcs is None or not getattr(cutout_wcs, "has_celestial", False):
+    if (
+        gaia_df is None
+        or not len(gaia_df)
+        or cutout_wcs is None
+        or not getattr(cutout_wcs, "has_celestial", False)
+    ):
         return 0
     try:
         coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
@@ -1264,7 +1278,9 @@ def _overlay_gaia_sources(
             nearest = int(np.argmin(seps))
             target_mask[nearest] = True
             if "phot_g_mean_mag" in gaia_df:
-                mags_all = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[inside]
+                mags_all = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[
+                    inside
+                ]
                 target_mag = mags_all[nearest]
         except Exception:  # noqa: BLE001
             pass
@@ -1274,14 +1290,24 @@ def _overlay_gaia_sources(
     # Plot the target marker (no label).
     if target_mask.any():
         ax.scatter(
-            x[target_mask], y[target_mask],
-            marker="+", s=marker_size, c=color, lw=0.9, zorder=10,
+            x[target_mask],
+            y[target_mask],
+            marker="+",
+            s=marker_size,
+            c=color,
+            lw=0.9,
+            zorder=10,
         )
     # Plot neighbour markers with legend.
     if neighbour.any():
         ax.scatter(
-            x[neighbour], y[neighbour],
-            marker="+", s=marker_size, c=color, lw=0.9, zorder=9,
+            x[neighbour],
+            y[neighbour],
+            marker="+",
+            s=marker_size,
+            c=color,
+            lw=0.9,
+            zorder=9,
             label=legend_label,
         )
 
@@ -1321,9 +1347,9 @@ def plot_ref_image(
     if 0 <= target_idx < len(ref.sources):
         tpix = ref.sources[target_idx].coords
     else:
-        tpix = ref.wcs.wcs_world2pix(
-            [[target_coord.ra.deg, target_coord.dec.deg]], 0
-        )[0]
+        tpix = ref.wcs.wcs_world2pix([[target_coord.ra.deg, target_coord.dec.deg]], 0)[
+            0
+        ]
     ax.scatter(tpix[0], tpix[1], s=120, ec="r", fc="none", zorder=10)
     ax.annotate(
         "Target",
@@ -1376,7 +1402,10 @@ def plot_ref_image(
 
 
 def plot_apertures(
-    r, path: Path, plot_gaia_sources: bool = False, target_coord=None,
+    r,
+    path: Path,
+    plot_gaia_sources: bool = False,
+    target_coord=None,
 ) -> None:
     ref = r["ref"]
     coords = ref.sources[r["target_index"]].coords
@@ -1393,7 +1422,9 @@ def plot_apertures(
     target_source.plot(rout_pix, label=False, c="y")
     if plot_gaia_sources:
         n = _overlay_gaia_sources(
-            ax, c, r.get("gaia_df"),
+            ax,
+            c,
+            r.get("gaia_df"),
             target_coord=target_coord,
             marker_size=100,
             fontsize=7,
@@ -1644,7 +1675,10 @@ def plot_stacks(
         axes[row, 0].axis("off")
         if plot_gaia_sources:
             _overlay_gaia_sources(
-                axes[row, 0], c, r.get("gaia_df"), target_coord=target_coord,
+                axes[row, 0],
+                c,
+                r.get("gaia_df"),
+                target_coord=target_coord,
                 label_mag=False,
             )
 
@@ -1717,6 +1751,7 @@ def _gif_frame(
 def make_gif(files, path: Path, stride: int) -> None:
     """Render a quick-look GIF per band without matplotlib."""
     import imageio.v2 as imageio
+
     sampled = files[:: max(1, stride)]
     if not sampled:
         return
@@ -2217,11 +2252,10 @@ def main(argv=None) -> int:
             new_sciences = {}
             for b, fs in sciences.items():
                 start = max(0, _find_frame_by_number(fs, args.refid) - nrf // 2)
-                new_sciences[b] = fs[start:start + nrf]
+                new_sciences[b] = fs[start : start + nrf]
             sciences = new_sciences
         else:
             sciences = {b: fs[:nrf] for b, fs in sciences.items()}
-        total = sum(len(v) for v in sciences.values())
         logger.info(f"test-run: limiting to {nrf} frames per band (refid={args.refid})")
     counts = {b: len(sciences.get(b, [])) for b in args.bands}
     logger.info(f"frames per band: {counts}")
@@ -2297,7 +2331,7 @@ def main(argv=None) -> int:
                 new_sciences = {}
                 for b, fs in sciences.items():
                     start = max(0, _find_frame_by_number(fs, args.refid) - nrf // 2)
-                    new_sciences[b] = fs[start:start + nrf]
+                    new_sciences[b] = fs[start : start + nrf]
                 sciences = new_sciences
             else:
                 sciences = {b: fs[:nrf] for b, fs in sciences.items()}
@@ -2417,9 +2451,7 @@ def main(argv=None) -> int:
             failed_bands.append(band)
             continue
         if res is None:
-            logger.error(
-                f"[{band}] reduction produced no output; marking band failed"
-            )
+            logger.error(f"[{band}] reduction produced no output; marking band failed")
             failed_bands.append(band)
             continue
         band_results[band] = res

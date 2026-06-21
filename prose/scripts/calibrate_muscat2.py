@@ -82,9 +82,7 @@ class SaveCalibratedFITS(blocks.Block):
         hdu.writeto(out_path, overwrite=True)
 
 
-def find_frames(
-    data_dir: Path, target: str | None = None
-) -> tuple[dict, dict, dict]:
+def find_frames(data_dir: Path, target: str | None = None) -> tuple[dict, dict, dict]:
     """Return ``(darks, flats, sciences)`` mapping CCD index (0-3) to file paths.
 
     Resolution mirrors ``run_photometry``: the MuSCAT obslog is used when present
@@ -234,7 +232,9 @@ def _solve_wcs(image) -> object | None:
             # Validate pixel scale: expected ~0.44 arcsec/pixel for MuSCAT2
             scales = wcsutils.proj_plane_pixel_scales(wcs) * 3600.0
             if not (0.38 < scales[0] < 0.55 and 0.38 < scales[1] < 0.55):
-                logger.warning(f"WCS: solved pixel scales {scales} deviate significantly from expected ~0.44 arcsec/pixel; rejecting WCS solution")
+                logger.warning(
+                    f"WCS: solved pixel scales {scales} deviate significantly from expected ~0.44 arcsec/pixel; rejecting WCS solution"
+                )
                 wcs = None
     except Exception as e:
         logger.warning(f"WCS: twirl.compute_wcs failed ({e})")

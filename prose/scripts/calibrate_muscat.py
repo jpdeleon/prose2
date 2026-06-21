@@ -57,10 +57,15 @@ BAND_ORDER = ("gp", "rp", "ip", "zs")
 # on CCD1 with no g channel, so the nominal ``{0: g, 1: r, 2: z_s}`` mapping
 # mislabels them. ``CCD_BANDS`` is only a fallback when the filter is missing.
 FILTER_TO_BAND = {
-    "g": "gp", "gp": "gp",
-    "r": "rp", "rp": "rp",
-    "i": "ip", "ip": "ip",
-    "z": "zs", "z_s": "zs", "zs": "zs",
+    "g": "gp",
+    "gp": "gp",
+    "r": "rp",
+    "rp": "rp",
+    "i": "ip",
+    "ip": "ip",
+    "z": "zs",
+    "z_s": "zs",
+    "zs": "zs",
 }
 
 
@@ -72,6 +77,7 @@ def _band_from(filter_value, ccd) -> str | None:
         if band is not None:
             return band
     return CCD_BANDS.get(ccd)
+
 
 # Exposure-time matching for dark selection. ``blocks.Calibration`` rescales the
 # master dark by the science exposure (``dark_rate * exp_time``) assuming a
@@ -108,9 +114,7 @@ class SaveCalibratedFITS(blocks.Block):
         hdu.writeto(out_path, overwrite=True)
 
 
-def find_frames(
-    data_dir: Path, target: str | None = None
-) -> tuple[dict, dict, dict]:
+def find_frames(data_dir: Path, target: str | None = None) -> tuple[dict, dict, dict]:
     """Return ``(darks, flats, sciences)`` mapping canonical band to file paths.
 
     Frames are grouped by their FITS ``FILTER`` (via :func:`_band_from`), not by
@@ -237,12 +241,15 @@ def _solve_wcs(image) -> object | None:
 
     try:
         import astropy.wcs.utils as wcsutils
+
         wcs = twirl.compute_wcs(stars, sparse_gaias)
         if wcs is not None:
             # Validate pixel scale: expected ~0.36 arcsec/pixel for MuSCAT
             scales = wcsutils.proj_plane_pixel_scales(wcs) * 3600.0
             if not (0.32 < scales[0] < 0.40 and 0.32 < scales[1] < 0.40):
-                logger.warning(f"WCS: solved pixel scales {scales} deviate significantly from expected ~0.36 arcsec/pixel; rejecting WCS solution")
+                logger.warning(
+                    f"WCS: solved pixel scales {scales} deviate significantly from expected ~0.36 arcsec/pixel; rejecting WCS solution"
+                )
                 wcs = None
     except Exception as e:
         logger.warning(f"WCS: twirl.compute_wcs failed ({e})")

@@ -27,10 +27,11 @@ __all__ = [
     "SelectiveStack",
 ]
 
+
 class MaskSaturatedPixels(Block):
     def __init__(self, saturation_level=None, name=None):
         """Mask saturated pixels in the image.
-        
+
         Parameters
         ----------
         saturation_level : float, optional
@@ -41,36 +42,37 @@ class MaskSaturatedPixels(Block):
         """
         super().__init__(name=name)
         self.saturation_level = saturation_level
-        
+
     def run(self, image):
         # Determine saturation level
         sat_level = self.saturation_level
-        if sat_level is None and hasattr(image, 'saturation_level'):
+        if sat_level is None and hasattr(image, "saturation_level"):
             sat_level = image.saturation_level
 
         if sat_level is None:
             raise ValueError("No saturation level provided or found in image")
-        
+
         # Store original data
-        if not hasattr(image, 'original_data'):
+        if not hasattr(image, "original_data"):
             image.original_data = image.data.copy()
-        
+
         # Mask saturated pixels with NaN or median value
         mask = image.data >= sat_level
         if mask.any():
             # Option 1: Replace with NaN
             # image.data = image.data.copy()
             # image.data[mask] = np.nan
-            
+
             # Option 2: Replace with median (might be better for detection algorithms)
             median_value = np.nanmedian(image.data)
             image.data = image.data.copy()
             image.data[mask] = median_value
-            
+
+
 class RejectSaturatedSources(Block):
     def __init__(self, saturation_level=None, name=None):
         """Filter out saturated sources from the detected sources.
-        
+
         Parameters
         ----------
         saturation_level : float, optional
@@ -81,22 +83,23 @@ class RejectSaturatedSources(Block):
         """
         super().__init__(name=name)
         self.saturation_level = saturation_level
-        
+
     def run(self, image):
         if len(image.sources) == 0:
             return
-            
+
         # Determine saturation level
         sat_level = self.saturation_level
-        if sat_level is None and hasattr(image, 'saturation_level'):
+        if sat_level is None and hasattr(image, "saturation_level"):
             sat_level = image.saturation_level
-        
+
         if sat_level is None:
             raise ValueError("No saturation level provided or found in image")
-            
+
         # Filter out sources with peak values above saturation level
         non_saturated = [s for s in image.sources if s.peak < sat_level]
         image.sources = Sources(non_saturated, type=image.sources.type)
+
 
 # TODO: document and test
 class SortSources(Block):
@@ -501,9 +504,9 @@ class CleanBadPixels(Block):
 
         self.loader = loader
 
-        assert (
-            darks is not None or bad_pixels_map is not None
-        ), "bad_pixels_map or darks must be specified"
+        assert darks is not None or bad_pixels_map is not None, (
+            "bad_pixels_map or darks must be specified"
+        )
         if darks is not None:
             info("buidling bad pixels map")
             if darks is not None:
@@ -642,7 +645,9 @@ class GetFluxes(Get):
             args and kwargs of :py:class:`prose.blocks.Get`
         """
         self._time_key = time
-        get_fluxes = lambda im: im.aperture["fluxes"]
+
+        def get_fluxes(im):
+            return im.aperture["fluxes"]
 
         def get_bkg(im):
             if "annulus" in im.computed.keys():
