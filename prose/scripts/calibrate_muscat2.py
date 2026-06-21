@@ -446,7 +446,7 @@ def calibrate_band(
         if hasattr(calib, "master_dark")
         else np.array(
             np.memmap(
-                "__dark.array", dtype="float32", mode="r", shape=calib.shapes["dark"]
+                calib._cal_paths["dark"], dtype="float32", mode="r", shape=calib.shapes["dark"]
             )
         )
     )
@@ -455,7 +455,7 @@ def calibrate_band(
         if hasattr(calib, "master_flat")
         else np.array(
             np.memmap(
-                "__flat.array", dtype="float32", mode="r", shape=calib.shapes["flat"]
+                calib._cal_paths["flat"], dtype="float32", mode="r", shape=calib.shapes["flat"]
             )
         )
     )
