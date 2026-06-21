@@ -185,7 +185,7 @@ class Image:
                 utils.z_scale(self.data, contrast), cmap=cmap, origin="lower", **kwargs
             )
 
-        if frame:
+        if frame and hasattr(ax, "get_coords_overlay"):
             overlay = ax.get_coords_overlay(self.wcs)
             overlay.grid(color="white", ls="dotted")
             overlay[0].set_axislabel("Right Ascension (J2000)")
