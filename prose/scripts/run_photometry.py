@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import os
 import re
 import sys
 import time as time_module
@@ -771,6 +772,16 @@ def build_reference(
         if target_index_override is not None
         else find_target_index(ref, target_coord)
     )
+    # Validate against the actual number of kept sources (which may be fewer
+    # than max_num_stars in sparse fields). An out-of-range target index would
+    # otherwise surface as a cryptic IndexError deep inside auto_diff_1d.
+    n_sources = len(ref.sources)
+    if not (0 <= target_index < n_sources):
+        raise ValueError(
+            f"--tID {target_index} out of range: only {n_sources} sources kept "
+            f"(valid 0..{n_sources - 1}); increase --max_num_stars or pick a "
+            f"lower --tID"
+        )
     aper_radii_was_custom = aper_radii is not None
     if aper_radii_was_custom:
         unit = "fwhm" if scale else "pix"
@@ -1776,7 +1787,7 @@ def _npz_safe(v):
     return arr if arr.dtype != object else np.array(v, dtype=object)
 
 
-def save_all_bands_npz(band_results, bjds, path: Path) -> None:
+def save_all_bands_npz(band_results, bjds, path: Path, meta: dict | None = None) -> None:
     out = {}
     for band, r in band_results.items():
         diff = r["diff"]
@@ -1794,6 +1805,10 @@ def save_all_bands_npz(band_results, bjds, path: Path) -> None:
         for key in ("fwhm", "airmass", "bkg", "dx", "dy", "peak"):
             if key in diff.data:
                 out[f"{band}__data__{key}"] = _npz_safe(diff.data[key])
+    if meta:
+        out["__meta__"] = np.string_(str(meta))
+        out["__prose_version__"] = np.string_(_PROSE_VERSION)
+        out["__created__"] = np.string_(datetime.utcnow().isoformat())
     np.savez(path, **out)
     logger.info(f"wrote {path}")
 
@@ -2215,6 +2230,8 @@ def main(argv=None) -> int:
     setup_logger(args.results_dir, verbose=args.verbose)
     t0 = time_module.time()
 
+    logger.info(f"args: {vars(args)}")
+
     if args.bands is None:
         args.bands = _detect_narrow_bands(args.data_dir, args.target_name)
         logger.info(f"bands: {args.bands}")
@@ -2297,6 +2314,17 @@ def main(argv=None) -> int:
         )
         calib_dir.mkdir(parents=True, exist_ok=True)
         calibrated_files = sorted(calib_dir.glob("*_calibrated.fits"))
+        # An interrupted or disk-full calibration can leave zero-byte /
+        # truncated FITS behind. Treat those as missing so we recalibrate
+        # instead of crashing on a later fits.getheader(calibrated_files[0]).
+        good_files = [f for f in calibrated_files if f.stat().st_size > 0]
+        if len(good_files) != len(calibrated_files):
+            logger.warning(
+                f"{calib_label}: ignoring "
+                f"{len(calibrated_files) - len(good_files)} empty/corrupt "
+                f"calibrated frame(s); will recalibrate"
+            )
+        calibrated_files = good_files
         need_calib = not calibrated_files
 
         if not args.test_run and not need_calib:
@@ -2309,8 +2337,20 @@ def main(argv=None) -> int:
                 need_calib = True
 
         if calibrated_files:
-            h = fits.getheader(calibrated_files[0])
-            if "CD1_1" not in h and "CDELT1" not in h:
+            try:
+                h = fits.getheader(calibrated_files[0])
+            except OSError as exc:
+                # Truncated-but-nonzero FITS slips past the size filter above.
+                logger.warning(
+                    f"{calib_label}: calibrated frame "
+                    f"{calibrated_files[0].name} unreadable ({exc}); "
+                    f"will recalibrate"
+                )
+                need_calib = True
+                h = None
+            if h is None:
+                pass
+            elif "CD1_1" not in h and "CDELT1" not in h:
                 need_calib = True
                 logger.info(
                     f"{calib_label}: existing calibrated frames lack WCS; re-calibrating"
@@ -2359,6 +2399,20 @@ def main(argv=None) -> int:
                         f"/{len(active_bands)} bands)"
                     )
         if need_calib:
+            # WCS solving only happens here (muscat/muscat2 calibration);
+            # BANZAI-reduced muscat3/muscat4/sinistro never reach this branch.
+            # 'nova' needs an Astrometry.net key; fail fast and point at twirl
+            # rather than dying deep inside calibration after wasted work.
+            if args.wcs_method == "nova" and not os.environ.get(
+                "ASTROMETRY_NET_API_KEY", ""
+            ).strip():
+                logger.error(
+                    f"{calib_label}: --wcs_method nova requires the "
+                    "ASTROMETRY_NET_API_KEY environment variable, which is not "
+                    "set. Either export ASTROMETRY_NET_API_KEY, or re-run with "
+                    "--wcs_method twirl (twirl+Gaia, no API key needed)."
+                )
+                return 1
             logger.info(f"{calib_label}: running calibration")
             calibration_bands = (
                 list(args.bands) if set(args.bands).issubset(default_bands) else None
@@ -2631,7 +2685,7 @@ def main(argv=None) -> int:
         plot_gaia_sources=args.plot_gaia_sources,
         target_coord=target_coord,
     )
-    save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz")
+    save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz", meta=vars(args))
 
     n_fail = len(failed_bands)
     if n_fail:
