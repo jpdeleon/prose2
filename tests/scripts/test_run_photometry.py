@@ -34,6 +34,29 @@ def test_date_from_header(day_obs, expected):
     assert rp.date_from_header({"DAY-OBS": day_obs}) == expected
 
 
+def test_date_from_header_falls_back_to_mjd_when_date_obs_absent():
+    # MuSCAT2 frames stripped of DATE-OBS still carry MJD-STRT; the date must be
+    # recovered from it so output filenames are not left dateless.
+    # MJD 60789.0437 -> 2025-04-24 UT
+    header = {"MJD-STRT": 60789.0437086606}
+    assert rp.date_from_header(header) == "250424"
+
+
+def test_date_from_header_prefers_calendar_keyword_over_mjd():
+    # When both exist the explicit calendar keyword wins (no UT rollover surprise).
+    header = {"DATE-OBS": "2025-4-23", "MJD-STRT": 60789.0437086606}
+    assert rp.date_from_header(header) == "250423"
+
+
+def test_date_from_header_returns_empty_without_any_time_keyword():
+    assert rp.date_from_header({"OBJECT": "TOI-6715"}) == ""
+
+
+def test_date_from_header_ignores_unparseable_time_keyword():
+    # A non-numeric MJD must not raise; fall through to ''.
+    assert rp.date_from_header({"MJD-STRT": "n/a"}) == ""
+
+
 def test_build_stem_strips_spaces_and_handles_band():
     assert rp.build_stem("TOI 6715", "muscat4", "250416") == "TOI6715_muscat4_250416"
     assert (
@@ -454,15 +477,18 @@ def test_build_reference_target_index_override_bypasses_gaia(tmp_path, monkeypat
     from astropy.coordinates import SkyCoord
 
     coord = SkyCoord(0, 0, unit="deg")
+    # _FakeRefSeq yields 2 sources, so a valid override is 0..1. Use an in-range
+    # index: build_reference now validates the override against the kept-source
+    # count and raises for out-of-range values.
     result = rp.build_reference(
         fpath,
         coord,
         aper_radii=np.array([3.0, 4.0, 5.0]),
         rin=8.0,
         rout=12.0,
-        target_index_override=42,
+        target_index_override=1,
     )
-    assert result["target_index"] == 42
+    assert result["target_index"] == 1
     assert not called, "find_target_index should not have been called"
 
 
@@ -488,10 +514,13 @@ def test_build_reference_target_index_override_None_still_calls_find(
     assert result["target_index"] >= 0
 
 
-def test_build_reference_uses_center_when_wcs_projects_target_to_nan(
+def test_build_reference_falls_back_to_source0_when_target_unmatched(
     tmp_path, monkeypatch, caplog
 ):
-    """Some failed TAN projections return NaN instead of raising."""
+    """When the target can't be matched to a detected source (here it sits ~180
+    deg away / the TAN projection is degenerate), build_reference warns and falls
+    back to a real detected source instead of fabricating one at the center. The
+    kept source coordinates stay finite and the returned index is in range."""
     _patch_ref_seq(monkeypatch)
     fpath = _write_minimal_fits(tmp_path)
 
@@ -509,7 +538,8 @@ def test_build_reference_uses_center_when_wcs_projects_target_to_nan(
 
     coords = np.array([s.coords for s in result["ref"].sources], dtype=float)
     assert np.all(np.isfinite(coords))
-    assert any("non-finite coordinates" in r.message for r in caplog.records)
+    assert 0 <= result["target_index"] < len(result["ref"].sources)
+    assert any("Falling back to source 0" in r.message for r in caplog.records)
 
 
 def test_plot_ref_image_handles_empty_simbad_and_omits_avoided_sources(

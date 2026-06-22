@@ -105,7 +105,7 @@ from prose.utils import (
 # ignore if using BANZAI-reduced fits files
 CAL_OBJECT_MAP = {"bias": "BIAS", "dark": "DARK", "flat": "FLAT"}
 
-# Fallback observatory site (astropy/astroplan site registry name) for
+# Fallback observatory site (astropy EarthLocation site registry name) for
 # instruments whose headers lack an LCO ``SITE`` keyword. Used for BJD-TDB
 # barycentric correction when no site can be read from the header.
 INSTRUMENT_SITES: dict[str, str] = {
@@ -179,6 +179,13 @@ MAX_TIME_OFFSET_MIN = 2 * 8.4
 # JD = MJD + this offset. Some instruments (e.g. MuSCAT2/TCS, keyword MJD-STRT)
 # report their time axis in MJD; prose flags this via Telescope.jd_scale == "mjd".
 MJD_TO_JD = 2_400_000.5
+
+# Header keywords that can carry the observation time, in order of preference.
+# The convention varies by instrument and epoch (e.g. MuSCAT2/TCS reports
+# ``MJD-STRT`` with only a date-only ``DATE-OBS``), so a date derived from these
+# numeric keys is more robust than trusting ``DATE-OBS`` alone. This is the
+# single source of truth reused by ``check_header_time`` and ``date_from_header``.
+TIME_KEYS: tuple[str, ...] = ("MJD-STRT", "MJD-OBS", "JD", "JD-STRT", "BJD")
 
 # Band color map. Keyed by the full band token so Sloan broadband,
 # narrow-band, and Johnson (B/V/R) filters each get a distinct color instead of
@@ -293,23 +300,52 @@ def _resolve_band(raw_filter: str, instrument: str, bands: list[str]) -> str | N
     return None
 
 
-def date_from_header(header) -> str:
-    """Return YYMMDD from the ``DAY-OBS`` or ``DATE-OBS`` keyword.
+def _date_from_time_keys(header) -> str:
+    """Derive YYMMDD from the canonical numeric time keywords (:data:`TIME_KEYS`).
 
-    Handles both compact LCO-style values (``20250416``) and dashed
-    ``DATE-OBS`` values that may be non-zero-padded and carry a time component
-    (e.g. MuSCAT2 ``2020-3-5`` -> ``200305``).
+    Fallback for when the calendar-date keywords (``DAY-OBS``/``DATE-OBS``) are
+    absent -- they can be missing on some epochs or stripped by upstream
+    processing (e.g. WCS injection), whereas ``MJD-STRT`` survives. ``MJD-``
+    keywords are shifted to JD before conversion. Returns ``""`` if no usable
+    time keyword is found.
+    """
+    for key in TIME_KEYS:
+        if key not in header:
+            continue
+        try:
+            value = float(header[key])
+        except (TypeError, ValueError):
+            continue
+        jd = value + MJD_TO_JD if key.upper().startswith("MJD") else value
+        try:
+            return Time(jd, format="jd").datetime.strftime("%y%m%d")
+        except (ValueError, OverflowError):
+            continue
+    return ""
+
+
+def date_from_header(header) -> str:
+    """Return YYMMDD for output-file naming, robust to header convention drift.
+
+    Prefers the calendar-date keywords (``DAY-OBS`` then ``DATE-OBS``), handling
+    both compact LCO-style values (``20250416``) and dashed values that may be
+    non-zero-padded and carry a time component (e.g. MuSCAT2 ``2020-3-5`` ->
+    ``200305``). When neither is usable, falls back to the canonical numeric
+    time keywords (:data:`TIME_KEYS`, e.g. MuSCAT2's ``MJD-STRT``) -- see
+    ``check_header_time`` for why ``DATE-OBS`` alone is unreliable.
     """
     raw = str(header.get("DAY-OBS", header.get("DATE-OBS", ""))).strip()
     # keep only the date portion if a time is appended (T or whitespace separated)
     date_part = raw.replace("T", " ").split()[0] if raw else ""
-    if "-" in date_part:
-        try:
-            year, month, day = (int(p) for p in date_part.split("-")[:3])
-            return f"{year % 100:02d}{month:02d}{day:02d}"
-        except ValueError:
-            return date_part.replace("-", "")[2:]
-    return date_part[2:]
+    if date_part:
+        if "-" in date_part:
+            try:
+                year, month, day = (int(p) for p in date_part.split("-")[:3])
+                return f"{year % 100:02d}{month:02d}{day:02d}"
+            except ValueError:
+                return date_part.replace("-", "")[2:]
+        return date_part[2:]
+    return _date_from_time_keys(header)
 
 
 def build_stem(target: str, inst: str, date: str, band: str | None = None) -> str:
@@ -745,27 +781,11 @@ def build_reference(
                 )
 
         if not match_found:
-            tx, ty = _target_pixel_or_center(ref, target_coord)
-            logger.info(
-                f"Target not found in detected sources (separation > 5 arcsec). "
-                f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f})"
+            logger.warning(
+                "Target not found in detected sources (separation > 5 arcsec) "
+                "and WCS-based localization failed. Falling back to source 0 "
+                "(brightest detected star). Use --tID to override."
             )
-            from prose.core.source import PointSource, Sources
-
-            new_idx = len(ref.sources)
-            new_source = PointSource(coords=np.array([tx, ty]), i=new_idx)
-            ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
-
-            # Centroid the force-added source on the reference image
-            try:
-                from prose.blocks import CentroidQuadratic, Cutouts
-
-                ref = Cutouts(shape=cutout_size)(ref)
-                ref = CentroidQuadratic()(ref)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to refine centroid of force-added target source: {e}"
-                )
 
     target_index = (
         target_index_override
@@ -1130,23 +1150,22 @@ def compute_bjd_tdb(
     (LCO-style) when present, otherwise from :data:`INSTRUMENT_SITES` keyed on
     *instrument* (e.g. MuSCAT/MuSCAT2 headers carry no ``SITE`` keyword).
     """
-    from astroplan import Observer
+    from astropy.coordinates import EarthLocation
 
     site = header.get("SITE")
     if site is not None:
-        obs_site = Observer.at_site(LCO_SITES[site])
+        loc = EarthLocation.of_site(LCO_SITES[site])
     elif instrument in INSTRUMENT_SITES:
-        obs_site = Observer.at_site(INSTRUMENT_SITES[instrument])
+        loc = EarthLocation.of_site(INSTRUMENT_SITES[instrument])
         logger.info(
             f"no SITE keyword; using {instrument} site "
             f"'{INSTRUMENT_SITES[instrument]}' for BJD correction"
         )
     else:
-        obs_site = None
+        loc = None
         logger.warning(
             "SITE keyword not found in header; BJD correction without site location"
         )
-    loc = obs_site.location if obs_site is not None else None
     t = Time(diff.time, format="jd", scale="utc", location=loc)
 
     if use_barycorrpy:
@@ -1826,8 +1845,12 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
     ``DEFAULT_BROAD_BANDS``.  Logs the decision so operators can override with
     an explicit ``--bands``.
     """
+    # Shared obslog base, kept in sync with muscat-db's OBSLOG_BASE via the same
+    # MUSCAT_OBSLOG_DIR env var (inherited from the launching muscat-db process,
+    # or sourced from .env for manual runs). Default matches muscat-db (/ut3).
+    obslog_base = os.environ.get("MUSCAT_OBSLOG_DIR", "/ut3/muscat/obslog")
     obslog_dir = Path(
-        f"/ut2/muscat/obslog/{data_dir.parent.name.lower()}/{data_dir.name}"
+        f"{obslog_base}/{data_dir.parent.name.lower()}/{data_dir.name}"
     )
     if obslog_dir.is_dir():
         for ccd_csv in sorted(obslog_dir.glob("obslog-*-ccd?.csv")):

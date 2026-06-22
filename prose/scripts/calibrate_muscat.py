@@ -89,12 +89,16 @@ EXPOSURE_RTOL = 1e-3
 EXPOSURE_ATOL = 1e-2
 
 
+MUSCAT_SITE = "OAO"  # Okayama Astrophysical Observatory
+
+
 class SaveCalibratedFITS(blocks.Block):
-    def __init__(self, output_dir, wcs=None, wcs_method=None, **kwargs):
+    def __init__(self, output_dir, wcs=None, wcs_method=None, site=None, **kwargs):
         super().__init__(**kwargs)
         self.output_dir = output_dir
         self.wcs = wcs
         self.wcs_method = wcs_method
+        self.site = site
         self._parallel_friendly = True
 
     def run(self, image):
@@ -161,6 +165,8 @@ class SaveCalibratedFITS(blocks.Block):
         hdu.header["CALSTAGE"] = "calibrated"
         hdu.header["WCSMTHD"] = self.wcs_method or ("twirl" if self.wcs else "none")
         hdu.header["PRSVERS"] = PROSE_VERSION
+        if self.site is not None:
+            hdu.header["SITE"] = (self.site, "Observatory site")
         if self.wcs is not None:
             hdu.header.update(self.wcs.to_header())
         hdu.writeto(out_path, overwrite=True)
@@ -514,14 +520,14 @@ def calibrate_band(
                 f"[{band}] WCS solving failed via twirl; continuing without astrometry"
             )
         seq = SequenceParallel(
-            [calib, SaveCalibratedFITS(output_dir, wcs=wcs, wcs_method="twirl")],
+            [calib, SaveCalibratedFITS(output_dir, wcs=wcs, wcs_method="twirl", site=MUSCAT_SITE)],
             name=f"[{band}] calibrating",
         )
         seq.run(sciences)
 
     elif solve_wcs == "nova":
         seq = SequenceParallel(
-            [calib, SaveCalibratedFITS(output_dir, wcs_method="nova")],
+            [calib, SaveCalibratedFITS(output_dir, wcs_method="nova", site=MUSCAT_SITE)],
             name=f"[{band}] calibrating",
         )
         seq.run(sciences)
@@ -561,7 +567,7 @@ def calibrate_band(
 
     else:
         seq = SequenceParallel(
-            [calib, SaveCalibratedFITS(output_dir)],
+            [calib, SaveCalibratedFITS(output_dir, site=MUSCAT_SITE)],
             name=f"[{band}] calibrating",
         )
         seq.run(sciences)

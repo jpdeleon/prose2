@@ -108,6 +108,19 @@ _WCS_KEYS = (
     "BP_ORDER",
 )
 
+# Observation-epoch keywords that astropy's ``WCS.to_header`` emits as WCS
+# "auxiliary" cards but which record *when* the frame was taken, not the
+# celestial solution. They must survive WCS replacement: the downstream
+# output-file date is derived from these (see ``run_photometry.date_from_header``
+# / ``TIME_KEYS``), so deleting them silently collapses the filename date.
+_PROTECTED_TIME_KEYS = frozenset(
+    {
+        "DATE-OBS", "DATE-BEG", "DATE-AVG", "DATE-END", "DATEREF", "DATE",
+        "MJD-OBS", "MJD-BEG", "MJD-AVG", "MJD-END", "MJDREF", "MJD-STRT",
+        "JD", "JD-STRT", "BJD", "TIMESYS",
+    }
+)
+
 DEFAULT_TIMEOUT_S = 300
 
 
@@ -336,12 +349,16 @@ def inject_wcs_into_file(fits_path: Path, wcs: WCS) -> bool:
     try:
         with fits.open(str(fits_path), mode="update") as hdul:
             hdr = hdul[0].header
-            # Remove stale WCS keywords before inserting the solved ones
+            # Remove stale WCS keywords before inserting the solved ones.
+            # ``WCS(hdr).to_header`` also reports observation-epoch keys
+            # (e.g. DATE-OBS, MJD-OBS) as WCS aux cards; exclude those so the
+            # observation date is preserved across WCS replacement.
             stale_keys = set(_WCS_KEYS)
             try:
                 stale_keys.update(WCS(hdr).to_header(relax=True).keys())
             except Exception:
                 pass
+            stale_keys -= _PROTECTED_TIME_KEYS
             for key in stale_keys:
                 if key in hdr:
                     del hdr[key]

@@ -206,6 +206,17 @@ class TestInjectWcs:
         sky = wcs_loaded.pixel_to_world(512, 512)
         assert abs(sky.ra.deg - 90.0) < 1.0
 
+    def test_preserves_observation_date_keywords(self, probe_fits, valid_wcs):
+        """astropy reports DATE-OBS/MJD-OBS as WCS aux cards; injection must not
+        delete them, or the downstream filename date collapses to empty."""
+        before = fits.getheader(str(probe_fits))
+        assert before["DATE-OBS"] == "2026-3-10"
+        assert "MJD-STRT" in before
+        swa.inject_wcs_into_file(probe_fits, valid_wcs)
+        after = fits.getheader(str(probe_fits))
+        assert after["DATE-OBS"] == "2026-3-10"
+        assert after["MJD-STRT"] == before["MJD-STRT"]
+
 
 # ---------------------------------------------------------------------------
 # apply_wcs_to_directory

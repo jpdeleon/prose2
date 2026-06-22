@@ -67,7 +67,7 @@ For each photometric band it:
 6. performs automatic differential photometry (Broeg et al. 2005), or uses the
    comparison stars you pass with `--cID`,
 7. converts GJD-UTC to BJD-TDB (astropy light-travel by default;
-   `--use_barycorrpy` to use barycorrpy — requires `astroplan`), and
+   `--use_barycorrpy` to use barycorrpy — requires `barycorrpy`), and
 8. writes per-band and multi-band data products.
 
 ### Supported instruments & input
