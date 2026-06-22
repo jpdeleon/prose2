@@ -51,6 +51,7 @@ def test_parse_args_defaults_match_documented_behaviour():
     assert args.max_num_stars == rp.MAX_NUM_STARS
     assert args.min_star_separation == rp.MIN_STAR_SEPARATION
     assert args.n_stars_align is None
+    assert args.annulus_pix is None  # sky annulus uses default
     assert args.cutout_size == rp.CUTOUT_SIZE
     assert args.ccd_trim_size_yx == rp.CCD_TRIM_SIZE_YX
     assert args.use_barycorrpy is False
@@ -223,6 +224,19 @@ def test_parse_trim_rejects_bad_input(bad):
         rp.parse_trim(bad)
 
 
+# --------------- detection: faint-target inclusion ---------------
+
+
+def test_reference_sequence_detects_more_than_max_num_stars():
+    """reference_sequence detects DETECT_NUM_STARS_FACTOR times max_num_stars
+    so faint targets are captured before truncation back to max_num_stars."""
+    seq = rp.reference_sequence(max_num_stars=10)
+    detect_block = seq.blocks[1]
+    expected_min = max(int(10 * rp.DETECT_NUM_STARS_FACTOR), 10 + 5)
+    assert detect_block.n >= expected_min
+    assert detect_block.n > 10
+
+
 # --------------- aperture-radii / sky-annulus contamination geometry ---------------
 #
 # These exercise the pure helpers behind gaia_aperture_radii without any FITS
@@ -248,27 +262,29 @@ def test_contaminant_seps_excludes_faint_neighbour():
     assert contam.size == 0  # dmag 3 -> ~6% flux, below the 10% threshold
 
 
-def test_sky_annulus_nominal_six_to_ten_fwhm_without_contaminants():
+def test_sky_annulus_nominal_twenty_to_thirty_pix_without_contaminants():
     rin, rout = rp._sky_annulus_pix(fwhm=5.0, contam_seps=np.array([]))
-    assert (rin, rout) == (30.0, 50.0)  # 6*fwhm, 10*fwhm
+    assert (rin, rout) == (20.0, 30.0)
 
 
-def test_sky_annulus_clamps_rout_on_large_fwhm_defocus():
-    _, rout = rp._sky_annulus_pix(fwhm=20.0, contam_seps=np.array([]))
-    assert rout == rp.ANNULUS_MAX_PIX  # 10*20=200 px clamped to 100
+def test_sky_annulus_respects_explicit_override():
+    rin, rout = rp._sky_annulus_pix(
+        fwhm=5.0, contam_seps=np.array([]), annulus_pix=(30, 50)
+    )
+    assert (rin, rout) == (30.0, 50.0)
 
 
 def test_sky_annulus_shifts_inward_to_exclude_contaminant():
-    # contaminant at 40 px sits inside the nominal 30-50 px ring
-    rin, rout = rp._sky_annulus_pix(fwhm=5.0, contam_seps=np.array([40.0]))
-    assert rout < 40.0  # ring pulled inside the contaminant
-    assert rout == 40.0 - rp.CONTAM_MARGIN_PIX
+    # contaminant at 25 px sits inside the nominal 20-30 px ring
+    rin, rout = rp._sky_annulus_pix(fwhm=5.0, contam_seps=np.array([25.0]))
+    assert rout < 25.0  # ring pulled inside the contaminant
+    assert rout == 25.0 - rp.CONTAM_MARGIN_PIX
     assert rin < rout
 
 
 def test_sky_annulus_ignores_contaminant_beyond_nominal_ring():
     rin, rout = rp._sky_annulus_pix(fwhm=5.0, contam_seps=np.array([80.0]))
-    assert (rin, rout) == (30.0, 50.0)  # distant contaminant leaves ring nominal
+    assert (rin, rout) == (20.0, 30.0)  # distant contaminant leaves ring nominal
 
 
 def test_aperture_radii_span_fwhm_to_inner_annulus():
@@ -285,8 +301,9 @@ def test_aperture_radii_never_empty_when_no_room():
 def test_bright_contaminant_yields_smaller_aperture_than_faint_neighbour():
     """End-to-end via the helpers: a >=10%-flux neighbour shrinks the aperture."""
     fwhm = 5.0
-    bright = rp._contaminant_seps(np.array([40.0]), np.array([13.0]), 12.0)  # dmag 1
-    faint = rp._contaminant_seps(np.array([40.0]), np.array([17.0]), 12.0)  # dmag 5
+    # contaminant at 25 px sits inside the default 20-30 px annulus
+    bright = rp._contaminant_seps(np.array([25.0]), np.array([13.0]), 12.0)  # dmag 1
+    faint = rp._contaminant_seps(np.array([25.0]), np.array([17.0]), 12.0)  # dmag 5
     rin_bright, _ = rp._sky_annulus_pix(fwhm, bright)
     rin_faint, _ = rp._sky_annulus_pix(fwhm, faint)
     aper_bright = rp._aperture_radii_pix(fwhm, rin_bright)
