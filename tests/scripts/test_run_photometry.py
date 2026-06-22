@@ -870,3 +870,118 @@ def test_build_reference_overwrites_pixel_scale_with_fallback_when_no_header(
     ref = result["ref"]
     assert abs(ref.telescope.pixel_scale - 0.267) < 1e-6
     assert ref.telescope.saturation is None
+
+
+# --------------------------- edge-source exclusion ---------------------------
+
+
+class _FakeSrc:
+    def __init__(self, xy):
+        self.coords = np.array(xy, dtype=float)
+
+
+class _FakeRef:
+    """Minimal stand-in exposing the ``sources`` and ``shape`` that
+    ``_edge_source_indices`` reads."""
+
+    def __init__(self, coords, shape=(20, 20)):
+        self.sources = [_FakeSrc(c) for c in coords]
+        self.shape = shape
+
+
+@pytest.mark.parametrize(
+    "edge_margin, cutout_size, expected",
+    [
+        (None, 36, 18),  # auto -> half the cutout box
+        (None, 35, 17),  # auto with odd cutout -> floor division
+        (20, 36, 20),  # explicit value wins over auto
+        (0, 36, 0),  # explicit disable
+    ],
+)
+def test_resolve_edge_margin(edge_margin, cutout_size, expected):
+    assert rp.resolve_edge_margin(edge_margin, cutout_size) == expected
+
+
+def test_edge_source_indices_flags_only_border_stars():
+    # 20x20 frame, margin 6: a star at x=5 is within 6 px of the left edge;
+    # one at (10, 10) is comfortably interior.
+    ref = _FakeRef([[5.0, 5.0], [10.0, 10.0]], shape=(20, 20))
+    assert rp._edge_source_indices(ref, margin=6, target_index=99) == [0]
+
+
+def test_edge_source_indices_never_drops_the_target():
+    # The edge star (index 0) is also the target -> it must not be returned.
+    ref = _FakeRef([[5.0, 5.0], [10.0, 10.0]], shape=(20, 20))
+    assert rp._edge_source_indices(ref, margin=6, target_index=0) == []
+
+
+def test_edge_source_indices_disabled_when_margin_zero():
+    ref = _FakeRef([[0.0, 0.0], [1.0, 1.0]], shape=(20, 20))
+    assert rp._edge_source_indices(ref, margin=0, target_index=99) == []
+
+
+def test_edge_source_indices_handles_no_sources():
+    assert rp._edge_source_indices(_FakeRef([], shape=(20, 20)), 6, 0) == []
+
+
+def test_build_reference_returns_edge_cids(tmp_path, monkeypatch):
+    """build_reference flags the border star as an edge comparison to avoid,
+    while keeping the interior target."""
+    _patch_ref_seq(monkeypatch)  # sources at (5,5) and (10,10) in a 20x20 frame
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    coord = SkyCoord(0, 0, unit="deg")
+    result = rp.build_reference(
+        fpath,
+        coord,
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=1,  # interior star is the target
+        edge_margin=6,
+    )
+    assert result["edge_cids"] == [0]
+
+
+def test_build_reference_edge_margin_disabled(tmp_path, monkeypatch):
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    coord = SkyCoord(0, 0, unit="deg")
+    result = rp.build_reference(
+        fpath,
+        coord,
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=1,
+        edge_margin=0,
+    )
+    assert result["edge_cids"] == []
+
+
+def test_build_reference_warns_when_target_near_edge(tmp_path, monkeypatch, caplog):
+    """A target sitting inside the margin is kept (never in edge_cids) but the
+    border proximity is surfaced as a warning."""
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    coord = SkyCoord(0, 0, unit="deg")
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        result = rp.build_reference(
+            fpath,
+            coord,
+            aper_radii=np.array([3.0, 4.0, 5.0]),
+            rin=8.0,
+            rout=12.0,
+            target_index_override=0,  # the (5,5) border star is the target
+            edge_margin=6,
+        )
+    assert result["edge_cids"] == []  # target never dropped
+    assert any("within 6 px of a CCD edge" in r.message for r in caplog.records)

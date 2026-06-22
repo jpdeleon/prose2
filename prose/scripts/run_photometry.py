@@ -149,6 +149,11 @@ CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
 CCD_TRIM_SIZE_YX = (0, 0)  # trim image edges [pix]
 MIN_STAR_AREA = 10  # min detected-source area [pix]
 MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
+# Exclude detected stars whose centroid is within this many pixels of any CCD
+# edge from the comparison-star pool (the target is never excluded). ``None``
+# means auto: half the cutout size, so the PSF cutout box stays fully on-chip.
+# 0 disables edge exclusion.
+EDGE_MARGIN_PIX = None
 
 # Gaia aperture-radii / sky-annulus heuristic
 APER_STEP_PIX = 2  # spacing of aperture radii [pix]
@@ -694,6 +699,44 @@ def _skycoord_has_finite_data(coord) -> bool:
         return False
 
 
+def resolve_edge_margin(edge_margin: int | None, cutout_size: int) -> int:
+    """Resolve the effective edge margin [pix].
+
+    ``None`` means auto: half the cutout size, so a star sitting exactly at the
+    margin still has its full PSF cutout box on-chip. An explicit value is used
+    as-is; ``0`` (or negative) disables edge exclusion.
+    """
+    if edge_margin is None:
+        return int(cutout_size) // 2
+    return int(edge_margin)
+
+
+def _edge_source_indices(ref, margin: int, target_index: int) -> list[int]:
+    """Indices of detected sources within ``margin`` px of any image border.
+
+    Source centroids are ``(x, y)`` and ``ref.shape`` is ``(ny, nx)``. The
+    ``target_index`` is always removed from the result so the target is never
+    dropped from photometry, even when it sits near an edge. Returns a sorted
+    list of comparison-star indices (empty when ``margin <= 0`` or no sources).
+    """
+    if margin <= 0:
+        return []
+    coords = np.array([s.coords for s in ref.sources], dtype=float)
+    if coords.size == 0:
+        return []
+    ny, nx = ref.shape
+    x, y = coords[:, 0], coords[:, 1]
+    near = (
+        (x < margin)
+        | (x > nx - 1 - margin)
+        | (y < margin)
+        | (y > ny - 1 - margin)
+    )
+    if 0 <= target_index < near.size:
+        near[target_index] = False
+    return sorted(int(i) for i in np.nonzero(near)[0])
+
+
 def build_reference(
     ref_file,
     target_coord,
@@ -708,6 +751,7 @@ def build_reference(
     target_index_override: int | None = None,
     min_area: int = MIN_STAR_AREA,
     plot_gaia_sources: bool = False,
+    edge_margin: int | None = EDGE_MARGIN_PIX,
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -825,6 +869,30 @@ def build_reference(
         f"reference {Path(ref_file).name}: FWHM {float(ref.fwhm):.2f} px, "
         f"target idx {target_index}"
     )
+    margin = resolve_edge_margin(edge_margin, cutout_size)
+    edge_cids = _edge_source_indices(ref, margin, target_index)
+    if margin > 0:
+        # The target is protected from edge_cids, but warn when it lands inside
+        # the margin: its aperture/cutout may spill off-chip and it can drift out
+        # of the FOV during the night — a data-quality heads-up, not a drop.
+        ny, nx = ref.shape
+        tx, ty = ref.sources[target_index].coords
+        if (
+            tx < margin
+            or tx > nx - 1 - margin
+            or ty < margin
+            or ty > ny - 1 - margin
+        ):
+            logger.warning(
+                f"target (idx {target_index}) is within {margin} px of a CCD "
+                f"edge at ({tx:.0f}, {ty:.0f}); keeping it but its aperture may "
+                f"clip the border"
+            )
+        if edge_cids:
+            logger.info(
+                f"edge exclusion ({margin} px margin): {len(edge_cids)} "
+                f"comparison star(s) flagged near border: {edge_cids}"
+            )
     return dict(
         ref=ref,
         target_index=target_index,
@@ -833,6 +901,7 @@ def build_reference(
         rout=rout,
         scale=scale,
         gaia_df=gaia_df,
+        edge_cids=edge_cids,
     )
 
 
@@ -928,6 +997,7 @@ def run_band(
     ref_source_positions: np.ndarray | None = None,
     min_area: int = MIN_STAR_AREA,
     plot_gaia_sources: bool = False,
+    edge_margin: int | None = EDGE_MARGIN_PIX,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -954,6 +1024,7 @@ def run_band(
         target_index_override=target_index_override,
         min_area=min_area,
         plot_gaia_sources=plot_gaia_sources,
+        edge_margin=edge_margin,
     )
     ref = reference["ref"]
 
@@ -992,6 +1063,24 @@ def run_band(
             if not cids:
                 logger.warning(
                     f"[{band}] all explicit cIDs are in avoid list; "
+                    f"falling back to auto-selection"
+                )
+                cids = None
+
+    # Merge edge-star indices (computed on this band's reference frame, so already
+    # in this band's index space) into the avoid pool. Done after the ref-band
+    # cross-match so edge stars are not double-mapped. The target is already
+    # protected inside build_reference, so it can never appear here.
+    edge_cids = reference.get("edge_cids") or []
+    if edge_cids:
+        mapped_avoid = sorted(set(mapped_avoid or []) | set(edge_cids))
+        # Explicit-cid mode diffs against ``cids`` directly (bypassing the avoid
+        # mask), so edge stars must also be stripped from an explicit list.
+        if cids is not None:
+            cids = [c for c in cids if c not in set(edge_cids)]
+            if not cids:
+                logger.warning(
+                    f"[{band}] all explicit cIDs are near a CCD edge; "
                     f"falling back to auto-selection"
                 )
                 cids = None
@@ -2141,6 +2230,17 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="CCD edge trim 'Y,X' in pixels (default: %(default)s).",
     )
     ap.add_argument(
+        "--edge_margin",
+        "--edge-margin",
+        type=int,
+        default=None,
+        dest="edge_margin",
+        help="Exclude detected stars whose centroid is within this many pixels "
+        "of any CCD edge from the comparison-star pool (the target is never "
+        "excluded). Default: half of --cutout_size, so the PSF cutout box stays "
+        "on-chip. Set 0 to disable.",
+    )
+    ap.add_argument(
         "--bin_size_minutes",
         "--bin-size-minutes",
         type=float,
@@ -2612,6 +2712,7 @@ def main(argv=None) -> int:
                 ref_source_positions=ref_source_positions,
                 min_area=args.min_star_area,
                 plot_gaia_sources=args.plot_gaia_sources,
+                edge_margin=args.edge_margin,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
