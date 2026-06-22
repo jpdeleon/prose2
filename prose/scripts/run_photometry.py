@@ -1154,7 +1154,11 @@ def compute_bjd_tdb(
 
     site = header.get("SITE")
     if site is not None:
-        loc = EarthLocation.of_site(LCO_SITES[site])
+        # ``SITE`` may be an LCO node string (BANZAI headers, e.g. "LCOGT node
+        # at Tenerife") that maps to an astropy site code via ``LCO_SITES``, or
+        # already an astropy site code written by our calibration scripts
+        # (muscat/muscat2, e.g. "teide"/"OAO"). Accept both.
+        loc = EarthLocation.of_site(LCO_SITES.get(site, site))
     elif instrument in INSTRUMENT_SITES:
         loc = EarthLocation.of_site(INSTRUMENT_SITES[instrument])
         logger.info(

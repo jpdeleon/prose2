@@ -429,7 +429,7 @@ class Image:
     def wcs(self, new_wcs):
         if new_wcs is not None:
             if isinstance(new_wcs, WCS):
-                self.metadata["wcs"] = new_wcs.to_header().tostring()
+                self.metadata["wcs"] = new_wcs.to_header(relax=True).tostring()
                 self._wcs = new_wcs
 
     @property
