@@ -1,5 +1,6 @@
 import inspect
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -206,6 +207,30 @@ def test_Calibration_with_files(tmp_path):
     Calibration(bias=calib_path).run(im)
     Calibration(bias=[calib_path]).run(im)
     Calibration(bias=np.array([calib_path])).run(im)
+
+
+def test_Calibration_only_allocates_and_cleans_shared_storage():
+    from prose.blocks import Calibration
+
+    local = Calibration()
+    assert local._cal_dir is None
+
+    shared = Calibration(shared=True)
+    cal_dir = Path(shared._cal_dir)
+    assert cal_dir.is_dir()
+    Sequence([shared]).terminate()
+    assert not cal_dir.exists()
+    np.testing.assert_array_equal(shared.master_bias, [0.0])
+
+
+def test_SequenceParallel_terminates_blocks():
+    from prose.blocks import Calibration
+    from prose.core.sequence import SequenceParallel
+
+    shared = Calibration(shared=True)
+    cal_dir = Path(shared._cal_dir)
+    SequenceParallel([shared]).run([image.copy()], show_progress=False)
+    assert not cal_dir.exists()
 
 
 def test_SortSources():

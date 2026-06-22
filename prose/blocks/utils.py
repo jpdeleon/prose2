@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 from functools import partial
 from pathlib import Path
@@ -314,19 +315,20 @@ class Calibration(Block):
         self.master_dark = self._produce_master(check_input(darks), "dark")
         self.master_flat = self._produce_master(check_input(flats), "flat")
 
-        # Per-instance memmap paths for the shared-calibration path. Hardcoded
-        # names in the CWD let concurrent runs (e.g. several photometry jobs
-        # launched from the same directory) clobber and truncate each other's
-        # master frames, producing garbage calibration and zero detected
-        # sources. A unique temp dir per instance keeps runs isolated.
-        self._cal_dir = tempfile.mkdtemp(prefix="prose_cal_")
-        self._cal_paths = {
-            imtype: os.path.join(self._cal_dir, f"__{imtype}.array")
-            for imtype in ("bias", "dark", "flat")
-        }
-
         if shared:
-            self._share()
+            self._cal_dir = tempfile.mkdtemp(prefix="prose_cal_")
+            self._cal_paths = {
+                imtype: os.path.join(self._cal_dir, f"__{imtype}.array")
+                for imtype in ("bias", "dark", "flat")
+            }
+            try:
+                self._share()
+            except Exception:
+                shutil.rmtree(self._cal_dir, ignore_errors=True)
+                raise
+        else:
+            self._cal_dir = None
+            self._cal_paths = {}
         self.verbose = verbose
 
         self.calibration = self._calibration_shared if shared else self._calibration
@@ -445,6 +447,27 @@ class Calibration(Block):
                 m[:] = data[:]
 
             del self.__dict__[f"master_{imtype}"]
+
+    def terminate(self):
+        if self._cal_dir is not None:
+            for imtype in ("bias", "dark", "flat"):
+                attr = f"master_{imtype}"
+                if not hasattr(self, attr):
+                    setattr(
+                        self,
+                        attr,
+                        np.array(
+                            np.memmap(
+                                self._cal_paths[imtype],
+                                dtype="float32",
+                                mode="r",
+                                shape=self.shapes[imtype],
+                            )
+                        ),
+                    )
+            shutil.rmtree(self._cal_dir, ignore_errors=True)
+            self._cal_dir = None
+            self._cal_paths = {}
 
     @property
     def citations(self):

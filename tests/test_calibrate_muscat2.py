@@ -9,8 +9,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 from astropy.io import fits
+from astropy.wcs import WCS
 
+from prose.scripts import calibrate_muscat as cm1
 from prose.scripts import calibrate_muscat2 as cm
+from prose.scripts import solve_wcs_astrometry as swa
 
 CCDS = {0: "g", 1: "r", 2: "i", 3: "z_s"}
 DATA_TYP = "OBJECT"  # MuSCAT2 FITS convention
@@ -191,6 +194,50 @@ class TestCalibrateBand:
         )
         out_files = sorted(tmp_path.glob("*_calibrated.fits"))
         assert len(out_files) == len(sciences[0])
+
+    @pytest.mark.parametrize("module,instrument", [(cm1, "muscat"), (cm, "muscat2")])
+    def test_astrometry_net_only_updates_current_band(
+        self, module, instrument, tmp_path, monkeypatch
+    ):
+        dark = tmp_path / f"{instrument}_dark.fits"
+        flat = tmp_path / f"{instrument}_flat.fits"
+        science = tmp_path / f"{instrument}_science.fits"
+        for path, kind in ((dark, "DARK"), (flat, "FLAT"), (science, "OBJECT")):
+            _fake_fits(path, kind)
+
+        output_dir = tmp_path / instrument
+        output_dir.mkdir()
+        foreign = output_dir / "other_band_calibrated.fits"
+        _fake_fits(foreign, "OBJECT")
+
+        wcs = WCS(naxis=2)
+        wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        uploaded = []
+        injected = []
+        monkeypatch.setattr(swa, "_api_key", lambda: "key")
+        monkeypatch.setattr(
+            swa, "upload_and_solve", lambda path, key: uploaded.append(path) or wcs
+        )
+        monkeypatch.setattr(swa, "validate_wcs", lambda value, name: True)
+        monkeypatch.setattr(
+            swa,
+            "inject_wcs_into_file",
+            lambda path, value: injected.append(path) or True,
+        )
+
+        module.calibrate_band(
+            [str(dark)],
+            [str(flat)],
+            [str(science)],
+            output_dir,
+            "gp",
+            solve_wcs="astrometry.net",
+        )
+
+        expected = output_dir / f"{science.stem}_calibrated.fits"
+        assert uploaded == [expected]
+        assert injected == [expected]
+        assert foreign not in injected
 
 
 # ---------- CLI argument parsing ----------

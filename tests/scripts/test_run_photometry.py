@@ -8,8 +8,21 @@ header parsing, z-scaling, CSV column mapping).
 import numpy as np
 import pandas as pd
 import pytest
+from astropy.table import Table
 
 from prose.scripts import run_photometry as rp
+
+
+def test_resolve_simbad_target_uses_decimal_degree_columns(monkeypatch):
+    class FakeSimbad:
+        def query_object(self, name):
+            assert name == "EPIC 211945201"
+            return Table({"ra": [130.123], "dec": [-12.456]})
+
+    monkeypatch.setattr(rp, "Simbad", FakeSimbad)
+    coord = rp._resolve_simbad_target("EPIC 211945201")
+    assert coord.ra.deg == pytest.approx(130.123)
+    assert coord.dec.deg == pytest.approx(-12.456)
 
 
 @pytest.mark.parametrize(

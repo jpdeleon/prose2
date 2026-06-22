@@ -341,7 +341,9 @@ def load_wcs_fits(wcs_path: Path) -> WCS | None:
         return None
 
 
-def inject_wcs_into_file(fits_path: Path, wcs: WCS) -> bool:
+def inject_wcs_into_file(
+    fits_path: Path, wcs: WCS, method: str = "astrometry.net"
+) -> bool:
     """Overwrite *fits_path* in-place, inserting WCS header keywords.
 
     Returns *True* on success, *False* on error.
@@ -363,7 +365,7 @@ def inject_wcs_into_file(fits_path: Path, wcs: WCS) -> bool:
                 if key in hdr:
                     del hdr[key]
             hdr.update(wcs.to_header(relax=True))
-            hdr["WCSMTHD"] = "astrometry.net"
+            hdr["WCSMTHD"] = method
             hdr["PRSVERS"] = PROSE_VERSION
         return True
     except Exception as exc:
