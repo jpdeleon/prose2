@@ -76,6 +76,55 @@ class SaveCalibratedFITS(blocks.Block):
             del header["BZERO"]
         if "BSCALE" in header:
             del header["BSCALE"]
+        # Strip any stale WCS keywords from raw header
+        for k in (
+            "WCSMTHD",
+            "PRSVERS",
+            "WCSAXES",
+            "CTYPE1",
+            "CTYPE2",
+            "CRVAL1",
+            "CRVAL2",
+            "CRPIX1",
+            "CRPIX2",
+            "CD1_1",
+            "CD1_2",
+            "CD2_1",
+            "CD2_2",
+            "CDELT1",
+            "CDELT2",
+            "PC1_1",
+            "PC1_2",
+            "PC2_1",
+            "PC2_2",
+            "CUNIT1",
+            "CUNIT2",
+            "EQUINOX",
+            "RADESYS",
+            "A_ORDER",
+            "A_0_0",
+            "A_0_1",
+            "A_0_2",
+            "A_1_0",
+            "A_1_1",
+            "A_2_0",
+            "B_ORDER",
+            "B_0_0",
+            "B_0_1",
+            "B_0_2",
+            "B_1_0",
+            "B_1_1",
+            "B_2_0",
+            "CPDIS1",
+            "CPDIS2",
+            "DCLOG1",
+            "DCLOG2",
+            "DCRDR1",
+            "DCRDR2",
+            "DCRLG1",
+            "DCRLG2",
+        ):
+            header.pop(k, None)
         hdu.header = header
         hdu.header["CALSTAGE"] = "calibrated"
         hdu.header["WCSMTHD"] = self.wcs_method or ("twirl" if self.wcs else "none")
