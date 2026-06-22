@@ -7,7 +7,7 @@ Given a raw data directory containing DARK, FLAT, and OBJECT frames
    keyword (g, r, i, z_s), independent of CCD index
 2. Builds master dark and master flat for each band
 3. Calibrates all science frames (master-dark subtraction, flat division)
-4. Optionally solves WCS astrometry per band (twirl+Gaia or nova.astrometry.net)
+4. Optionally solves WCS astrometry per band (twirl+Gaia or astrometry.net)
 5. Writes calibrated FITS files under ``<output_dir>/<band>/``
 
 Example
@@ -168,7 +168,7 @@ class SaveCalibratedFITS(blocks.Block):
         if self.site is not None:
             hdu.header["SITE"] = (self.site, "Observatory site")
         if self.wcs is not None:
-            hdu.header.update(self.wcs.to_header())
+            hdu.header.update(self.wcs.to_header(relax=True))
         hdu.writeto(out_path, overwrite=True)
 
 
@@ -467,12 +467,12 @@ def calibrate_band(
     Parameters
     ----------
     solve_wcs:
-        ``None`` = no WCS solving, ``"twirl"`` = twirl+Gaia, ``"nova"`` = astrometry.net.
+        ``None`` = no WCS solving, ``"twirl"`` = twirl+Gaia, ``"astrometry.net"`` = astrometry.net.
 
     Returns ``(master_dark, master_flat)`` arrays or ``(None, None)`` if skipped.
     """
-    if solve_wcs is True:  # backward compat: old bool True -> nova
-        solve_wcs = "nova"
+    if solve_wcs is True:  # backward compat: old bool True -> astrometry.net
+        solve_wcs = "astrometry.net"
     if test_run:
         sciences = sciences[:10]
 
@@ -525,9 +525,9 @@ def calibrate_band(
         )
         seq.run(sciences)
 
-    elif solve_wcs == "nova":
+    elif solve_wcs == "astrometry.net":
         seq = SequenceParallel(
-            [calib, SaveCalibratedFITS(output_dir, wcs_method="nova", site=MUSCAT_SITE)],
+            [calib, SaveCalibratedFITS(output_dir, wcs_method="astrometry.net", site=MUSCAT_SITE)],
             name=f"[{band}] calibrating",
         )
         seq.run(sciences)
@@ -550,7 +550,7 @@ def calibrate_band(
                 if wcs is not None and validate_wcs(wcs, "muscat"):
                     for fp in calibrated_files:
                         inject_wcs_into_file(fp, wcs)
-                    sp = _wcs_sidecar_path(output_dir, band, "nova")
+                    sp = _wcs_sidecar_path(output_dir, band, "astrometry.net")
                     hdu = fits.PrimaryHDU()
                     hdu.header.update(wcs.to_header(relax=True))
                     hdu.writeto(str(sp), overwrite=True)
@@ -643,10 +643,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--solve-wcs",
         nargs="?",
         const="twirl",
-        choices=["twirl", "nova"],
+        choices=["twirl", "astrometry.net"],
         default=None,
         help="Solve WCS astrometry: 'twirl' (twirl+Gaia, default when flag is given "
-        "without a value) or 'nova' (nova.astrometry.net, requires API key in "
+        "without a value) or 'astrometry.net' (nova.astrometry.net, requires API key in "
         "$ASTROMETRY_NET_API_KEY). The WCS is solved once per band and applied "
         "to all calibrated frames. Omit the flag entirely to skip WCS solving.",
     )

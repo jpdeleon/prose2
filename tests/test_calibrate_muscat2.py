@@ -231,11 +231,11 @@ class TestCLI:
         args = cm.parse_args(["--data_dir", "/d", "--output_dir", "/o"])
         assert args.solve_wcs is None
 
-    def test_solve_wcs_nova(self):
+    def test_solve_wcs_astrometry_net(self):
         args = cm.parse_args(
-            ["--data_dir", "/d", "--output_dir", "/o", "--solve-wcs", "nova"]
+            ["--data_dir", "/d", "--output_dir", "/o", "--solve-wcs", "astrometry.net"]
         )
-        assert args.solve_wcs == "nova"
+        assert args.solve_wcs == "astrometry.net"
 
     def test_solve_wcs_main_flag(self, fake_data_dir, tmp_path):
         """End-to-end with --solve-wcs: WCS may fail on fake data but must not crash."""

@@ -1820,7 +1820,7 @@ def save_all_bands_npz(band_results, bjds, path: Path, meta: dict | None = None)
         out[f"{band}__aper_unit"] = np.array("fwhm" if r.get("scale") else "pix")
         out[f"{band}__target_index"] = np.array(r["target_index"])
         out[f"{band}__aperture"] = np.array(diff.aperture)
-        out[f"{band}__wcs_header"] = np.array(r["ref"].wcs.to_header_string())
+        out[f"{band}__wcs_header"] = np.array(r["ref"].wcs.to_header_string(relax=True))
         for key in ("fwhm", "airmass", "bkg", "dx", "dy", "peak"):
             if key in diff.data:
                 out[f"{band}__data__{key}"] = _npz_safe(diff.data[key])
@@ -2061,10 +2061,10 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--wcs_method",
         "--wcs-method",
         dest="wcs_method",
-        choices=["twirl", "nova"],
-        default="nova",
+        choices=["twirl", "astrometry.net"],
+        default="astrometry.net",
         help="WCS solving method for calibration: 'twirl' (twirl+Gaia, no API key "
-        "needed) or 'nova' (nova.astrometry.net, requires ASTROMETRY_NET_API_KEY). "
+        "needed) or 'astrometry.net' (nova.astrometry.net, requires ASTROMETRY_NET_API_KEY). "
         "Default: %(default)s.",
     )
     ap.add_argument(
@@ -2424,13 +2424,13 @@ def main(argv=None) -> int:
         if need_calib:
             # WCS solving only happens here (muscat/muscat2 calibration);
             # BANZAI-reduced muscat3/muscat4/sinistro never reach this branch.
-            # 'nova' needs an Astrometry.net key; fail fast and point at twirl
+            # 'astrometry.net' needs an Astrometry.net key; fail fast and point at twirl
             # rather than dying deep inside calibration after wasted work.
-            if args.wcs_method == "nova" and not os.environ.get(
+            if args.wcs_method == "astrometry.net" and not os.environ.get(
                 "ASTROMETRY_NET_API_KEY", ""
             ).strip():
                 logger.error(
-                    f"{calib_label}: --wcs_method nova requires the "
+                    f"{calib_label}: --wcs_method astrometry.net requires the "
                     "ASTROMETRY_NET_API_KEY environment variable, which is not "
                     "set. Either export ASTROMETRY_NET_API_KEY, or re-run with "
                     "--wcs_method twirl (twirl+Gaia, no API key needed)."
