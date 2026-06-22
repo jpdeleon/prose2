@@ -86,6 +86,7 @@ from prose.core.block import Block
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
+from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
 from prose.utils import (
     LCO_SITES,
     PIXSCALES,
@@ -2315,11 +2316,48 @@ def main(argv=None) -> int:
                     f"{calib_label}: existing calibrated frames lack WCS; re-calibrating"
                 )
             elif h.get("WCSMTHD", "") != args.wcs_method:
-                need_calib = True
-                logger.info(
-                    f"{calib_label}: WCS method changed from "
-                    f"'{h.get('WCSMTHD', '?')}' to '{args.wcs_method}'; re-calibrating"
+                sidecar_dir = calib_dir / ".wcs"
+                all_have_sidecar = all(
+                    (sidecar_dir / f"{b}_{args.wcs_method}.wcs.fits").exists()
+                    for b in active_bands
                 )
+                if all_have_sidecar:
+                    logger.info(
+                        f"{calib_label}: WCS method changed from "
+                        f"'{h.get('WCSMTHD', '?')}' to '{args.wcs_method}'; "
+                        f"re-injecting from sidecar files"
+                    )
+                    band_files = read_filename_per_band(
+                        calibrated_files,
+                        args.bands,
+                        args.target_name,
+                        filter_aliases=INSTRUMENT_FILTER_ALIASES.get(calib_label),
+                    )
+                    for b, files in band_files.items():
+                        sp = sidecar_dir / f"{b}_{args.wcs_method}.wcs.fits"
+                        wcs = load_wcs_fits(sp)
+                        if wcs is None:
+                            logger.warning(
+                                f"  {calib_label}: sidecar {sp} unreadable; "
+                                f"re-calibrating"
+                            )
+                            need_calib = True
+                            break
+                        for fp in files:
+                            inject_wcs_into_file(fp, wcs)
+                        logger.info(
+                            f"  {calib_label} [{b}]: injected WCS into "
+                            f"{len(files)} files"
+                        )
+                else:
+                    need_calib = True
+                    logger.info(
+                        f"{calib_label}: WCS method changed from "
+                        f"'{h.get('WCSMTHD', '?')}' to '{args.wcs_method}'; "
+                        f"re-calibrating (sidecar files: "
+                        f"{sum(1 for b in active_bands if (sidecar_dir / f'{b}_{args.wcs_method}.wcs.fits').exists())}"
+                        f"/{len(active_bands)} bands)"
+                    )
         if need_calib:
             logger.info(f"{calib_label}: running calibration")
             calibration_bands = (

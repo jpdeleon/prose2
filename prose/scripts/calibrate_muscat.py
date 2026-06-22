@@ -441,6 +441,12 @@ def select_darks_for_exposure(
     return darks, "no-match"
 
 
+def _wcs_sidecar_path(output_dir: Path, band: str, method: str) -> Path:
+    p = output_dir / ".wcs" / f"{band}_{method}.wcs.fits"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def calibrate_band(
     darks: list[str],
     flats: list[str],
@@ -499,6 +505,10 @@ def calibrate_band(
         wcs = _solve_wcs(first)
         if wcs is not None:
             info(f"[{band}] WCS solved successfully via twirl")
+            sp = _wcs_sidecar_path(output_dir, band, "twirl")
+            hdu = fits.PrimaryHDU()
+            hdu.header.update(wcs.to_header(relax=True))
+            hdu.writeto(str(sp), overwrite=True)
         else:
             info(
                 f"[{band}] WCS solving failed via twirl; continuing without astrometry"
@@ -534,6 +544,10 @@ def calibrate_band(
                 if wcs is not None and validate_wcs(wcs, "muscat"):
                     for fp in calibrated_files:
                         inject_wcs_into_file(fp, wcs)
+                    sp = _wcs_sidecar_path(output_dir, band, "nova")
+                    hdu = fits.PrimaryHDU()
+                    hdu.header.update(wcs.to_header(relax=True))
+                    hdu.writeto(str(sp), overwrite=True)
                     info(
                         f"[{band}] WCS solved via astrometry.net and "
                         f"injected into {len(calibrated_files)} files"
