@@ -225,11 +225,17 @@ class TestCLI:
 
     def test_solve_wcs_flag(self):
         args = cm.parse_args(["--data_dir", "/d", "--output_dir", "/o", "--solve-wcs"])
-        assert args.solve_wcs is True
+        assert args.solve_wcs == "twirl"
 
-    def test_solve_wcs_defaults_to_false(self):
+    def test_solve_wcs_defaults_to_none(self):
         args = cm.parse_args(["--data_dir", "/d", "--output_dir", "/o"])
-        assert args.solve_wcs is False
+        assert args.solve_wcs is None
+
+    def test_solve_wcs_nova(self):
+        args = cm.parse_args(
+            ["--data_dir", "/d", "--output_dir", "/o", "--solve-wcs", "nova"]
+        )
+        assert args.solve_wcs == "nova"
 
     def test_solve_wcs_main_flag(self, fake_data_dir, tmp_path):
         """End-to-end with --solve-wcs: WCS may fail on fake data but must not crash."""

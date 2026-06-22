@@ -7,7 +7,7 @@ Given a raw data directory containing DARK, FLAT, and OBJECT frames
    keyword (g, r, i, z_s), independent of CCD index
 2. Builds master dark and master flat for each band
 3. Calibrates all science frames (master-dark subtraction, flat division)
-4. Optionally solves WCS astrometry (via twirl + Gaia) per band
+4. Optionally solves WCS astrometry per band (twirl+Gaia or nova.astrometry.net)
 5. Writes calibrated FITS files under ``<output_dir>/<band>/``
 
 Example
@@ -23,7 +23,7 @@ Example
         --data_dir /data/MuSCAT/220131 \\
         --target TOI126 \\
         --output_dir /data/MuSCAT/220131_calibrated \\
-        --solve-wcs
+        --solve-wcs twirl
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ import numpy as np
 from astropy.io import fits
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from prose import FITSImage, blocks
+from prose import FITSImage, blocks, __version__ as PROSE_VERSION
 from prose.console_utils import info
 from prose.core.sequence import SequenceParallel
 from prose.utils import frames_from_obslog, scan_fits_headers
@@ -57,10 +57,15 @@ BAND_ORDER = ("gp", "rp", "ip", "zs")
 # on CCD1 with no g channel, so the nominal ``{0: g, 1: r, 2: z_s}`` mapping
 # mislabels them. ``CCD_BANDS`` is only a fallback when the filter is missing.
 FILTER_TO_BAND = {
-    "g": "gp", "gp": "gp",
-    "r": "rp", "rp": "rp",
-    "i": "ip", "ip": "ip",
-    "z": "zs", "z_s": "zs", "zs": "zs",
+    "g": "gp",
+    "gp": "gp",
+    "r": "rp",
+    "rp": "rp",
+    "i": "ip",
+    "ip": "ip",
+    "z": "zs",
+    "z_s": "zs",
+    "zs": "zs",
 }
 
 
@@ -73,6 +78,7 @@ def _band_from(filter_value, ccd) -> str | None:
             return band
     return CCD_BANDS.get(ccd)
 
+
 # Exposure-time matching for dark selection. ``blocks.Calibration`` rescales the
 # master dark by the science exposure (``dark_rate * exp_time``) assuming a
 # zero-bias pedestal. With no master bias supplied (the MuSCAT case), that model
@@ -84,10 +90,11 @@ EXPOSURE_ATOL = 1e-2
 
 
 class SaveCalibratedFITS(blocks.Block):
-    def __init__(self, output_dir, wcs=None, **kwargs):
+    def __init__(self, output_dir, wcs=None, wcs_method=None, **kwargs):
         super().__init__(**kwargs)
         self.output_dir = output_dir
         self.wcs = wcs
+        self.wcs_method = wcs_method
         self._parallel_friendly = True
 
     def run(self, image):
@@ -103,14 +110,14 @@ class SaveCalibratedFITS(blocks.Block):
             del header["BSCALE"]
         hdu.header = header
         hdu.header["CALSTAGE"] = "calibrated"
+        hdu.header["WCSMTHD"] = self.wcs_method or ("twirl" if self.wcs else "none")
+        hdu.header["PRSVERS"] = PROSE_VERSION
         if self.wcs is not None:
             hdu.header.update(self.wcs.to_header())
         hdu.writeto(out_path, overwrite=True)
 
 
-def find_frames(
-    data_dir: Path, target: str | None = None
-) -> tuple[dict, dict, dict]:
+def find_frames(data_dir: Path, target: str | None = None) -> tuple[dict, dict, dict]:
     """Return ``(darks, flats, sciences)`` mapping canonical band to file paths.
 
     Frames are grouped by their FITS ``FILTER`` (via :func:`_band_from`), not by
@@ -237,12 +244,15 @@ def _solve_wcs(image) -> object | None:
 
     try:
         import astropy.wcs.utils as wcsutils
+
         wcs = twirl.compute_wcs(stars, sparse_gaias)
         if wcs is not None:
-            # Validate pixel scale: expected ~0.36 arcsec/pixel for MuSCAT
             scales = wcsutils.proj_plane_pixel_scales(wcs) * 3600.0
             if not (0.32 < scales[0] < 0.40 and 0.32 < scales[1] < 0.40):
-                logger.warning(f"WCS: solved pixel scales {scales} deviate significantly from expected ~0.36 arcsec/pixel; rejecting WCS solution")
+                logger.warning(
+                    f"WCS: solved pixel scales {scales} deviate significantly"
+                    " from expected ~0.36 arcsec/pixel; rejecting WCS solution"
+                )
                 wcs = None
     except Exception as e:
         logger.warning(f"WCS: twirl.compute_wcs failed ({e})")
@@ -388,13 +398,20 @@ def calibrate_band(
     sciences: list[str],
     output_dir: Path,
     band: str,
-    solve_wcs: bool = False,
+    solve_wcs: str | bool | None = None,
     test_run: bool = False,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Build master dark + flat and calibrate all science frames for one band.
 
+    Parameters
+    ----------
+    solve_wcs:
+        ``None`` = no WCS solving, ``"twirl"`` = twirl+Gaia, ``"nova"`` = astrometry.net.
+
     Returns ``(master_dark, master_flat)`` arrays or ``(None, None)`` if skipped.
     """
+    if solve_wcs is True:  # backward compat: old bool True -> nova
+        solve_wcs = "nova"
     if test_run:
         sciences = sciences[:10]
 
@@ -426,26 +443,65 @@ def calibrate_band(
         verbose=True,
     )
 
-    wcs = None
-    if solve_wcs:
-        info(f"[{band}] solving WCS on first science frame")
+    if solve_wcs == "twirl":
+        info(f"[{band}] solving WCS on first science frame via twirl+Gaia")
         first = FITSImage(sciences[0])
         calib.run(first)
         wcs = _solve_wcs(first)
         if wcs is not None:
-            info(f"[{band}] WCS solved successfully")
+            info(f"[{band}] WCS solved successfully via twirl")
         else:
-            info(f"[{band}] WCS solving failed; continuing without astrometry")
+            info(
+                f"[{band}] WCS solving failed via twirl; continuing without astrometry"
+            )
+        seq = SequenceParallel(
+            [calib, SaveCalibratedFITS(output_dir, wcs=wcs, wcs_method="twirl")],
+            name=f"[{band}] calibrating",
+        )
+        seq.run(sciences)
 
-    seq = SequenceParallel(
-        [
-            calib,
-            SaveCalibratedFITS(output_dir, wcs=wcs),
-        ],
-        name=f"[{band}] calibrating",
-    )
+    elif solve_wcs == "nova":
+        seq = SequenceParallel(
+            [calib, SaveCalibratedFITS(output_dir, wcs_method="nova")],
+            name=f"[{band}] calibrating",
+        )
+        seq.run(sciences)
+        info(f"[{band}] solving WCS on first calibrated frame via astrometry.net")
+        from prose.scripts.solve_wcs_astrometry import (
+            _api_key,
+            inject_wcs_into_file,
+            upload_and_solve,
+            validate_wcs,
+        )
 
-    seq.run(sciences)
+        try:
+            api_key = _api_key()
+        except RuntimeError as e:
+            logger.warning(f"[{band}] {e}; skipping WCS")
+        else:
+            calibrated_files = sorted(output_dir.glob("*_calibrated.fits"))
+            if calibrated_files:
+                wcs = upload_and_solve(calibrated_files[0], api_key)
+                if wcs is not None and validate_wcs(wcs, "muscat"):
+                    for fp in calibrated_files:
+                        inject_wcs_into_file(fp, wcs)
+                    info(
+                        f"[{band}] WCS solved via astrometry.net and "
+                        f"injected into {len(calibrated_files)} files"
+                    )
+                else:
+                    info(
+                        f"[{band}] WCS solving failed via astrometry.net; continuing without astrometry"
+                    )
+            else:
+                logger.warning(f"[{band}] no calibrated files found; skipping WCS")
+
+    else:
+        seq = SequenceParallel(
+            [calib, SaveCalibratedFITS(output_dir)],
+            name=f"[{band}] calibrating",
+        )
+        seq.run(sciences)
 
     info(f"[{band}] done  ({len(sciences)} frames -> {output_dir})")
 
@@ -454,7 +510,10 @@ def calibrate_band(
         if hasattr(calib, "master_dark")
         else np.array(
             np.memmap(
-                calib._cal_paths["dark"], dtype="float32", mode="r", shape=calib.shapes["dark"]
+                calib._cal_paths["dark"],
+                dtype="float32",
+                mode="r",
+                shape=calib.shapes["dark"],
             )
         )
     )
@@ -463,7 +522,10 @@ def calibrate_band(
         if hasattr(calib, "master_flat")
         else np.array(
             np.memmap(
-                calib._cal_paths["flat"], dtype="float32", mode="r", shape=calib.shapes["flat"]
+                calib._cal_paths["flat"],
+                dtype="float32",
+                mode="r",
+                shape=calib.shapes["flat"],
             )
         )
     )
@@ -510,9 +572,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument(
         "--solve_wcs",
         "--solve-wcs",
-        action="store_true",
-        help="Solve WCS astrometry via twirl + Gaia (requires network access). "
-        "The WCS is solved once per band and applied to all frames.",
+        nargs="?",
+        const="twirl",
+        choices=["twirl", "nova"],
+        default=None,
+        help="Solve WCS astrometry: 'twirl' (twirl+Gaia, default when flag is given "
+        "without a value) or 'nova' (nova.astrometry.net, requires API key in "
+        "$ASTROMETRY_NET_API_KEY). The WCS is solved once per band and applied "
+        "to all calibrated frames. Omit the flag entirely to skip WCS solving.",
     )
     return ap.parse_args(argv)
 
