@@ -47,6 +47,7 @@ docs = [
 [project.scripts]
 fitsmanager = "prose.scripts.fitsmanager:main"
 photometry = "prose.scripts.run_photometry:main"
+solve-wcs = "prose.scripts.solve_wcs_astrometry:main"
 
 [build-system]
 requires = ["poetry-core"]
@@ -106,3 +107,4 @@ ipywidgets = "*"
 [tool.poetry.scripts]
 fitsmanager = 'prose.scripts.fitsmanager:main'
 photometry = 'prose.scripts.run_photometry:main'
+solve-wcs = 'prose.scripts.solve_wcs_astrometry:main'

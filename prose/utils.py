@@ -235,6 +235,45 @@ _FILTER_ALIASES: dict[str, str] = {
     "Na_D": "Na_D",
 }
 
+# Canonical band ordering used for display and output products.
+# Broadband first (Sloan g/r/i/z), then narrowband extras.
+# This order is mirrored by muscat-db's band_utils.py (web-layer copy).
+DEFAULT_BROAD_BANDS: list[str] = ["gp", "rp", "ip", "zs"]
+DEFAULT_NARROW_BANDS: list[str] = ["g_narrow", "Na_D", "i_narrow", "z_narrow"]
+
+
+def bands_from_filters(
+    filters: list[str],
+    aliases: dict[str, str] | None = None,
+) -> list[str]:
+    """Map raw FITS FILTER header values to ordered, de-duplicated band tokens.
+
+    Each raw filter is normalised via *aliases* (defaults to
+    :data:`_FILTER_ALIASES`); unknown values (e.g. Johnson ``R``/``V``/``B``)
+    pass through unchanged. The result is sorted canonically —
+    :data:`DEFAULT_BROAD_BANDS`, then :data:`DEFAULT_NARROW_BANDS`, then any
+    extras in first-seen order — so callers always get a stable, familiar layout.
+
+    Returns ``[]`` for empty input.
+
+    Note
+    ----
+    Do NOT case-fold the raw filter value: Johnson ``R``/``V`` must not
+    collapse into Sloan ``rp``/etc.
+    """
+    _aliases = aliases if aliases is not None else _FILTER_ALIASES
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for f in filters or []:
+        if not f:
+            continue
+        token = _aliases.get(f, f)
+        if token not in seen:
+            seen.add(token)
+            tokens.append(token)
+    order = {b: i for i, b in enumerate([*DEFAULT_BROAD_BANDS, *DEFAULT_NARROW_BANDS])}
+    return sorted(tokens, key=lambda b: (order.get(b, len(order)), tokens.index(b)))
+
 
 OBSLOG_ROOT = "/ut2/muscat/obslog"
 
