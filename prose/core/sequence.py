@@ -307,6 +307,7 @@ class SequenceParallel(Sequence):
                     self._add_discard(image.discard_block, image.i)
 
     def terminate(self):
+        super().terminate()
         if self._has_data:
             self.data.terminate()
 

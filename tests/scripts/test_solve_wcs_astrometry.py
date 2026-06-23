@@ -185,6 +185,10 @@ class TestInjectWcs:
         wcs = WCS(hdr)
         assert getattr(wcs, "has_celestial", False)
 
+    def test_records_requested_method(self, probe_fits, valid_wcs):
+        swa.inject_wcs_into_file(probe_fits, valid_wcs, method="twirl")
+        assert fits.getheader(str(probe_fits))["WCSMTHD"] == "twirl"
+
     def test_preserves_original_data(self, probe_fits, valid_wcs):
         data_before = fits.getdata(str(probe_fits))
         swa.inject_wcs_into_file(probe_fits, valid_wcs)

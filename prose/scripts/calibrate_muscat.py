@@ -544,7 +544,10 @@ def calibrate_band(
         except RuntimeError as e:
             logger.warning(f"[{band}] {e}; skipping WCS")
         else:
-            calibrated_files = sorted(output_dir.glob("*_calibrated.fits"))
+            calibrated_files = [
+                output_dir / f"{Path(fp).stem}_calibrated.fits" for fp in sciences
+            ]
+            calibrated_files = [fp for fp in calibrated_files if fp.is_file()]
             if calibrated_files:
                 wcs = upload_and_solve(calibrated_files[0], api_key)
                 if wcs is not None and validate_wcs(wcs, "muscat"):

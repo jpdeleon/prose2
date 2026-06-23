@@ -2017,6 +2017,15 @@ def _normalize_toi_name(name: str) -> str:
     return name
 
 
+def _resolve_simbad_target(name: str) -> SkyCoord:
+    simbad = Simbad()
+    simbad.TIMEOUT = 30
+    result = simbad.query_object(name)
+    if result is None or len(result) == 0:
+        raise ValueError(f"Simbad returned no result for '{name}'")
+    return SkyCoord(result["ra"][0], result["dec"][0], unit=u.deg, frame="icrs")
+
+
 def _calibration_args(
     args: argparse.Namespace, calib_dir: Path, bands: list[str] | None
 ) -> list[str]:
@@ -2511,7 +2520,7 @@ def main(argv=None) -> int:
                             need_calib = True
                             break
                         for fp in files:
-                            inject_wcs_into_file(fp, wcs)
+                            inject_wcs_into_file(fp, wcs, method=args.wcs_method)
                         logger.info(
                             f"  {calib_label} [{b}]: injected WCS into "
                             f"{len(files)} files"
@@ -2620,18 +2629,7 @@ def main(argv=None) -> int:
                     f"'{mast_name.replace('-', ' ')}'. Trying Simbad."
                 )
                 try:
-                    simbad = Simbad()
-                    simbad.TIMEOUT = 30
-                    result = simbad.query_object(args.target_name)
-                    if result is None or len(result) == 0:
-                        raise ValueError(
-                            f"Simbad returned no result for '{args.target_name}'"
-                        )
-                    ra_str = result["RA"][0]
-                    dec_str = result["DEC"][0]
-                    target_coord = SkyCoord(
-                        ra_str, dec_str, unit=(u.hourangle, u.deg), frame="icrs"
-                    )
+                    target_coord = _resolve_simbad_target(args.target_name)
                     logger.info(f"target_coord resolved via Simbad: {target_coord}")
                 except Exception as simbad_exc:
                     logger.error(
