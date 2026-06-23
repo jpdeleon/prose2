@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from astropy.stats import sigma_clipped_stats
 from photutils.detection import DAOStarFinder
@@ -5,6 +6,7 @@ from scipy.interpolate import interp1d
 from skimage.measure import label, regionprops
 
 from prose import Block, Image
+from prose.core.image import Buffer
 from prose.console_utils import info
 from prose.core.source import *
 
@@ -26,6 +28,7 @@ class _SourceDetection(Block):
         min_separation: float = None,
         min_area: float = 0,
         minor_length: float = 0,
+        min_sources: int = 0,
         name: str = None,
     ):
         """Base class for sources detection.
@@ -46,6 +49,8 @@ class _SourceDetection(Block):
             minimum area in pixels of the sources to detect, by default 0
         minor_length : float, optional
             minimum length of semi-major axis of sources to detect, by default 0
+        min_sources : int, optional
+            minimum number of sources to detect. If fewer are found, the image is discarded, by default 0
         name : str, optional
             name of the block, by default None
         """
@@ -56,6 +61,27 @@ class _SourceDetection(Block):
         self.threshold = threshold
         self.min_area = min_area
         self.minor_length = minor_length
+        self.min_sources = min_sources
+
+    def _run(self, buffer):
+        super()._run(buffer)
+
+        # We need the image object, which could be buffer or buffer[0]
+        if isinstance(buffer, Buffer):
+            image = buffer[0] if self.size == 1 else buffer
+        else:
+            image = buffer
+
+        if not image.discard and self.min_sources > 0:
+            if image.sources is None or len(image.sources) < self.min_sources:
+                im_id = getattr(
+                    image, "path", getattr(image, "filename", f"frame {image.i}")
+                )
+                logger = logging.getLogger("prose")
+                logger.warning(
+                    f"discarding {im_id}: {len(image.sources) if image.sources is not None else 0} sources < {self.min_sources}"
+                )
+                image.discard = True
 
     def clean(self, sources):
         """Clean the sources list.
@@ -179,6 +205,7 @@ class AutoSourceDetection(_SourceDetection):
         name=None,
         min_area=0,
         minor_length=0,
+        min_sources=0,
     ):
         """Detect all sources.
 
@@ -200,6 +227,8 @@ class AutoSourceDetection(_SourceDetection):
             minimum area in pixels of the sources to detect, by default 0
         minor_length : str, optional
             minimum length of semi-major axis of sources to detect, by default 0
+        min_sources : int, optional
+            minimum number of sources to detect. If fewer are found, the image is discarded, by default 0
         name : str, optional
             name of the block, by default None
         """
@@ -211,6 +240,7 @@ class AutoSourceDetection(_SourceDetection):
             name=name,
             min_area=min_area,
             minor_length=minor_length,
+            min_sources=min_sources,
         )
 
     def run(self, image):
@@ -220,7 +250,7 @@ class AutoSourceDetection(_SourceDetection):
 
 
 class PointSourceDetection(_SourceDetection):
-    def __init__(self, unit_euler=False, min_area=3, minor_length=2, **kwargs):
+    def __init__(self, unit_euler=False, min_area=3, minor_length=2, min_sources=0, **kwargs):
         """Detect point sources (as :py:class:`~prose.core.source.PointSource`).
 
         |read| :code:`Image.data`
@@ -235,6 +265,8 @@ class PointSourceDetection(_SourceDetection):
             minimum area in pixels of the sources to detect, by default 0
         minor_length : str, optional
             minimum length of semi-major axis of sources to detect, by default 0
+        min_sources : int, optional
+            minimum number of sources to detect. If fewer are found, the image is discarded, by default 0
         threshold : float, optional
             detection threshold for sources, by default 4
         n : int, optional
@@ -247,7 +279,12 @@ class PointSourceDetection(_SourceDetection):
             name of the block, by default None
         """
 
-        super().__init__(min_area=min_area, minor_length=minor_length, **kwargs)
+        super().__init__(
+            min_area=min_area,
+            minor_length=minor_length,
+            min_sources=min_sources,
+            **kwargs,
+        )
         self.unit_euler = unit_euler
         self.min_area = min_area
         self.minor_length = minor_length
@@ -349,8 +386,14 @@ class Peaks(Block):
 
 
 class _SimplePointSourceDetection(_SourceDetection):
-    def __init__(self, n_stars=None, min_separation=None, sort=True, name=None):
-        super().__init__(n=n_stars, sort=sort, min_separation=min_separation, name=name)
+    def __init__(self, n_stars=None, min_separation=None, sort=True, min_sources=0, name=None):
+        super().__init__(
+            n=n_stars,
+            sort=sort,
+            min_separation=min_separation,
+            min_sources=min_sources,
+            name=name,
+        )
 
     def run(self, image):
         coordinates, peaks = self.detect(image)
@@ -380,6 +423,8 @@ class DAOFindStars(_SimplePointSourceDetection):
         minimum separation between sources, by default 5.0. If less than that, close sources are merged
     sort : bool, optional
         whether to sort stars coordinates from the highest to the lowest intensity, by default True
+    min_sources : int, optional
+        minimum number of sources to detect. If fewer are found, the image is discarded, by default 0
     """
 
     def __init__(
@@ -390,10 +435,15 @@ class DAOFindStars(_SimplePointSourceDetection):
         n_stars=None,
         min_separation=None,
         sort=True,
+        min_sources=0,
         name=None,
     ):
         super().__init__(
-            n_stars=n_stars, sort=sort, min_separation=min_separation, name=name
+            n_stars=n_stars,
+            sort=sort,
+            min_separation=min_separation,
+            min_sources=min_sources,
+            name=name,
         )
         self.sigma_clip = sigma_clip
         self.lower_snr = lower_snr
@@ -420,7 +470,7 @@ except:
 
 class SEDetection(_SimplePointSourceDetection):
     def __init__(
-        self, threshold=2.5, n_stars=None, min_separation=None, sort=True, name=None
+        self, threshold=2.5, n_stars=None, min_separation=None, sort=True, min_sources=0, name=None
     ):
         """
         Source Extractor detection.
@@ -437,10 +487,16 @@ class SEDetection(_SimplePointSourceDetection):
             minimum separation between sources, by default 5.0. If less than that, close sources are merged
         sort : bool, optional
             whether to sort stars coordinates from the highest to the lowest intensity, by default True
+        min_sources : int, optional
+            minimum number of sources to detect. If fewer are found, the image is discarded, by default 0
         """
 
         super().__init__(
-            n_stars=n_stars, sort=sort, min_separation=min_separation, name=name
+            n_stars=n_stars,
+            sort=sort,
+            min_separation=min_separation,
+            min_sources=min_sources,
+            name=name,
         )
         self.threshold = threshold
 
