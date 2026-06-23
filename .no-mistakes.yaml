@@ -1,0 +1,5 @@
+# Bypassing Codex limit with opencode
+agent: opencode
+test:
+  commands:
+    - uv run pytest
