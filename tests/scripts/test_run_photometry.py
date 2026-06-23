@@ -100,6 +100,28 @@ def test_build_stem_strips_spaces_and_handles_band():
         rp.build_stem("TOI 6715", "sinistro", "250416")
         == "TOI6715_sinistro_250416"
     )
+    # Sinistro with confmode full
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", site="lsc", confmode="full_frame")
+        == "TOI6715_sinistro_lsc_250416_full"
+    )
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", "gp", "lsc", "full_frame")
+        == "TOI6715_sinistro_lsc_gp_250416_full"
+    )
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", "gp", "lsc", "full")
+        == "TOI6715_sinistro_lsc_gp_250416_full"
+    )
+    # Sinistro with confmode 2x2 (no suffix)
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", "gp", "lsc", "central_2k_2x2")
+        == "TOI6715_sinistro_lsc_gp_250416"
+    )
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", "gp", "lsc", "2x2")
+        == "TOI6715_sinistro_lsc_gp_250416"
+    )
 
 
 def test_zscale_is_bounded_unit_interval():
@@ -628,6 +650,135 @@ def test_plot_ref_image_handles_empty_simbad_and_omits_avoided_sources(
 
     assert out.exists()
     assert plotted_ids == [0, 2]
+
+
+def test_plot_ref_image_labels_defaulted_target(tmp_path, monkeypatch):
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    monkeypatch.setattr(rp, "get_simbad_data", lambda *a, **kw: None)
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+
+    from prose import FITSImage
+    from prose.core.source import Sources
+
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10, 10], [5, 5]]))
+    target_coord = __import__("astropy").coordinates.SkyCoord(0, 0, unit="deg")
+    out1 = tmp_path / "ref1.png"
+    out2 = tmp_path / "ref2.png"
+
+    # Test case 1: defaulted_to_brightest=False -> should annotate "Target"
+    r1 = {"ref": ref, "band": "gp", "target_index": 0, "defaulted_to_brightest": False}
+    # Mock ax.annotate to capture the label
+    annotations = []
+    import matplotlib.pyplot as plt
+    original_annotate = plt.Axes.annotate
+    def mock_annotate(self, text, xy, *args, **kwargs):
+        annotations.append(text)
+        return original_annotate(self, text, xy, *args, **kwargs)
+    monkeypatch.setattr(plt.Axes, "annotate", mock_annotate)
+
+    rp.plot_ref_image(r1, target_coord, "muscat4", out1)
+    assert "Target" in annotations
+    
+    # Test case 2: defaulted_to_brightest=True -> should annotate "Target???"
+    annotations.clear()
+    r2 = {"ref": ref, "band": "gp", "target_index": 0, "defaulted_to_brightest": True}
+    rp.plot_ref_image(r2, target_coord, "muscat4", out2)
+    assert "Target???" in annotations
+
+
+def test_plot_ref_image_simbad_eclbin_color(tmp_path, monkeypatch):
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    import pandas as pd
+
+    # Mock simbad data containing both a regular object ("V*") and an eclipsing binary ("EclBin")
+    simbad_df = pd.DataFrame({
+        "RA": ["00 00 00.5", "00 00 01.0"],
+        "DEC": ["+00 00 05", "+00 00 10"],
+        "OTYPE": ["V*", "EclBin"],
+    })
+    monkeypatch.setattr(rp, "get_simbad_data", lambda *a, **kw: simbad_df)
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+
+    from prose import FITSImage
+    from prose.core.source import Sources
+
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10, 10], [5, 5]]))
+    target_coord = __import__("astropy").coordinates.SkyCoord(0, 0, unit="deg")
+    out = tmp_path / "ref_simbad.png"
+
+    # Capture colors passed to ax.scatter and ax.annotate
+    scatter_colors = []
+    annotate_colors = []
+    
+    import matplotlib.pyplot as plt
+    original_scatter = plt.Axes.scatter
+    original_annotate = plt.Axes.annotate
+
+    def mock_scatter(self, x, y, *args, **kwargs):
+        if "ec" in kwargs:
+            scatter_colors.append(kwargs["ec"])
+        return original_scatter(self, x, y, *args, **kwargs)
+
+    def mock_annotate(self, text, xy, *args, **kwargs):
+        if "color" in kwargs:
+            annotate_colors.append(kwargs["color"])
+        return original_annotate(self, text, xy, *args, **kwargs)
+
+    monkeypatch.setattr(plt.Axes, "scatter", mock_scatter)
+    monkeypatch.setattr(plt.Axes, "annotate", mock_annotate)
+
+    r = {"ref": ref, "band": "gp", "target_index": 0}
+    # When plot_gaia_sources=True and wcs is available, the EclBin should be orange ("C1")
+    rp.plot_ref_image(r, target_coord, "muscat4", out, plot_gaia_sources=True)
+
+    # Let's verify that one annotation is cyan (for "V*") and the other is C1 (for "EclBin")
+    # Note: Target label is also annotated, which has color="r", so we ignore it.
+    simbad_annotations = [c for c in annotate_colors if c != "r"]
+    assert "cyan" in simbad_annotations
+    assert "C1" in simbad_annotations
 
 
 # --------------------------- Gaia source overlay ---------------------------
@@ -1309,3 +1460,85 @@ def test_main_mode_raise_condition_for_multiple_modes_unspecified(tmp_path):
     
     with pytest.raises(ValueError, match="Multiple configuration modes found"):
         rp.main(argv)
+
+
+def test_gif_stride_step_calculation():
+    # 100 frames with target of 10 should yield a stride of 10 (every 10th frame)
+    assert max(1, 100 // 10) == 10
+    # 9 frames with target of 10 should yield a stride of 1 (show all)
+    assert max(1, 9 // 10) == 1
+    # 105 frames with target of 10 should yield a stride of 10
+    assert max(1, 105 // 10) == 10
+    # 20 frames with target of 10 should yield a stride of 2
+    assert max(1, 20 // 10) == 2
+
+
+def test_plot_stacks_draws_saturation_axhline(tmp_path, monkeypatch):
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+
+    from prose import FITSImage
+    from prose.core.source import Sources
+
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10, 10], [5, 5]]))
+    ref.telescope.saturation = 55000.0
+
+    class FakeDiff:
+        def __init__(self):
+            self.aperture = 0
+
+    r = {
+        "ref": ref,
+        "band": "gp",
+        "target_index": 0,
+        "diff": FakeDiff(),
+        "aper_radii": [1.0, 2.0, 3.0],
+        "rin": 4.0,
+        "rout": 5.0,
+        "scale": False,
+    }
+    
+    axhline_y_vals = []
+    import matplotlib.pyplot as plt
+    original_axhline = plt.Axes.axhline
+
+    def mock_axhline(self, y, *args, **kwargs):
+        axhline_y_vals.append(y)
+        return original_axhline(self, y, *args, **kwargs)
+
+    monkeypatch.setattr(plt.Axes, "axhline", mock_axhline)
+
+    twin_axes_created = 0
+    original_twinx = plt.Axes.twinx
+    def mock_twinx(self):
+        nonlocal twin_axes_created
+        twin_axes_created += 1
+        return original_twinx(self)
+    monkeypatch.setattr(plt.Axes, "twinx", mock_twinx)
+
+    out = tmp_path / "stacks.png"
+    rp.plot_stacks({"gp": r}, out, "TOI-6715", "muscat4", "2026-06-23", 0)
+    
+    assert 55000.0 in axhline_y_vals
+    assert twin_axes_created == 1

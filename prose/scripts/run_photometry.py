@@ -138,7 +138,7 @@ INSTRUMENT_FILTER_ALIASES: dict[str, dict[str, str]] = {
 DEFAULT_BROAD_BANDS = ["gp", "rp", "ip", "zs"]
 DEFAULT_NARROW_BANDS = ["g_narrow", "Na_D", "i_narrow", "z_narrow"]
 DEFAULT_BANDS = DEFAULT_BROAD_BANDS
-DEFAULT_GIF_STRIDE = 100
+DEFAULT_GIF_STRIDE = 10
 TEST_RUN_FRAMES = 10  # frames per band used by --test_run
 FPS = 5
 GIF_MAX_PX = 512  # max GIF frame dimension [pix]; larger frames are downsampled
@@ -355,19 +355,30 @@ def date_from_header(header) -> str:
 
 
 def build_stem(
-    target: str, inst: str, date: str, band: str | None = None, site: str | None = None
+    target: str,
+    inst: str,
+    date: str,
+    band: str | None = None,
+    site: str | None = None,
+    confmode: str | None = None,
 ) -> str:
     target = target.replace(" ", "")
     inst_lower = inst.lower()
+    suffix = ""
+    if inst_lower == "sinistro" and confmode:
+        confmode_str = str(confmode).lower()
+        if "full" in confmode_str:
+            suffix = "_full"
+
     if inst_lower == "sinistro" and site:
         site_str = site.lower()
         if site_str in ("lsc", "cpt", "coj", "tfn", "elp"):
             if band is None:
-                return f"{target}_{inst}_{site_str}_{date}"
-            return f"{target}_{inst}_{site_str}_{band}_{date}"
+                return f"{target}_{inst}_{site_str}_{date}{suffix}"
+            return f"{target}_{inst}_{site_str}_{band}_{date}{suffix}"
     if band is None:
-        return f"{target}_{inst}_{date}"
-    return f"{target}_{inst}_{band}_{date}"
+        return f"{target}_{inst}_{date}{suffix}"
+    return f"{target}_{inst}_{band}_{date}{suffix}"
 
 
 def _savefig(fig, path: Path) -> None:
@@ -825,13 +836,13 @@ def build_reference(
         min_area=min_area,
     ).run(ref, show_progress=False)
 
+    match_found = False
     if (
         target_index_override is None
         and target_coord is not None
         and ref.wcs is not None
     ):
         coords = np.array([s.coords for s in ref.sources])
-        match_found = False
         if len(coords) > 0:
             try:
                 stars_radec = ref.wcs.pixel_to_world(*coords.T)
@@ -857,6 +868,10 @@ def build_reference(
                 "and WCS-based localization failed. Falling back to source 0 "
                 "(brightest detected star). Use --tID to override."
             )
+
+    defaulted_to_brightest = False
+    if target_index_override is None:
+        defaulted_to_brightest = not match_found
 
     target_index = (
         target_index_override
@@ -931,6 +946,7 @@ def build_reference(
         scale=scale,
         gaia_df=gaia_df,
         edge_cids=edge_cids,
+        defaulted_to_brightest=defaulted_to_brightest,
     )
 
 
@@ -1176,6 +1192,7 @@ def run_band(
         rout=reference["rout"],
         scale=reference["scale"],
         gaia_df=reference.get("gaia_df"),
+        defaulted_to_brightest=reference.get("defaulted_to_brightest", False),
     )
 
 
@@ -1495,6 +1512,7 @@ def plot_ref_image(
     instrument,
     path: Path,
     avoid_cids: list[int] | None = None,
+    plot_gaia_sources: bool = False,
 ) -> None:
     ref = r["ref"]
     # Only trust the reference WCS for celestial decorations (RA/Dec projection
@@ -1516,8 +1534,9 @@ def plot_ref_image(
         ]
     if tpix is not None:
         ax.scatter(tpix[0], tpix[1], s=120, ec="r", fc="none", zorder=10)
+        label = "Target???" if r.get("defaulted_to_brightest", False) else "Target"
         ax.annotate(
-            "Target",
+            label,
             (tpix[0], tpix[1]),
             xytext=(8, 8),
             textcoords="offset points",
@@ -1557,15 +1576,18 @@ def plot_ref_image(
                 ).T
                 x_pix += wcs_offset[0]
                 y_pix += wcs_offset[1]
-                ax.scatter(x_pix, y_pix, marker="D", s=40, ec="cyan", fc="none", lw=1)
                 for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
+                    color = "cyan"
+                    if plot_gaia_sources and ("eclbin" in str(label).lower() or "eclipsing binary" in str(label).lower()):
+                        color = "C1"
+                    ax.scatter([xi], [yi], marker="D", s=40, ec=color, fc="none", lw=1)
                     ax.annotate(
                         label,
                         (xi, yi),
                         xytext=(5, 5),
                         textcoords="offset points",
                         fontsize=5,
-                        color="cyan",
+                        color=color,
                     )
 
     _savefig(fig, path)
@@ -1815,6 +1837,16 @@ def _radial_profile(data, center):
     return tbin / np.maximum(nr, 1)
 
 
+def _radial_peak_profile(data, center):
+    y, x = np.indices(data.shape)
+    rr = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2).astype(int)
+    num_bins = rr.max() + 1
+    peaks = np.full(num_bins, -np.inf)
+    np.maximum.at(peaks, rr.ravel(), data.ravel())
+    peaks[peaks == -np.inf] = 0
+    return peaks
+
+
 def plot_stacks(
     band_results,
     path: Path,
@@ -1854,8 +1886,16 @@ def plot_stacks(
 
         radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
         prof = _radial_profile(c.data, center)
-        axes[row, 1].plot(prof, ".", c=bc, ms=6)
-        axes[row, 1].plot(prof, c=bc)
+        axes[row, 1].plot(prof, ".", c=bc, ms=6, alpha=0.5)
+        axes[row, 1].plot(prof, c=bc, alpha=0.5, label="mean")
+        
+        peaks = _radial_peak_profile(c.data, center)
+        ax_twin = axes[row, 1].twinx()
+        ax_twin.plot(peaks, ".", c="0.5", ms=4, alpha=0.5)
+        ax_twin.plot(peaks, ls="--", c="0.5", alpha=0.5, label="peak")
+        ax_twin.set_yscale("log")
+        ax_twin.set_ylabel("peak count (ADU)")
+
         best = float(radii_pix[min(int(diff.aperture), len(radii_pix) - 1)])
         axes[row, 1].axvline(best, color="r", alpha=0.6, label=f"best: r={best:.0f}")
         axes[row, 0].add_artist(plt.Circle(tuple(center), best, color="r", fill=False))
@@ -1864,10 +1904,17 @@ def plot_stacks(
             axes[row, 0].add_artist(
                 plt.Circle(tuple(center), radius, color="y", ls="--", fill=False)
             )
+        saturation = getattr(ref.telescope, "saturation", None)
+        if saturation is not None:
+            axes[row, 1].axhline(saturation, color='k', ls="--", alpha=0.7, label="saturation")
         axes[row, 1].set_yscale("log")
         axes[row, 1].set_xlabel("radius (pixels)")
         axes[row, 1].set_ylabel("flux (ADU)")
-        axes[row, 1].legend()
+        
+        # Combine legends from main and twin axes
+        lines, labels = axes[row, 1].get_legend_handles_labels()
+        lines_twin, labels_twin = ax_twin.get_legend_handles_labels()
+        axes[row, 1].legend(lines + lines_twin, labels + labels_twin, loc="upper right")
     fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
     _savefig(fig, path)
 
@@ -2242,7 +2289,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Only reduce data in this mode (only applicable for sinistro instrument).",
     )
     ap.add_argument(
-        "--gif_stride", "--gif-stride", type=int, default=DEFAULT_GIF_STRIDE
+        "--gif_stride",
+        "--gif-stride",
+        type=int,
+        default=DEFAULT_GIF_STRIDE,
+        help="Target number of frames to show in the quick-look GIF, equally-spaced in time (default: 10).",
     )
     ap.add_argument(
         "--gif",
@@ -2554,6 +2605,24 @@ def main(argv=None) -> int:
             if matching:
                 filtered_sciences[b] = matching
         sciences = filtered_sciences
+
+    if instrument == "sinistro" and args.site is None:
+        unique_sites = set()
+        for b, fs in sciences.items():
+            for f in fs:
+                try:
+                    hdr = fits.getheader(f)
+                    file_site = str(hdr.get("SITEID") or hdr.get("SITE") or "").strip().lower()
+                except Exception as e:
+                    logger.warning(f"Could not read header of {f}: {e}")
+                    file_site = ""
+                if file_site:
+                    unique_sites.add(file_site)
+        if len(unique_sites) > 1:
+            raise ValueError(
+                f"Multiple sites found in the dataset for sinistro: {sorted(unique_sites)}. "
+                "Please specify --site to select one."
+            )
 
     if instrument == "sinistro" and args.mode:
         mode_to_match = args.mode.lower()
@@ -2942,15 +3011,25 @@ def main(argv=None) -> int:
         return 1
 
     site = None
+    resolved_confmode = None
     if instrument == "sinistro" and probe is not None:
         site = probe.get("SITEID") or probe.get("SITE")
         if site:
             site = str(site).lower()
+        if args.mode is not None:
+            resolved_confmode = args.mode
+        else:
+            first_file = sciences[active_bands[0]][0]
+            rec = filepath_to_obslog.get(first_file)
+            if rec is not None:
+                resolved_confmode = rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+            if not resolved_confmode:
+                resolved_confmode = probe.get("CONFMODE")
 
-    stem_multi = build_stem(args.target_name, instrument, date, site=site)
+    stem_multi = build_stem(args.target_name, instrument, date, site=site, confmode=resolved_confmode)
     bjds = {}
     for band, r in band_results.items():
-        stem = build_stem(args.target_name, instrument, date, band, site=site)
+        stem = build_stem(args.target_name, instrument, date, band, site=site, confmode=resolved_confmode)
         bjds[band] = compute_bjd_tdb(
             r["diff"], r["ref"].header, target_coord, args.use_barycorrpy, instrument
         )
@@ -2964,6 +3043,7 @@ def main(argv=None) -> int:
             instrument,
             args.results_dir / f"{stem}_ref.png",
             avoid_cids=r.get("avoid_cids"),
+            plot_gaia_sources=args.plot_gaia_sources,
         )
         plot_apertures(
             r,
@@ -2986,8 +3066,12 @@ def main(argv=None) -> int:
             min_area=args.min_star_area,
         )
         if args.make_gif:
-            stride = 1 if args.test_run else args.gif_stride
-            make_gif(r["files"], args.results_dir / f"{stem}.gif", stride)
+            stride_step = (
+                1
+                if args.test_run
+                else max(1, len(r["files"]) // args.gif_stride)
+            )
+            make_gif(r["files"], args.results_dir / f"{stem}.gif", stride_step)
 
     bin_size_days = args.bin_size_minutes / (24 * 60)
     target_index = next(iter(band_results.values()))["target_index"]
