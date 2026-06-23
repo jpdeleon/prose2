@@ -59,6 +59,42 @@ def test_parse_args_defaults_match_documented_behaviour():
     assert args.plot_gaia_sources is False
     assert args.overwrite is False
     assert args.bin_size_minutes == pytest.approx(rp.BIN_SIZE_DAYS * 24 * 60)
+    assert args.site is None
+    assert args.mode is None
+
+
+def test_parse_args_custom_site():
+    assert rp.parse_args(_argv("--site", "lsc")).site == "lsc"
+
+
+def test_parse_args_custom_mode():
+    assert rp.parse_args(_argv("--mode", "central_2k_2x2")).mode == "central_2k_2x2"
+    assert rp.parse_args(_argv("--mode", "full_frame")).mode == "full_frame"
+    with pytest.raises(SystemExit):
+        rp.parse_args(_argv("--mode", "abc"))
+
+
+def test_parse_args_choices_depend_on_sinistro_data(tmp_path):
+    from tests.scripts.test_run_photometry import _write_sinistro_fits
+    _write_sinistro_fits(tmp_path, "test1.fits", "lsc", confmode="central_2k_2x2")
+    
+    argv = [
+        "--target_name", "TOI-6715",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--mode", "central_2k_2x2"
+    ]
+    args = rp.parse_args(argv)
+    assert args.mode == "central_2k_2x2"
+    
+    argv_invalid = [
+        "--target_name", "TOI-6715",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--mode", "full_frame"
+    ]
+    with pytest.raises(SystemExit):
+        rp.parse_args(argv_invalid)
 
 
 @pytest.mark.parametrize("arg", ["--target_name", "--data_dir", "--results_dir"])

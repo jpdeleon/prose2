@@ -319,6 +319,14 @@ def frames_from_obslog(data_dir, instrument: str | None = None) -> list[dict] | 
                 ),
                 None,
             )
+            mode_col = next(
+                (
+                    name
+                    for name in (reader.fieldnames or [])
+                    if name and name.strip().upper() in ("CONFMODE", "MODE", "CONF_MODE")
+                ),
+                None,
+            )
             for row in reader:
                 frame = (row.get("FRAME") or "").strip()
                 fname = f"{frame}.fits"
@@ -330,6 +338,9 @@ def frames_from_obslog(data_dir, instrument: str | None = None) -> list[dict] | 
                         exposure = float((row.get(exp_col) or "").strip())
                     except (TypeError, ValueError):
                         exposure = None
+                confmode = None
+                if mode_col is not None:
+                    confmode = row.get(mode_col)
                 records.append(
                     {
                         "frame": frame,
@@ -338,6 +349,7 @@ def frames_from_obslog(data_dir, instrument: str | None = None) -> list[dict] | 
                         "exposure": exposure,
                         "ccd": ccd,
                         "path": str(data_dir / fname),
+                        "confmode": (str(confmode).strip() if confmode else None),
                     }
                 )
     return records

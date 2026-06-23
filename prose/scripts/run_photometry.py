@@ -354,8 +354,17 @@ def date_from_header(header) -> str:
     return _date_from_time_keys(header)
 
 
-def build_stem(target: str, inst: str, date: str, band: str | None = None) -> str:
+def build_stem(
+    target: str, inst: str, date: str, band: str | None = None, site: str | None = None
+) -> str:
     target = target.replace(" ", "")
+    inst_lower = inst.lower()
+    if inst_lower == "sinistro" and site:
+        site_str = site.lower()
+        if site_str in ("lsc", "cpt", "coj", "tfn", "elp"):
+            if band is None:
+                return f"{target}_{inst}_{site_str}_{date}"
+            return f"{target}_{inst}_{site_str}_{band}_{date}"
     if band is None:
         return f"{target}_{inst}_{date}"
     return f"{target}_{inst}_{band}_{date}"
@@ -2081,6 +2090,42 @@ def _calibration_args(
 
 
 def parse_args(argv=None) -> argparse.Namespace:
+    mode_choices = ["central_2k_2x2", "full_frame"]
+    try:
+        temp_ap = argparse.ArgumentParser(add_help=False)
+        temp_ap.add_argument("--data_dir", "--data-dir", type=Path)
+        temp_ap.add_argument("--target_name", "--target-name")
+        temp_ap.add_argument("--glob", default="*.fits")
+        temp_args, _ = temp_ap.parse_known_args(argv)
+        if temp_args.data_dir and temp_args.data_dir.is_dir():
+            unique = set()
+            inst_obslog = temp_args.data_dir.parent.name.lower()
+            obslog_records = frames_from_obslog(temp_args.data_dir, inst_obslog)
+            if obslog_records is not None:
+                for rec in obslog_records:
+                    if temp_args.target_name and rec.get("object") != temp_args.target_name:
+                        continue
+                    mode = rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                    if mode:
+                        unique.add(str(mode).strip().lower())
+            
+            if not unique:
+                files = sorted(temp_args.data_dir.glob(temp_args.glob or "*.fits"))
+                if not files:
+                    files = sorted(temp_args.data_dir.rglob(temp_args.glob or "*.fits"))
+                for f in files[:50]:
+                    try:
+                        hdr = fits.getheader(f)
+                        mode = hdr.get("CONFMODE")
+                        if mode:
+                            unique.add(str(mode).strip().lower())
+                    except Exception:
+                        pass
+            if unique:
+                mode_choices = sorted(list(unique))
+    except Exception:
+        pass
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--target_name", "--target-name", required=True)
     ap.add_argument(
@@ -2185,6 +2230,17 @@ def parse_args(argv=None) -> argparse.Namespace:
         "inward to exclude contaminants.",
     )
     ap.add_argument("--glob", default="*.fits", help="FITS glob pattern.")
+    ap.add_argument(
+        "--site",
+        default=None,
+        help="Only reduce data from this site (only applicable for sinistro instrument).",
+    )
+    ap.add_argument(
+        "--mode",
+        default=None,
+        choices=mode_choices,
+        help="Only reduce data in this mode (only applicable for sinistro instrument).",
+    )
     ap.add_argument(
         "--gif_stride", "--gif-stride", type=int, default=DEFAULT_GIF_STRIDE
     )
@@ -2418,6 +2474,7 @@ def main(argv=None) -> int:
         logger.info(f"bands: {args.bands} (explicit)")
 
     sciences = {}
+    filepath_to_obslog = {}
     inst_obslog = args.data_dir.parent.name.lower()
     obslog_records = frames_from_obslog(args.data_dir, inst_obslog)
     if obslog_records is not None:
@@ -2428,7 +2485,9 @@ def main(argv=None) -> int:
             band = _resolve_band(rec["filter"], inst_obslog, args.bands)
             if band is None:
                 continue
-            sciences.setdefault(band, []).append(rec["path"])
+            path = rec["path"]
+            sciences.setdefault(band, []).append(path)
+            filepath_to_obslog[path] = rec
         if sciences:
             logger.info(
                 f"obslog: frames per band: "
@@ -2457,7 +2516,97 @@ def main(argv=None) -> int:
             files, args.bands, args.target_name, filter_aliases=inst_aliases
         )
 
-    if args.test_run:
+    active_bands = [b for b in args.bands if sciences.get(b)]
+    if not active_bands:
+        logger.error(f"no frames for target={args.target_name}; aborting")
+        return 1
+
+    # header metadata for naming, time conversion
+    probe = FITSImage(sciences[active_bands[0]][0]).header
+    instrument = get_instrument(probe)
+
+    if args.site is not None and instrument != "sinistro":
+        logger.error(f"--site can only be specified when instrument is 'sinistro' (found '{instrument}')")
+        return 1
+
+    if args.mode is not None and instrument != "sinistro":
+        logger.error(f"--mode can only be specified when instrument is 'sinistro' (found '{instrument}')")
+        return 1
+
+    if instrument == "sinistro" and args.site:
+        site_to_match = args.site.lower()
+        allowed_sites = ("lsc", "cpt", "coj", "tfn", "elp")
+        if site_to_match not in allowed_sites:
+            logger.error(f"Invalid site '{args.site}' for sinistro. Must be one of {allowed_sites}")
+            return 1
+
+        filtered_sciences = {}
+        for b, fs in sciences.items():
+            matching = []
+            for f in fs:
+                try:
+                    hdr = fits.getheader(f)
+                    file_site = str(hdr.get("SITEID") or hdr.get("SITE") or "").lower()
+                    if file_site == site_to_match:
+                        matching.append(f)
+                except Exception as e:
+                    logger.warning(f"Could not read header of {f}: {e}")
+            if matching:
+                filtered_sciences[b] = matching
+        sciences = filtered_sciences
+
+    if instrument == "sinistro" and args.mode:
+        mode_to_match = args.mode.lower()
+        allowed_modes = ("central_2k_2x2", "full_frame")
+        if mode_to_match not in allowed_modes:
+            logger.error(f"Invalid mode '{args.mode}' for sinistro. Must be one of {allowed_modes}")
+            return 1
+
+        filtered_sciences = {}
+        for b, fs in sciences.items():
+            matching = []
+            for f in fs:
+                rec = filepath_to_obslog.get(f)
+                confmode = None
+                if rec is not None:
+                    confmode = rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                if not confmode:
+                    try:
+                        hdr = fits.getheader(f)
+                        confmode = hdr.get("CONFMODE")
+                    except Exception as e:
+                        logger.warning(f"Could not read header of {f}: {e}")
+                if confmode:
+                    confmode_str = str(confmode).lower()
+                    if mode_to_match == confmode_str or mode_to_match in confmode_str:
+                        matching.append(f)
+            if matching:
+                filtered_sciences[b] = matching
+        sciences = filtered_sciences
+
+    if instrument == "sinistro" and args.mode is None:
+        unique_modes = set()
+        for b, fs in sciences.items():
+            for f in fs:
+                rec = filepath_to_obslog.get(f)
+                confmode = None
+                if rec is not None:
+                    confmode = rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                if not confmode:
+                    try:
+                        hdr = fits.getheader(f)
+                        confmode = hdr.get("CONFMODE")
+                    except Exception as e:
+                        logger.warning(f"Could not read header of {f}: {e}")
+                if confmode:
+                    unique_modes.add(str(confmode).strip().lower())
+        if len(unique_modes) > 1:
+            raise ValueError(
+                f"Multiple configuration modes found in the dataset for sinistro: {list(unique_modes)}. "
+                "Please specify --mode to select one."
+            )
+
+    if instrument != "muscat2" and instrument != "muscat" and args.test_run:
         nrf = args.test_run_frames
         if args.refid is not None:
             new_sciences = {}
@@ -2468,16 +2617,25 @@ def main(argv=None) -> int:
         else:
             sciences = {b: fs[:nrf] for b, fs in sciences.items()}
         logger.info(f"test-run: limiting to {nrf} frames per band (refid={args.refid})")
-    counts = {b: len(sciences.get(b, [])) for b in args.bands}
-    logger.info(f"frames per band: {counts}")
+
     active_bands = [b for b in args.bands if sciences.get(b)]
     if not active_bands:
-        logger.error(f"no frames for target={args.target_name}; aborting")
+        if instrument == "sinistro":
+            details = []
+            if args.site:
+                details.append(f"site={args.site}")
+            if args.mode:
+                details.append(f"mode={args.mode}")
+            details_str = " and ".join(details)
+            logger.error(f"no frames for target={args.target_name} at {details_str}; aborting")
+        else:
+            logger.error(f"no frames for target={args.target_name}; aborting")
         return 1
 
-    # header metadata for naming, time conversion
     probe = FITSImage(sciences[active_bands[0]][0]).header
-    instrument = get_instrument(probe)
+    counts = {b: len(sciences.get(b, [])) for b in args.bands}
+    logger.info(f"frames per band: {counts}")
+
     if instrument == "muscat2" or instrument == "muscat":
         is_muscat = instrument == "muscat"
         calib_label = "muscat" if is_muscat else "muscat2"
@@ -2783,10 +2941,16 @@ def main(argv=None) -> int:
         )
         return 1
 
-    stem_multi = build_stem(args.target_name, instrument, date)
+    site = None
+    if instrument == "sinistro" and probe is not None:
+        site = probe.get("SITEID") or probe.get("SITE")
+        if site:
+            site = str(site).lower()
+
+    stem_multi = build_stem(args.target_name, instrument, date, site=site)
     bjds = {}
     for band, r in band_results.items():
-        stem = build_stem(args.target_name, instrument, date, band)
+        stem = build_stem(args.target_name, instrument, date, band, site=site)
         bjds[band] = compute_bjd_tdb(
             r["diff"], r["ref"].header, target_coord, args.use_barycorrpy, instrument
         )

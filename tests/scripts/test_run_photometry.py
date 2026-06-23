@@ -76,6 +76,30 @@ def test_build_stem_strips_spaces_and_handles_band():
         rp.build_stem("TOI 6715", "muscat4", "250416", "gp")
         == "TOI6715_muscat4_gp_250416"
     )
+    # Sinistro with valid site
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", site="lsc")
+        == "TOI6715_sinistro_lsc_250416"
+    )
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", "gp", "lsc")
+        == "TOI6715_sinistro_lsc_gp_250416"
+    )
+    # Sinistro with uppercase site
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", "gp", "CPT")
+        == "TOI6715_sinistro_cpt_gp_250416"
+    )
+    # Sinistro with invalid site
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", "gp", "abc")
+        == "TOI6715_sinistro_gp_250416"
+    )
+    # Sinistro without site
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416")
+        == "TOI6715_sinistro_250416"
+    )
 
 
 def test_zscale_is_bounded_unit_interval():
@@ -1090,3 +1114,198 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
     )
     
     assert result["avoid_cids"] is None or 0 not in result["avoid_cids"]
+
+
+def _write_sinistro_fits(tmp_path, name, site_id, filter_name="gp", confmode="central_2k_2x2"):
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELID"] = "1m0a"
+    hdr["INSTRUME"] = "sinistro"
+    hdr["SITEID"] = site_id
+    hdr["CONFMODE"] = confmode
+    hdr["OBJECT"] = "TOI-6715"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = filter_name
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / name
+    fits.writeto(fpath, data, header=hdr)
+    return fpath
+
+
+def test_main_site_argument_rejected_for_non_sinistro(tmp_path):
+    # Instrument is muscat4 (default from _write_minimal_fits: TELESCOP="2m0a", SITEID="coj")
+    _write_minimal_fits(tmp_path, "test.fits")
+    
+    argv = [
+        "--target_name", "test",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--site", "lsc"
+    ]
+    
+    ret = rp.main(argv)
+    assert ret == 1
+
+
+def test_main_site_argument_invalid_site_rejected_for_sinistro(tmp_path):
+    # Instrument is sinistro, SITEID is lsc
+    _write_sinistro_fits(tmp_path, "test.fits", "lsc")
+    
+    argv = [
+        "--target_name", "TOI-6715",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--site", "abc"
+    ]
+    
+    ret = rp.main(argv)
+    assert ret == 1
+
+
+def test_main_site_filtering_no_matching_frames(tmp_path):
+    # Instrument is sinistro, SITEID is lsc
+    _write_sinistro_fits(tmp_path, "test.fits", "lsc")
+    
+    argv = [
+        "--target_name", "TOI-6715",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--site", "cpt"
+    ]
+    
+    ret = rp.main(argv)
+    assert ret == 1
+
+
+def test_main_mode_argument_rejected_for_non_sinistro(tmp_path):
+    # Instrument is muscat4
+    _write_minimal_fits(tmp_path, "test.fits")
+    
+    argv = [
+        "--target_name", "test",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--mode", "central_2k_2x2"
+    ]
+    
+    ret = rp.main(argv)
+    assert ret == 1
+
+
+def test_main_mode_argument_invalid_mode_rejected_for_sinistro(tmp_path):
+    _write_sinistro_fits(tmp_path, "test.fits", "lsc")
+    
+    argv = [
+        "--target_name", "TOI-6715",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--mode", "invalid_mode"
+    ]
+    
+    with pytest.raises(SystemExit):
+        rp.main(argv)
+
+
+def test_main_mode_filtering_no_matching_frames(tmp_path):
+    # Instrument is sinistro, CONFMODE is central_2k_2x2
+    _write_sinistro_fits(tmp_path, "test.fits", "lsc", confmode="central_2k_2x2")
+    
+    argv = [
+        "--target_name", "TOI-6715",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--mode", "full_frame"
+    ]
+    
+    with pytest.raises(SystemExit):
+        rp.main(argv)
+
+
+def test_main_mode_filtering_checks_obslog_first(tmp_path, monkeypatch, caplog):
+    # FITS header has CONFMODE = central_2k_2x2
+    fpath = _write_sinistro_fits(tmp_path, "test.fits", "lsc", confmode="central_2k_2x2")
+    
+    # Mock frames_from_obslog to return confmode = full_frame
+    def mock_frames_from_obslog(data_dir, instrument=None):
+        return [
+            {
+                "frame": "test",
+                "object": "TOI-6715",
+                "filter": "gp",
+                "exposure": 1.0,
+                "ccd": 1,
+                "path": str(fpath),
+                "confmode": "full_frame"
+            }
+        ]
+    monkeypatch.setattr(rp, "frames_from_obslog", mock_frames_from_obslog)
+    
+    # Request mode: central_2k_2x2 (which matches the header, but not the obslog)
+    argv = [
+        "--target_name", "TOI-6715",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--mode", "central_2k_2x2"
+    ]
+    
+    with pytest.raises(SystemExit):
+        rp.main(argv)
+
+
+def test_main_mode_filtering_fallback_to_header(tmp_path, monkeypatch, caplog):
+    # FITS header has CONFMODE = central_2k_2x2
+    fpath = _write_sinistro_fits(tmp_path, "test.fits", "lsc", confmode="central_2k_2x2")
+    
+    # Mock frames_from_obslog to return record WITHOUT confmode
+    def mock_frames_from_obslog(data_dir, instrument=None):
+        return [
+            {
+                "frame": "test",
+                "object": "TOI-6715",
+                "filter": "gp",
+                "exposure": 1.0,
+                "ccd": 1,
+                "path": str(fpath)
+            }
+        ]
+    monkeypatch.setattr(rp, "frames_from_obslog", mock_frames_from_obslog)
+    
+    # Request mode: central_2k_2x2 (which matches the header)
+    argv = [
+        "--target_name", "TOI-6715",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results"),
+        "--mode", "central_2k_2x2"
+    ]
+    
+    with caplog.at_level("ERROR", logger="prose_run_photometry"):
+        ret = rp.main(argv)
+    # The return code will still be 1 (due to MAST/Simbad/photometry failures downstream),
+    # but it should NOT have aborted at the mode check!
+    assert not any("with mode=central_2k_2x2; aborting" in r.message for r in caplog.records)
+
+
+def test_main_mode_raise_condition_for_multiple_modes_unspecified(tmp_path):
+    # Write two fits files with different modes
+    _write_sinistro_fits(tmp_path, "test1.fits", "lsc", confmode="central_2k_2x2")
+    _write_sinistro_fits(tmp_path, "test2.fits", "lsc", confmode="full_frame")
+    
+    argv = [
+        "--target_name", "TOI-6715",
+        "--data_dir", str(tmp_path),
+        "--results_dir", str(tmp_path / "results")
+    ]
+    
+    with pytest.raises(ValueError, match="Multiple configuration modes found"):
+        rp.main(argv)
