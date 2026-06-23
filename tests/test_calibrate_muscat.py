@@ -184,7 +184,7 @@ class TestMain:
     def test_bands_limits_calibrated_ccds(self, tmp_path, monkeypatch):
         (tmp_path / "MSCT0_0001.fits").touch()
         calls = []
-        empty_frames = {ccd: [] for ccd in cm.CCD_BANDS}
+        empty_frames = {band: [] for band in cm.CCD_BANDS.values()}
 
         monkeypatch.setattr(
             cm,

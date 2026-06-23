@@ -998,3 +998,95 @@ def test_build_reference_warns_when_target_near_edge(tmp_path, monkeypatch, capl
         )
     assert result["edge_cids"] == []  # target never dropped
     assert any("within 6 px of a CCD edge" in r.message for r in caplog.records)
+
+
+def test_find_target_index_falls_back_when_over_5_arcsec(monkeypatch):
+    class FakeRef:
+        def __init__(self):
+            self.sources = [_FakeSrc([10.0, 10.0])]
+            self.wcs = self
+            self.fwhm = 3.0
+            self.telescope = self
+            self.pixel_scale = 0.267
+            self.header = {}
+        def pixel_to_world(self, x, y):
+            from astropy.coordinates import SkyCoord
+            return SkyCoord([10.0], [10.0], unit="deg")
+
+    from astropy.coordinates import SkyCoord
+    ref = FakeRef()
+    target_coord = SkyCoord(0.0, 0.0, unit="deg")
+    assert rp.find_target_index(ref, target_coord) == 0
+
+
+def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkeypatch):
+    fpath = _write_minimal_fits(tmp_path)
+    from astropy.coordinates import SkyCoord
+    coord = SkyCoord(0, 0, unit="deg")
+    
+    class FakeImage:
+        def __init__(self):
+            self.sources = [_FakeSrc([5, 5]), _FakeSrc([10, 10])]
+            self.shape = (20, 20)
+            self.telescope = self
+            self.jd_scale = "jd"
+            
+    reference = {
+        "ref": FakeImage(),
+        "target_index": 1,
+        "aper_radii": np.array([3, 4]),
+        "rin": 8.0,
+        "rout": 12.0,
+        "scale": False,
+        "edge_cids": [0],
+    }
+    
+    monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
+    
+    def mock_photometry_sequence(ref, aper_radii, rin, rout, **kwargs):
+        class MockPhot:
+            def run(self, files):
+                pass
+            @property
+            def data(self):
+                class FakeData:
+                    @property
+                    def fluxes(self):
+                        class FakeFluxes:
+                            def copy(self):
+                                return self
+                            def mask_stars(self, mask):
+                                return self
+                            def sigma_clipping_data(self, **kw):
+                                return self
+                            def diff(self, comps):
+                                class FakeDiff:
+                                    def __init__(self):
+                                        self.time = np.arange(5)
+                                return FakeDiff()
+                            def autodiff(self):
+                                class FakeDiff:
+                                    def __init__(self):
+                                        self.time = np.arange(5)
+                                return FakeDiff()
+                            @property
+                            def fluxes(self):
+                                return np.ones((5, 2, 2))
+                            @property
+                            def time(self):
+                                return np.arange(5)
+                        return FakeFluxes()
+                return [FakeData()]
+        return MockPhot()
+        
+    monkeypatch.setattr(rp, "photometry_sequence", mock_photometry_sequence)
+    
+    result = rp.run_band(
+        band="gp",
+        files=[str(fpath)],
+        ref_file=str(fpath),
+        target_coord=coord,
+        edge_margin=6,
+    )
+    
+    assert result["avoid_cids"] is None or 0 not in result["avoid_cids"]

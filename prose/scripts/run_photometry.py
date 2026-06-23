@@ -145,6 +145,7 @@ GIF_MAX_PX = 512  # max GIF frame dimension [pix]; larger frames are downsampled
 
 # reference-image / detection defaults (mirror the template notebook)
 MAX_NUM_STARS = 10  # nth brightest stars to keep
+DETECT_NUM_STARS_FACTOR = 1.5  # detect more stars initially to capture faint targets
 CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
 CCD_TRIM_SIZE_YX = (0, 0)  # trim image edges [pix]
 MIN_STAR_AREA = 10  # min detected-source area [pix]
@@ -485,11 +486,12 @@ def reference_sequence(
     min_area: int = MIN_STAR_AREA,
 ) -> Sequence:
     """Calibration sequence run on the per-band reference frame."""
+    n_detect = max(int(max_num_stars * DETECT_NUM_STARS_FACTOR), max_num_stars + 5)
     return Sequence(
         [
             blocks.Trim(ccd_trim_size_yx),
             blocks.PointSourceDetection(
-                n=max_num_stars,
+                n=n_detect,
                 min_area=min_area,
                 min_separation=min_star_separation,
             ),
@@ -508,8 +510,12 @@ def find_target_index(ref: FITSImage, target_coord: SkyCoord) -> int:
         wcs = ref.wcs
         if wcs is not None and hasattr(wcs, "pixel_to_world"):
             coords = np.array([s.coords for s in ref.sources])
-            stars_radec = wcs.pixel_to_world(*coords.T)
-            return int(target_coord.match_to_catalog_sky(stars_radec)[0])
+            if len(coords) > 0:
+                stars_radec = wcs.pixel_to_world(*coords.T)
+                if _skycoord_has_finite_data(stars_radec):
+                    idx, d2d, _ = target_coord.match_to_catalog_sky(stars_radec)
+                    if float(np.atleast_1d(d2d.arcsec)[0]) < 5.0:
+                        return int(idx)
     except Exception as e:
         logger.warning(
             f"WCS-based target cross-match failed ({e}); use --tID for manual override"
@@ -535,16 +541,22 @@ def _contaminant_seps(
     return contam
 
 
-def _sky_annulus_pix(fwhm: float, contam_seps: np.ndarray) -> tuple[float, float]:
+def _sky_annulus_pix(
+    fwhm: float,
+    contam_seps: np.ndarray,
+    annulus_pix: tuple[float, float] | None = None,
+) -> tuple[float, float]:
     """Inner/outer sky-annulus radii [pix] that avoid enclosing a contaminant.
 
-    The annulus is nominally ``ANNULUS_INNER_FWHM``-``ANNULUS_OUTER_FWHM`` times
-    the FWHM, with ``rout`` clamped to ``ANNULUS_MAX_PIX`` when the FWHM is large
-    (defocused). If a contaminant falls within the nominal ring, the ring is
+    The annulus is nominally defined by ``annulus_pix`` (defaulting to ``(20.0, 30.0)``).
+    If a contaminant falls within the nominal ring, the ring is
     shifted inward to sit just inside the nearest such source.
     """
-    width = (ANNULUS_OUTER_FWHM - ANNULUS_INNER_FWHM) * fwhm
-    rout = min(ANNULUS_OUTER_FWHM * fwhm, ANNULUS_MAX_PIX)
+    if annulus_pix is None:
+        annulus_pix = (20.0, 30.0)
+    rin_nom, rout_nom = map(float, annulus_pix)
+    width = rout_nom - rin_nom
+    rout = rout_nom
     intruding = contam_seps[contam_seps < rout + CONTAM_MARGIN_PIX]
     if len(intruding):
         rout = float(intruding.min()) - CONTAM_MARGIN_PIX
@@ -602,7 +614,12 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
     return df
 
 
-def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoord):
+def gaia_aperture_radii(
+    ref: FITSImage,
+    target_index: int,
+    target_coord: SkyCoord,
+    annulus_pix: tuple[float, float] | None = None,
+):
     """Size the sky annulus and aperture radii from Gaia contamination.
 
     The minimum aperture is the target FWHM and the maximum is the inner
@@ -633,7 +650,7 @@ def gaia_aperture_radii(ref: FITSImage, target_index: int, target_coord: SkyCoor
             )
             contam = np.array([])
 
-    rin, rout = _sky_annulus_pix(fwhm, contam)
+    rin, rout = _sky_annulus_pix(fwhm, contam, annulus_pix=annulus_pix)
     aper_radii = _aperture_radii_pix(fwhm, rin)
     logger.info(
         f"apertures: {len(aper_radii)} radii in [{fwhm:.0f}, {rin:.0f}] px, "
@@ -752,6 +769,7 @@ def build_reference(
     min_area: int = MIN_STAR_AREA,
     plot_gaia_sources: bool = False,
     edge_margin: int | None = EDGE_MARGIN_PIX,
+    annulus_pix: tuple[float, float] | None = None,
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -855,7 +873,9 @@ def build_reference(
             f"annulus ({rin:g}, {rout:g}) {unit}"
         )
     else:
-        aper_radii, rin, rout = gaia_aperture_radii(ref, target_index, target_coord)
+        aper_radii, rin, rout = gaia_aperture_radii(
+            ref, target_index, target_coord, annulus_pix=annulus_pix
+        )
     # The default path above already queried (and cached) Gaia; for an explicit
     # aperture grid we only query when the overlay was requested. Reusing the
     # per-run cache means this never triggers a second network round-trip.
@@ -998,6 +1018,7 @@ def run_band(
     min_area: int = MIN_STAR_AREA,
     plot_gaia_sources: bool = False,
     edge_margin: int | None = EDGE_MARGIN_PIX,
+    annulus_pix: tuple[float, float] | None = None,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -1025,6 +1046,7 @@ def run_band(
         min_area=min_area,
         plot_gaia_sources=plot_gaia_sources,
         edge_margin=edge_margin,
+        annulus_pix=annulus_pix,
     )
     ref = reference["ref"]
 
@@ -1073,17 +1095,28 @@ def run_band(
     # protected inside build_reference, so it can never appear here.
     edge_cids = reference.get("edge_cids") or []
     if edge_cids:
-        mapped_avoid = sorted(set(mapped_avoid or []) | set(edge_cids))
-        # Explicit-cid mode diffs against ``cids`` directly (bypassing the avoid
-        # mask), so edge stars must also be stripped from an explicit list.
-        if cids is not None:
-            cids = [c for c in cids if c not in set(edge_cids)]
-            if not cids:
-                logger.warning(
-                    f"[{band}] all explicit cIDs are near a CCD edge; "
-                    f"falling back to auto-selection"
-                )
-                cids = None
+        current_avoid = set(mapped_avoid or [])
+        target_idx = reference["target_index"]
+        n_sources = len(ref.sources)
+        candidates = [i for i in range(n_sources) if i != target_idx and i not in current_avoid]
+        after_edge = [i for i in candidates if i not in set(edge_cids)]
+        if candidates and not after_edge:
+            logger.warning(
+                f"[{band}] edge exclusion ({edge_margin} px margin) would remove all comparison stars; "
+                f"relaxing edge exclusion to preserve comparison pool"
+            )
+        else:
+            mapped_avoid = sorted(current_avoid | set(edge_cids))
+            # Explicit-cid mode diffs against ``cids`` directly (bypassing the avoid
+            # mask), so edge stars must also be stripped from an explicit list.
+            if cids is not None:
+                cids = [c for c in cids if c not in set(edge_cids)]
+                if not cids:
+                    logger.warning(
+                        f"[{band}] all explicit cIDs are near a CCD edge; "
+                        f"falling back to auto-selection"
+                    )
+                    cids = None
 
     phot = photometry_sequence(
         ref,
@@ -2141,6 +2174,16 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Unit for --aper_radii/--annulus: 'pix' (default) or 'fwhm' "
         "(radii scaled by each image's FWHM).",
     )
+    ap.add_argument(
+        "--annulus_pix",
+        "--annulus-pix",
+        dest="annulus_pix",
+        type=parse_pair,
+        default=None,
+        help="Custom fixed sky annulus 'RIN,ROUT' in pixels (default: 20,30). "
+        "Bypasses the default FWHM-based nominal ring but still shifts "
+        "inward to exclude contaminants.",
+    )
     ap.add_argument("--glob", default="*.fits", help="FITS glob pattern.")
     ap.add_argument(
         "--gif_stride", "--gif-stride", type=int, default=DEFAULT_GIF_STRIDE
@@ -2424,7 +2467,6 @@ def main(argv=None) -> int:
             sciences = new_sciences
         else:
             sciences = {b: fs[:nrf] for b, fs in sciences.items()}
-        total = sum(len(v) for v in sciences.values())
         logger.info(f"test-run: limiting to {nrf} frames per band (refid={args.refid})")
     counts = {b: len(sciences.get(b, [])) for b in args.bands}
     logger.info(f"frames per band: {counts}")
@@ -2520,7 +2562,15 @@ def main(argv=None) -> int:
                             need_calib = True
                             break
                         for fp in files:
-                            inject_wcs_into_file(fp, wcs, method=args.wcs_method)
+                            if not inject_wcs_into_file(fp, wcs, method=args.wcs_method):
+                                logger.warning(
+                                    f"  {calib_label}: failed to inject WCS into {fp}; "
+                                    f"marking recalibration required"
+                                )
+                                need_calib = True
+                                break
+                        if need_calib:
+                            break
                         logger.info(
                             f"  {calib_label} [{b}]: injected WCS into "
                             f"{len(files)} files"
@@ -2711,6 +2761,7 @@ def main(argv=None) -> int:
                 min_area=args.min_star_area,
                 plot_gaia_sources=args.plot_gaia_sources,
                 edge_margin=args.edge_margin,
+                annulus_pix=args.annulus_pix,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")

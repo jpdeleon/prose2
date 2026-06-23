@@ -113,15 +113,16 @@ class Sequence:
         # run
         self.n_processed_images = 0
         self.discards = {}
-        self._run(loader=loader)
+        try:
+            self._run(loader=loader)
 
-        for block_name, discarded in self.discards.items():
-            warning(
-                f"{block_name} discarded image{'s' if len(discarded)>1 else ''} {', '.join(discarded)}"
-            )
-
-        if terminate:
-            self.terminate()
+            for block_name, discarded in self.discards.items():
+                warning(
+                    f"{block_name} discarded image{'s' if len(discarded)>1 else ''} {', '.join(discarded)}"
+                )
+        finally:
+            if terminate:
+                self.terminate()
 
     def _load(self, image, loader=FITSImage):
         _image = loader(image) if isinstance(image, (str, Path)) else image
