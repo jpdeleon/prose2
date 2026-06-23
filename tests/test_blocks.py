@@ -290,3 +290,18 @@ def test_VideoPlot(tmp_path):
     im = image.copy()
 
     Sequence([VideoPlot(plot, tmp_path / "video.gif", fps=3)]).run([im, im, im])
+
+
+def test_ComputeTransformTwirl_graceful_failure():
+    from prose.blocks.geometry import ComputeTransformTwirl
+
+    im1 = image.copy()
+    im2 = image.copy()
+    block = ComputeTransformTwirl(im1)
+
+    def mock_solve(*args, **kwargs):
+        raise np.linalg.LinAlgError("Singular matrix")
+
+    block.solve = mock_solve
+    block.run(im2)
+    assert im2.discard is True

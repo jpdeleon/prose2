@@ -1885,16 +1885,16 @@ def plot_stacks(
             )
 
         radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
-        prof = _radial_profile(c.data, center)
-        axes[row, 1].plot(prof, ".", c=bc, ms=6, alpha=0.5)
-        axes[row, 1].plot(prof, c=bc, alpha=0.5, label="mean")
-        
         peaks = _radial_peak_profile(c.data, center)
+        axes[row, 1].plot(peaks, ".", c="0.5", ms=4, alpha=0.5)
+        axes[row, 1].plot(peaks, ls="--", c="0.5", alpha=0.5, label="peak")
+        
+        prof = _radial_profile(c.data, center)
         ax_twin = axes[row, 1].twinx()
-        ax_twin.plot(peaks, ".", c="0.5", ms=4, alpha=0.5)
-        ax_twin.plot(peaks, ls="--", c="0.5", alpha=0.5, label="peak")
+        ax_twin.plot(prof, ".", c=bc, ms=6, alpha=0.5)
+        ax_twin.plot(prof, c=bc, alpha=0.5, label="mean")
         ax_twin.set_yscale("log")
-        ax_twin.set_ylabel("peak count (ADU)")
+        ax_twin.set_ylabel("flux (ADU)")
 
         best = float(radii_pix[min(int(diff.aperture), len(radii_pix) - 1)])
         axes[row, 1].axvline(best, color="r", alpha=0.6, label=f"best: r={best:.0f}")
@@ -1909,7 +1909,7 @@ def plot_stacks(
             axes[row, 1].axhline(saturation, color='k', ls="--", alpha=0.7, label="saturation")
         axes[row, 1].set_yscale("log")
         axes[row, 1].set_xlabel("radius (pixels)")
-        axes[row, 1].set_ylabel("flux (ADU)")
+        axes[row, 1].set_ylabel("peak count (ADU)")
         
         # Combine legends from main and twin axes
         lines, labels = axes[row, 1].get_legend_handles_labels()
@@ -2920,6 +2920,7 @@ def main(argv=None) -> int:
     # frame (within-camera alignment, correct for multi-camera instruments);
     # with --ref_band all bands align to that band's middle frame.
     self_reference = args.ref_band is None
+    ref_band = None
     if self_reference:
         logger.info("reference: per-band self-reference (first frame of each band)")
     else:
@@ -3111,6 +3112,30 @@ def main(argv=None) -> int:
         target_coord=target_coord,
     )
     save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz", meta=vars(args))
+
+    # Dump the reference frame's full FITS header to a sidecar text file so it
+    # can be inspected from the web GUI without downloading the data archive.
+    # The saved .txt should be the actual header from the specified band and frame ID.
+    try:
+        target_ref_band = ref_band if ref_band is not None else active_bands[0]
+        if self_reference:
+            ref_files, default_refid = sciences[target_ref_band], 0
+        else:
+            ref_files, default_refid = sciences[target_ref_band], len(sciences[target_ref_band]) // 2
+
+        if args.refid is not None:
+            refid = _find_frame_by_number(ref_files, args.refid)
+        else:
+            refid = default_refid
+        refid = min(refid, len(ref_files) - 1)
+        actual_ref_file = ref_files[refid]
+
+        ref_header = fits.getheader(actual_ref_file)
+        header_path = args.results_dir / f"{stem_multi}_ref_header.txt"
+        header_path.write_text(ref_header.tostring(sep="\n", padding=False, endcard=False))
+        logger.info(f"wrote {header_path} from {actual_ref_file}")
+    except Exception as e:
+        logger.warning(f"could not write reference header: {e}")
 
     n_fail = len(failed_bands)
     if n_fail:

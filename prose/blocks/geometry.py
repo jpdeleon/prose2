@@ -201,6 +201,7 @@ class ComputeTransformTwirl(Block):
 
     def __init__(self, reference_image: Image, n=10, rtol=0.02, **kwargs):
         super().__init__(**kwargs)
+        self.reference_image = reference_image
         ref_coords = reference_image.sources.coords
         self.ref = ref_coords[0:n].copy()
         self.n = n
@@ -212,13 +213,38 @@ class ComputeTransformTwirl(Block):
         self.rtol = rtol
 
     def run(self, image):
+        success = False
         if len(image.sources.coords) >= 5:
-            result = self.solve(image.sources.coords)
-            if result is not None:
-                image.transform = AffineTransform(result).inverse
-            else:
-                image.discard = True
-        else:
+            try:
+                result = self.solve(image.sources.coords)
+                if result is not None:
+                    image.transform = AffineTransform(result).inverse
+                    success = True
+            except Exception:
+                pass
+
+        if not success:
+            ref_wcs = getattr(self.reference_image, "wcs", None)
+            img_wcs = getattr(image, "wcs", None)
+            if ref_wcs is not None and img_wcs is not None:
+                try:
+                    ny, nx = image.shape
+                    grid_x, grid_y = np.meshgrid(
+                        np.linspace(0, nx - 1, 3), np.linspace(0, ny - 1, 3)
+                    )
+                    dst_pts = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+                    sky_coords = img_wcs.pixel_to_world(dst_pts[:, 0], dst_pts[:, 1])
+                    src_x, src_y = ref_wcs.world_to_pixel(sky_coords)
+                    src_pts = np.column_stack([src_x, src_y])
+                    
+                    t = AffineTransform()
+                    if t.estimate(dst_pts, src_pts):
+                        image.transform = t
+                        success = True
+                except Exception:
+                    pass
+
+        if not success:
             image.discard = True
 
     def solve(self, coords, tolerance=2, refine=True):
