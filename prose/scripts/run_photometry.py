@@ -55,6 +55,7 @@ TODO:
 from __future__ import annotations
 
 import argparse
+
 import csv
 import logging
 import os
@@ -155,6 +156,42 @@ MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
 # means auto: half the cutout size, so the PSF cutout box stays fully on-chip.
 # 0 disables edge exclusion.
 EDGE_MARGIN_PIX = None
+
+# Color scheme for plots
+COLOR_TARGET = "red"       # distinct, visible on all grey levels
+COLOR_APERTURE = "gold"        # complementary to target, high contrast
+COLOR_SKY_ANNULUS = "cyan"      # visible on both dark and light sky
+COLOR_SIMBAD_DEFAULT = "orange"  # works on dark image backgrounds
+COLOR_SIMBAD_ECLBIN = "magenta"   # warmer, more visible than orange on light
+COLOR_SOURCES = "lime"        # pops against dark source regions
+
+# SIMBAD OTYPE substrings to highlight; all flagged types use the eclbin color.
+_SIMBAD_FLAG_TYPES = {
+    "eclbin": "simbad_eclbin",
+    "eclipsing binary": "simbad_eclbin",
+    "sb*": "simbad_eclbin",
+}
+
+_BRIGHT_COLORS = {  # dark background
+    "target": COLOR_TARGET,
+    "aperture": COLOR_APERTURE,
+    "sky_annulus": COLOR_SKY_ANNULUS,
+    "simbad_default": COLOR_SIMBAD_DEFAULT,
+    "simbad_eclbin": COLOR_SIMBAD_ECLBIN,
+    "sources": COLOR_SOURCES,
+}
+_DARK_COLORS = {  # light background
+    "target": "red",
+    "aperture": "darkgreen",
+    "sky_annulus": "yellow",
+    "simbad_default": "teal",
+    "simbad_eclbin": "orange",
+    "sources": "darkmagenta",
+}
+
+
+def get_plot_colors(cmap: str = "Greys") -> dict:
+    return dict(_BRIGHT_COLORS if not cmap.endswith("_r") else _DARK_COLORS)
 
 # Gaia aperture-radii / sky-annulus heuristic
 APER_STEP_PIX = 2  # spacing of aperture radii [pix]
@@ -499,7 +536,7 @@ def reference_sequence(
                 min_area=min_area,
                 min_separation=min_star_separation,
             ),
-            blocks.Cutouts(shape=cutout_size),
+            blocks.Cutouts(shape=cutout_size, wcs=True),
             blocks.MedianEPSF(),
             blocks.psf.Gaussian2D(),
             blocks.CentroidQuadratic(),
@@ -598,7 +635,7 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
         return _gaia_cache[cache_path]
 
     try:
-        c = ref.cutout(ref.sources[target_index].coords, GAIA_CUTOUT, reset_index=False)
+        c = ref.copy()
         c.metadata["pixel_scale"] = float(pixscale)  # required before Gaia query
         c = catalogs.GaiaCatalog(mode="replace")(c)
         df = c.catalogs["gaia"]
@@ -1246,7 +1283,19 @@ def differential_photometry(
         return None
     if cids:
         return fluxes.diff(comps=np.array(cids))
-    return fluxes.autodiff()
+
+    diff = fluxes.autodiff()
+    comps = getattr(diff, "comparisons", None)
+    if comps is not None:
+        original_comps = list(comps)
+        n_considered = int(np.sum(keep))
+        if 0 <= target_index < len(keep) and keep[target_index]:
+            n_considered -= 1
+        logger.info(
+            f"autodiff chosen comparison stars (based on Broeg et al. 2005): "
+            f"{original_comps} out of {n_considered} stars considered"
+        )
+    return diff
 
 
 # --------------------------- time conversion ---------------------------
@@ -1495,10 +1544,23 @@ def plot_ref_image(
     target_coord,
     instrument,
     path: Path,
+    target_name: str = "",
+    date: str = "",
     avoid_cids: list[int] | None = None,
     plot_gaia_sources: bool = False,
+    simbad_df=None,
+    cmap: str = "Greys",
 ) -> None:
     ref = r["ref"]
+    if not target_name:
+        target_name = ref.header.get("OBJECT", "")
+    if not instrument:
+        instrument = get_instrument(ref.header)
+    if not date:
+        date = date_from_header(ref.header)
+    band = r["band"]
+    target_id = r["target_index"]
+
     # Only trust the reference WCS for celestial decorations (RA/Dec projection
     # and SIMBAD markers) when it can actually project the target. A rejected or
     # degenerate solve leaves ref.wcs as a non-None but unusable WCS, which would
@@ -1507,7 +1569,9 @@ def plot_ref_image(
     wcs_ok = _wcs_can_project(getattr(ref, "wcs", None), target_coord)
     fig = plt.figure(figsize=(7, 7), constrained_layout=True)
     ax = fig.add_subplot(111, projection=ref.wcs) if wcs_ok else fig.add_subplot(111)
-    ref.show(ax=ax, frame=True, sources=False)
+    
+    colors = get_plot_colors(cmap)
+    ref.show(ax=ax, frame=True, sources=False, cmap=cmap)
     target_idx = r["target_index"]
     tpix = None
     if 0 <= target_idx < len(ref.sources):
@@ -1517,7 +1581,7 @@ def plot_ref_image(
             0
         ]
     if tpix is not None:
-        ax.scatter(tpix[0], tpix[1], s=120, ec="r", fc="none", zorder=10)
+        ax.scatter(tpix[0], tpix[1], s=120, ec=colors["target"], fc="none", zorder=10)
         label = "Target???" if r.get("defaulted_to_brightest", False) else "Target"
         ax.annotate(
             label,
@@ -1525,15 +1589,16 @@ def plot_ref_image(
             xytext=(8, 8),
             textcoords="offset points",
             fontsize=8,
-            color="r",
+            color=colors["target"],
             zorder=10,
         )
     avoided = set(avoid_cids or [])
     plotted_source_ids = [i for i in range(len(ref.sources)) if i not in avoided]
-    ref.sources[plotted_source_ids].plot(ax=ax, c="yellow")
-    title = f"{r['band']} reference"
+    ref.sources[plotted_source_ids].plot(ax=ax, c=colors["sources"])
+    desc = "reference frame"
     if not wcs_ok:
-        title += " (pixel frame; WCS unusable)"
+        desc += " (pixel frame; WCS unusable)"
+    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
     ax.set_title(title, y=1.08)
 
     # SIMBAD markers are WCS-projected, so only draw them when the WCS is usable.
@@ -1548,7 +1613,7 @@ def plot_ref_image(
         except Exception:  # noqa: BLE001
             pass
 
-        simbad = get_simbad_data(target_coord, instrument)
+        simbad = simbad_df if simbad_df is not None else get_simbad_data(target_coord, instrument)
         if simbad is not None and not simbad.empty:
             simbad = simbad[simbad.OTYPE != "Star"]
             if not simbad.empty:
@@ -1561,9 +1626,13 @@ def plot_ref_image(
                 x_pix += wcs_offset[0]
                 y_pix += wcs_offset[1]
                 for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
-                    color = "cyan"
-                    if plot_gaia_sources and ("eclbin" in str(label).lower() or "eclipsing binary" in str(label).lower()):
-                        color = "C1"
+                    color = colors["simbad_default"]
+                    if plot_gaia_sources:
+                        label_lower = str(label).lower()
+                        for keyword, color_key in _SIMBAD_FLAG_TYPES.items():
+                            if keyword in label_lower:
+                                color = colors[color_key]
+                                break
                     ax.scatter([xi], [yi], marker="D", s=40, ec=color, fc="none", lw=1)
                     ax.annotate(
                         label,
@@ -1580,22 +1649,38 @@ def plot_ref_image(
 def plot_apertures(
     r,
     path: Path,
+    target_name: str = "",
+    instrument: str = "",
+    date: str = "",
     plot_gaia_sources: bool = False,
     target_coord=None,
+    cmap: str = "Greys",
 ) -> None:
     ref = r["ref"]
+    if not target_name:
+        target_name = ref.header.get("OBJECT", "")
+    if not instrument:
+        instrument = get_instrument(ref.header)
+    if not date:
+        date = date_from_header(ref.header)
+    band = r["band"]
+    target_id = r["target_index"]
+
     coords = ref.sources[r["target_index"]].coords
     c = ref.cutout(coords, GAIA_CUTOUT, reset_index=False)
     radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
     fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
-    c.show(ax=ax, zscale=True, sources=False)
+    
+    colors = get_plot_colors(cmap)
+    c.show(ax=ax, zscale=True, sources=False, cmap=cmap)
+    
     target_source = next(
         (s for s in c.sources if s.i == r["target_index"]), c.sources[0]
     )
     for radius in radii_pix:
-        target_source.plot(radius, label=False, c="r")
-    target_source.plot(rin_pix, label=False, c="y")
-    target_source.plot(rout_pix, label=False, c="y")
+        target_source.plot(radius, label=False, c=colors["aperture"])
+    target_source.plot(rin_pix, label=False, c=colors["sky_annulus"])
+    target_source.plot(rout_pix, label=False, c=colors["sky_annulus"])
     if plot_gaia_sources:
         n = _overlay_gaia_sources(
             ax,
@@ -1608,7 +1693,9 @@ def plot_apertures(
         )
         if n:
             ax.legend(loc="upper right", fontsize=7, framealpha=0.6)
-    ax.set_title(f"{r['band']} apertures zoom on target (tID={r['target_index']})")
+    desc = "apertures"
+    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
+    ax.set_title(title)
     _savefig(fig, path)
 
 
@@ -1616,15 +1703,16 @@ def plot_alignment(
     r,
     other_file,
     path: Path,
-    target_name: str,
-    instrument: str,
-    date: str,
-    target_index: int,
+    target_name: str = "",
+    instrument: str = "",
+    date: str = "",
+    target_index: int | None = None,
     ccd_trim_size_yx: tuple[int, int] = CCD_TRIM_SIZE_YX,
     max_num_stars: int = MAX_NUM_STARS,
     min_star_separation: float = MIN_STAR_SEPARATION,
     n_stars_align: int | None = None,
     min_area: int = MIN_STAR_AREA,
+    cmap: str = "Greys",
 ) -> None:
     """Overlay the reference image with an aligned later frame (best effort)."""
     if n_stars_align is None:
@@ -1632,6 +1720,16 @@ def plot_alignment(
     from skimage.transform import warp
 
     ref = r["ref"]
+    if not target_name:
+        target_name = ref.header.get("OBJECT", "")
+    if not instrument:
+        instrument = get_instrument(ref.header)
+    if not date:
+        date = date_from_header(ref.header)
+    if target_index is None:
+        target_index = r["target_index"]
+    band = r["band"]
+
     try:
         seq = Sequence(
             [
@@ -1656,12 +1754,25 @@ def plot_alignment(
         1, 2, figsize=(6, 3), sharex=True, sharey=True, constrained_layout=True
     )
     for ax, img, title in zip(axes, (raw, aligned), ("raw", "aligned")):
-        ax.imshow(_zscale(ref.data), cmap="Greys_r", origin="lower")
-        ax.imshow(_zscale(img), cmap="Reds_r", origin="lower", alpha=0.5)
+        ax.imshow(_zscale(ref.data), cmap=cmap, origin="lower")
+        ax.imshow(_zscale(img), cmap=cmap, origin="lower", alpha=0.5)
         ax.set_title(title)
         ax.grid(True, linestyle=":", alpha=0.5, color="white")
-        ax.axis("off")
-    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.tick_params(
+            axis="both",
+            which="both",
+            bottom=False,
+            top=False,
+            left=False,
+            right=False,
+            labelbottom=False,
+            labelleft=False,
+        )
+    desc = "alignment"
+    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_index}\n{desc}"
+    fig.suptitle(title)
     _savefig(fig, path)
 
 
@@ -1753,7 +1864,7 @@ def plot_raw_flux(
         comps = diff.comparisons
         stars = [diff.target]
         if comps is not None and len(comps) > 0:
-            stars.extend(comps[0:5])
+            stars.extend([c for c in comps if c != diff.target])
 
         for j, i in enumerate(stars):
             y = fluxes.fluxes[diff.aperture, i][mask].copy()
@@ -1840,6 +1951,7 @@ def plot_stacks(
     target_index: int,
     plot_gaia_sources: bool = False,
     target_coord=None,
+    cmap: str = "Greys",
 ) -> None:
     """Per-band target cutout (from the reference image) plus radial profile."""
     bands = list(band_results.keys())
@@ -1856,7 +1968,9 @@ def plot_stacks(
             ref.sources[r["target_index"]].coords, GAIA_CUTOUT, reset_index=False
         )
         center = np.array(c.data.shape)[::-1] / 2
-        axes[row, 0].imshow(_zscale(c.data), cmap="Greys_r", origin="lower")
+        
+        colors = get_plot_colors(cmap)
+        axes[row, 0].imshow(_zscale(c.data), cmap=cmap, origin="lower")
         axes[row, 0].set_title(f"target zoom ({band})")
         axes[row, 0].axis("off")
         if plot_gaia_sources:
@@ -1881,12 +1995,12 @@ def plot_stacks(
         ax_twin.set_ylabel("flux (ADU)")
 
         best = float(radii_pix[min(int(diff.aperture), len(radii_pix) - 1)])
-        axes[row, 1].axvline(best, color="r", alpha=0.6, label=f"best: r={best:.0f}")
-        axes[row, 0].add_artist(plt.Circle(tuple(center), best, color="r", fill=False))
+        axes[row, 1].axvline(best, color=colors["aperture"], alpha=0.6, label=f"best: r={best:.0f}")
+        axes[row, 0].add_artist(plt.Circle(tuple(center), best, color=colors["aperture"], fill=False))
         for radius in (rin_pix, rout_pix):
-            axes[row, 1].axvline(radius, color="y", ls="--", alpha=0.6)
+            axes[row, 1].axvline(radius, color=colors["sky_annulus"], ls="--", alpha=0.6)
             axes[row, 0].add_artist(
-                plt.Circle(tuple(center), radius, color="y", ls="--", fill=False)
+                plt.Circle(tuple(center), radius, color=colors["sky_annulus"], ls="--", fill=False)
             )
         saturation = getattr(ref.telescope, "saturation", None)
         if saturation is not None:
@@ -1903,15 +2017,178 @@ def plot_stacks(
     _savefig(fig, path)
 
 
+def plot_cutouts(
+    r: dict,
+    path: Path,
+    target_name: str = "",
+    instrument: str = "",
+    band: str = "",
+    date: str = "",
+    max_num_stars: int = MAX_NUM_STARS,
+    plot_gaia_sources: bool = False,
+    target_coord=None,
+    simbad_df=None,
+    cmap: str = "Greys",
+) -> None:
+    ref = r["ref"]
+    if not target_name:
+        target_name = ref.header.get("OBJECT", "")
+    if not instrument:
+        instrument = get_instrument(ref.header)
+    if not date:
+        date = date_from_header(ref.header)
+    if not band:
+        band = r["band"]
+    target_id = r.get("target_index")
+    
+    cutouts = ref.computed.get("cutouts")
+    if not cutouts:
+        return
+
+    target_idx = r.get("target_index")
+    avoid_cids = r.get("avoid_cids")
+    avoided = set(avoid_cids or [])
+
+    # Filter out avoided stars, and make sure indices are valid
+    candidates = [i for i in range(len(cutouts)) if i not in avoided and 0 <= i < len(cutouts)]
+
+    if target_idx is not None and target_idx not in avoided and 0 <= target_idx < len(cutouts):
+        top_candidates = candidates[:max_num_stars]
+        if target_idx not in top_candidates:
+            if len(top_candidates) == max_num_stars:
+                top_candidates[-1] = target_idx
+            else:
+                top_candidates.append(target_idx)
+        indices_to_plot = sorted(top_candidates)
+    else:
+        indices_to_plot = candidates[:max_num_stars]
+
+    ncutouts = len(indices_to_plot)
+    if ncutouts == 0:
+        return
+
+    # Check if WCS is OK for target_coord to query/project SIMBAD
+    wcs_ok = target_coord is not None and _wcs_can_project(getattr(ref, "wcs", None), target_coord)
+    simbad_coords_list = []
+    if wcs_ok:
+        wcs_offset = np.array([0.0, 0.0])
+        try:
+            wpix = ref.wcs.world_to_pixel(target_coord)
+            if 0 <= target_idx < len(ref.sources):
+                wcs_offset = ref.sources[target_idx].coords - wpix
+        except Exception:  # noqa: BLE001
+            pass
+
+        simbad = simbad_df if simbad_df is not None else get_simbad_data(target_coord, instrument)
+        if simbad is not None and not simbad.empty:
+            simbad = simbad[simbad.OTYPE != "Star"]
+            if not simbad.empty:
+                try:
+                    simbad_coords = SkyCoord(
+                        ra=simbad.RA, dec=simbad.DEC, unit=(u.hourangle, u.deg)
+                    )
+                    x_pix_all, y_pix_all = ref.wcs.wcs_world2pix(
+                        np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
+                    ).T
+                    x_pix_all += wcs_offset[0]
+                    y_pix_all += wcs_offset[1]
+                    simbad_coords_list = list(zip(x_pix_all, y_pix_all, simbad.OTYPE))
+                except Exception:  # noqa: BLE001
+                    pass
+
+    ncols = min(5, ncutouts)
+    nrows = ncutouts // ncols if ncutouts % ncols == 0 else ncutouts // ncols + 1
+
+    fig, axs = plt.subplots(nrows, ncols, figsize=(2 * ncols, 2.5 * nrows), constrained_layout=True)
+    ax = np.atleast_1d(axs).flatten()
+
+    radii_pix, _, _ = aper_radii_pix(r)
+    best = float(radii_pix[min(int(r["diff"].aperture), len(radii_pix) - 1)])
+
+    colors = get_plot_colors(cmap)
+
+    for i, idx in enumerate(indices_to_plot):
+        img = cutouts[idx]
+        img.show(ax=ax[i], cmap=cmap)
+        ax[i].axis("off")
+        
+        if plot_gaia_sources and r.get("gaia_df") is not None:
+            star_coord = None
+            if ref.wcs is not None and hasattr(ref.wcs, "pixel_to_world"):
+                star_coord = ref.wcs.pixel_to_world(*(ref.sources[idx].coords))
+            _overlay_gaia_sources(
+                ax[i],
+                img,
+                r.get("gaia_df"),
+                target_coord=star_coord,
+                label_mag=True,
+            )
+
+        # Plot SIMBAD objects if they fall inside this cutout
+        if simbad_coords_list and hasattr(img, "origin") and img.origin is not None:
+            x0, y0 = img.origin
+            ny, nx = img.data.shape
+            for xi, yi, label in simbad_coords_list:
+                xi_c = xi - x0
+                yi_c = yi - y0
+                if 0 <= xi_c < nx and 0 <= yi_c < ny:
+                    color = colors["simbad_default"]
+                    if plot_gaia_sources:
+                        label_lower = str(label).lower()
+                        for keyword, color_key in _SIMBAD_FLAG_TYPES.items():
+                            if keyword in label_lower:
+                                color = colors[color_key]
+                                break
+                    ax[i].scatter([xi_c], [yi_c], marker="D", s=40, ec=color, fc="none", lw=1, zorder=10)
+                    ax[i].annotate(
+                        label,
+                        (xi_c, yi_c),
+                        xytext=(5, 5),
+                        textcoords="offset points",
+                        fontsize=5,
+                        color=color,
+                        zorder=10,
+                    )
+
+        center = np.array(img.data.shape)[::-1] / 2
+        ax[i].add_artist(plt.Circle(tuple(center), best, color=colors["aperture"], fill=False, lw=1.5, alpha=0.8))
+        peak = ref.sources[idx].peak
+        is_target = " (Target)" if idx == target_idx else ""
+        ax[i].set_title(f"Star {idx}{is_target}\npeak={peak:,.0f}")
+
+    for j in range(ncutouts, len(ax)):
+        ax[j].axis("off")
+
+    focus = ref.header.get("FOCPOSN")
+    try:
+        focus = float(focus) if focus is not None else float("nan")
+    except (ValueError, TypeError):
+        focus = float("nan")
+
+    z = ref.header.get("AIRMASS")
+    try:
+        z = float(z) if z is not None else float("nan")
+    except (ValueError, TypeError):
+        z = float("nan")
+
+    focus_str = f"{focus:.2f}" if not np.isnan(focus) else "nan"
+    z_str = f"{z:.2f}" if not np.isnan(z) else "nan"
+
+    desc = f"cutouts (focus={focus_str} airmass={z_str})"
+    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
+    fig.suptitle(title)
+    _savefig(fig, path)
+
+
 # --------------------------- GIF ---------------------------
 
 
 def _gif_frame(
-    data: np.ndarray, label: str = "", max_px: int = GIF_MAX_PX
+    data: np.ndarray, label: str = "", max_px: int = GIF_MAX_PX, cmap: str = "Greys"
 ) -> np.ndarray:
     """Build one 8-bit RGB GIF frame from image data, matplotlib-free.
 
-    The array is z-scaled to 0-255, flipped vertically to match matplotlib's
+    The array is z-scaled, colormapped, flipped vertically to match matplotlib's
     ``origin="lower"`` display convention, downsampled so its longest side is
     ``max_px``, and stamped with ``label`` (e.g. ``DATE-OBS``) via PIL. This
     avoids the per-frame Figure/savefig round-trip that dominated runtime
@@ -1919,9 +2196,15 @@ def _gif_frame(
     """
     from PIL import Image, ImageDraw
 
-    arr = (_zscale(data) * 255).astype(np.uint8)
+    zscaled = _zscale(data)
+    try:
+        colormap = plt.get_cmap(cmap)
+    except Exception:
+        colormap = plt.get_cmap("Greys")
+    rgba = colormap(zscaled)
+    arr = (rgba[:, :, :3] * 255).astype(np.uint8)
     arr = np.flipud(arr)  # mimic matplotlib origin="lower"
-    frame = Image.fromarray(arr, mode="L").convert("RGB")
+    frame = Image.fromarray(arr, mode="RGB")
     longest = max(frame.size)
     if longest > max_px:
         scale = max_px / longest
@@ -1949,7 +2232,7 @@ def _gif_frame(
     return np.asarray(frame)
 
 
-def make_gif(files, path: Path, stride: int) -> None:
+def make_gif(files, path: Path, stride: int, cmap: str = "Greys") -> None:
     """Render a quick-look GIF per band without matplotlib."""
     import imageio.v2 as imageio
 
@@ -1959,7 +2242,7 @@ def make_gif(files, path: Path, stride: int) -> None:
     frames = []
     for fp in track(sampled, description=f"gif:{path.name}"):
         img = FITSImage(fp)
-        frames.append(_gif_frame(img.data, img.header.get("DATE-OBS", "")))
+        frames.append(_gif_frame(img.data, img.header.get("DATE-OBS", ""), cmap=cmap))
     imageio.mimsave(path, frames, fps=FPS, loop=0)
     logger.info(f"wrote {path}")
 
@@ -2451,6 +2734,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=None,
         dest="sig_dy",
         help="Sigma threshold for drift Y outlier clipping (default: disabled).",
+    )
+    ap.add_argument(
+        "--cmap",
+        default="Greys",
+        help="Colormap for image display plots (default: 'Greys').",
     )
     args = ap.parse_args(argv)
 
@@ -3011,6 +3299,13 @@ def main(argv=None) -> int:
             if not resolved_confmode:
                 resolved_confmode = probe.get("CONFMODE")
 
+    simbad_df = None
+    if target_coord is not None:
+        try:
+            simbad_df = get_simbad_data(target_coord, instrument)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"SIMBAD query failed: {exc}")
+
     stem_multi = build_stem(args.target_name, instrument, date, site=site, confmode=resolved_confmode)
     bjds = {}
     for band, r in band_results.items():
@@ -3027,14 +3322,22 @@ def main(argv=None) -> int:
             target_coord,
             instrument,
             args.results_dir / f"{stem}_ref.png",
+            target_name=args.target_name,
+            date=date,
             avoid_cids=r.get("avoid_cids"),
             plot_gaia_sources=args.plot_gaia_sources,
+            simbad_df=simbad_df,
+            cmap=args.cmap,
         )
         plot_apertures(
             r,
             args.results_dir / f"{stem}_apertures.png",
+            target_name=args.target_name,
+            instrument=instrument,
+            date=date,
             plot_gaia_sources=args.plot_gaia_sources,
             target_coord=target_coord,
+            cmap=args.cmap,
         )
         plot_alignment(
             r,
@@ -3049,6 +3352,20 @@ def main(argv=None) -> int:
             min_star_separation=args.min_star_separation,
             n_stars_align=args.n_stars_align,
             min_area=args.min_star_area,
+            cmap=args.cmap,
+        )
+        plot_cutouts(
+            r,
+            args.results_dir / f"{stem}_cutouts.png",
+            args.target_name,
+            instrument,
+            band,
+            date,
+            max_num_stars=args.max_num_stars,
+            plot_gaia_sources=args.plot_gaia_sources,
+            target_coord=target_coord,
+            simbad_df=simbad_df,
+            cmap=args.cmap,
         )
         if args.make_gif:
             stride_step = (
@@ -3056,7 +3373,7 @@ def main(argv=None) -> int:
                 if args.test_run
                 else max(1, len(r["files"]) // args.gif_stride)
             )
-            make_gif(r["files"], args.results_dir / f"{stem}.gif", stride_step)
+            make_gif(r["files"], args.results_dir / f"{stem}.gif", stride_step, cmap=args.cmap)
 
     bin_size_days = args.bin_size_minutes / (24 * 60)
     target_index = next(iter(band_results.values()))["target_index"]
@@ -3094,6 +3411,7 @@ def main(argv=None) -> int:
         target_index=target_index,
         plot_gaia_sources=args.plot_gaia_sources,
         target_coord=target_coord,
+        cmap=args.cmap,
     )
     save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz", meta=vars(args))
 

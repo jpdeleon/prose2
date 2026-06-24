@@ -774,11 +774,11 @@ def test_plot_ref_image_simbad_eclbin_color(tmp_path, monkeypatch):
     # When plot_gaia_sources=True and wcs is available, the EclBin should be orange ("C1")
     rp.plot_ref_image(r, target_coord, "muscat4", out, plot_gaia_sources=True)
 
-    # Let's verify that one annotation is cyan (for "V*") and the other is C1 (for "EclBin")
-    # Note: Target label is also annotated, which has color="r", so we ignore it.
-    simbad_annotations = [c for c in annotate_colors if c != "r"]
-    assert "cyan" in simbad_annotations
-    assert "C1" in simbad_annotations
+    # Let's verify that one annotation is COLOR_SIMBAD_DEFAULT (for "V*") and the other is COLOR_SIMBAD_ECLBIN (for "EclBin")
+    # Note: Target label is also annotated, which has color=COLOR_TARGET, so we ignore it.
+    simbad_annotations = [c for c in annotate_colors if c != rp.COLOR_TARGET]
+    assert rp.COLOR_SIMBAD_DEFAULT in simbad_annotations
+    assert rp.COLOR_SIMBAD_ECLBIN in simbad_annotations
 
 
 # --------------------------- Gaia source overlay ---------------------------
@@ -1542,3 +1542,59 @@ def test_plot_stacks_draws_saturation_axhline(tmp_path, monkeypatch):
     
     assert 55000.0 in axhline_y_vals
     assert twin_axes_created == 1
+
+
+def test_plot_ref_image_custom_cmap(tmp_path, monkeypatch):
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+
+    from prose import FITSImage
+    from prose.core.source import Sources
+
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10, 10], [5, 5]]))
+    target_coord = __import__("astropy").coordinates.SkyCoord(0, 0, unit="deg")
+    out = tmp_path / "ref_inverted.png"
+
+    show_kwargs = {}
+    original_show = ref.show
+    def mock_show(*args, **kwargs):
+        show_kwargs.update(kwargs)
+        # Avoid plotting the actual image to speed up/prevent window pops
+        return None
+    monkeypatch.setattr(ref, "show", mock_show)
+
+    scatter_colors = []
+    import matplotlib.pyplot as plt
+    original_scatter = plt.Axes.scatter
+    def mock_scatter(self, x, y, *args, **kwargs):
+        if "ec" in kwargs:
+            scatter_colors.append(kwargs["ec"])
+        return original_scatter(self, x, y, *args, **kwargs)
+    monkeypatch.setattr(plt.Axes, "scatter", mock_scatter)
+
+    r = {"ref": ref, "band": "gp", "target_index": 0}
+    rp.plot_ref_image(r, target_coord, "muscat4", out, cmap="Greys")
+
+    assert show_kwargs.get("cmap") == "Greys"
+    assert "crimson" in scatter_colors
