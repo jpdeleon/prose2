@@ -69,9 +69,12 @@ def weights(
 
         i += 1
 
-    weights[0, mask] = 0
+    if weights.ndim == 1:
+        weights[mask] = 0
+    else:
+        weights[0, mask] = 0
 
-    return weights[0]
+    return weights if weights.ndim == 1 else weights[0]
 
 
 def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = None):

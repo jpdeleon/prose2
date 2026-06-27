@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from prose import Fluxes
+from prose.fluxes import weights
 
 
 def test_copy():
@@ -75,3 +76,15 @@ def test_diff():
     f = Fluxes(x)
     f.target = 1
     diff = f.autodiff()
+
+
+def test_weights_single_comparison_star():
+    fluxes = np.array(
+        [
+            [1.0, 1.1, 0.9, 1.05],
+            [2.0, 2.0, 2.0, 2.0],
+        ]
+    )
+    w = weights(fluxes)
+    assert w.shape == (2,)
+    assert np.all(np.isfinite(w))

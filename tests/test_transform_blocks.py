@@ -94,3 +94,24 @@ def test_align_reference_sources_backward_compat(n=30):
     np.testing.assert_allclose(
         transformed_image.transform(computed_sources_coords), original_coords
     )
+
+
+def test_align_reference_sources_tolerance_boundary():
+    reference_coords = np.column_stack((np.arange(40.0), np.zeros(40)))
+    image_coords = reference_coords.copy()
+    image_coords[17:] += np.array([1000.0, 1000.0])
+
+    strict = Image(_sources=Sources(image_coords))
+    strict.transform = transform.AffineTransform()
+    blocks.alignment.AlignReferenceSources(
+        Image(_sources=Sources(reference_coords)), discard_tolerance=0.5
+    ).run(strict)
+
+    relaxed = Image(_sources=Sources(image_coords))
+    relaxed.transform = transform.AffineTransform()
+    blocks.alignment.AlignReferenceSources(
+        Image(_sources=Sources(reference_coords)), discard_tolerance=0.4
+    ).run(relaxed)
+
+    assert strict.discard is True
+    assert relaxed.discard is False

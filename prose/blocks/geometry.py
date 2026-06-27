@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, Union
 
 import numpy as np
@@ -17,6 +18,8 @@ __all__ = [
     "ComputeTransformXYShift",
     "ComputeTransformTwirl",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class Trim(Block):
@@ -245,6 +248,9 @@ class ComputeTransformTwirl(Block):
                     pass
 
         if not success:
+            logger.warning(
+                "ComputeTransformTwirl failed to solve a transform; discarding image"
+            )
             image.discard = True
 
     def solve(self, coords, tolerance=2, refine=True):

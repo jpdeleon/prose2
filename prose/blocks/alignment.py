@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 from astropy.wcs.utils import fit_wcs_from_points
 from skimage.transform import warp
@@ -7,6 +9,8 @@ from prose.blocks.geometry import ComputeTransformTwirl
 from prose.core import Block, Image
 
 __all__ = ["TransformData", "AlignReferenceSources", "AlignReferenceWCS"]
+
+logger = logging.getLogger(__name__)
 
 
 # TODO test inverse
@@ -136,12 +140,20 @@ class AlignReferenceSources(Block):
                     image.sources.coords,
                     tol=self.match_tolerance,
                 )
-                if matches < np.min(
+                threshold = np.min(
                     [
                         self.discard_tolerance * len(image.sources),
                         len(self.reference_sources),
                     ]
-                ):
+                )
+                if matches < threshold:
+                    logger.warning(
+                        "AlignReferenceSources discarded image: "
+                        f"matches={matches}, threshold={threshold:.1f}, "
+                        f"image_sources={len(image.sources)}, "
+                        f"reference_sources={len(self.reference_sources)}, "
+                        f"match_tolerance={self.match_tolerance}"
+                    )
                     image.discard = True
 
             sources.coords = new_sources_coords

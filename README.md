@@ -194,6 +194,9 @@ they are unaffected.
 * muscat3 (narrowband): 240122
 * muscat4: 240128 (supply `--tID` manually)
 
+## Note
+Note: The gain and saturation limit are reflected in the FITS header keywords GAIN and and SATURATE, respectively, and those are set for each individual camera in the network. The units of the saturation limit will be ADU for raw images, and electrons for BANZAI-processed images.
+
 ## Installation
 
 prose2 builds on prose (Python 3). Install prose from

@@ -273,6 +273,30 @@ def test_reference_sequence_detects_more_than_max_num_stars():
     assert detect_block.n > 10
 
 
+def test_photometry_sequence_uses_cross_filter_alignment_tolerance():
+    from prose.core.source import Sources
+
+    class FakeReference:
+        sources = Sources(
+            np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0], [3.0, 1.0]])
+        )
+        epsf = type("FakeEPSF", (), {"params": {}})()
+
+    seq = rp.photometry_sequence(
+        ref=FakeReference(),
+        aper_radii=np.array([3.0]),
+        rin=6.0,
+        rout=9.0,
+        n_stars_align=4,
+    )
+    align_blocks = [
+        block for block in seq.blocks if block.__class__.__name__ == "AlignReferenceSources"
+    ]
+
+    assert len(align_blocks) == 1
+    assert align_blocks[0].discard_tolerance == rp.ALIGN_DISCARD_TOLERANCE
+
+
 # --------------- aperture-radii / sky-annulus contamination geometry ---------------
 #
 # These exercise the pure helpers behind gaia_aperture_radii without any FITS
