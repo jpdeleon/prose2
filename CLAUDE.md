@@ -52,3 +52,7 @@ Do not track large files locally and in git history. Update .gitignore if needed
 When the prompt starts `session limit`, it means we hit a session limit and restarted. 
 The goal is marked with `goal`. Based on git status, the modified files are marked with
 `file1`. Review these local files, check the current implementation, and tell me what the immediate next step should be.
+
+## Prompt
+Ask questions for clarifications if prompt is vague or confusing.
+Verify non-obvious assumptions before implementing edit.
