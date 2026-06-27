@@ -291,7 +291,7 @@ class SequenceParallel(Sequence):
 
         self.n_processed_images = 0
         n = len(self.images)
-        processed_blocks = mp.Manager().list(self.blocks)
+        processed_blocks = self.blocks
         images_i = list(enumerate(self.images))
 
         with mp.Pool() as pool:

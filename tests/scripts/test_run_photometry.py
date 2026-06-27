@@ -1692,3 +1692,90 @@ def test_plot_ref_image_custom_cmap(tmp_path, monkeypatch):
 
     assert show_kwargs.get("cmap") == "Greys"
     assert "crimson" in scatter_colors
+
+
+def test_nearby_stars_csv_generation(tmp_path, monkeypatch):
+    import pandas as pd
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    hdr["PIXSCALE"] = 0.267
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+    
+    from prose import FITSImage
+    from prose.core.source import Sources
+    from astropy.coordinates import SkyCoord
+    
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10, 10], [12, 12]]))
+    target_coord = SkyCoord(0, 0, unit="deg")
+    
+    gaia_df = pd.DataFrame({
+        "ra": [0.0, 0.001],
+        "dec": [0.0, 0.001],
+        "phot_g_mean_mag": [10.0, 12.5],
+        "source_id": [123, 456]
+    })
+    
+    gaia_coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
+    target_idx_in_gaia = target_coord.separation(gaia_coords).argmin()
+    assert target_idx_in_gaia == 0
+    target_g_mag = float(gaia_df.phot_g_mean_mag.values[target_idx_in_gaia])
+    assert target_g_mag == 10.0
+    
+    detected_pix_coords = np.array([s.coords for s in ref.sources], dtype=float)
+    detected_coords = ref.wcs.pixel_to_world(*detected_pix_coords.T)
+    match_idx, match_sep, _ = gaia_coords.match_to_catalog_sky(detected_coords)
+    
+    nearby_stars_data = []
+    pixscale = 0.267
+    rout = 50.0
+    for i in range(len(gaia_df)):
+        if i == target_idx_in_gaia:
+            continue
+        sep_arc = float(target_coord.separation(gaia_coords[i]).arcsec)
+        sep_p = sep_arc / pixscale
+        if sep_p <= rout:
+            g_mag = gaia_df.phot_g_mean_mag.values[i]
+            delta_mag = float(g_mag - target_g_mag)
+            contam_ratio = float(10 ** (-delta_mag / 2.5) * 100)
+            det_sep_arc = float(match_sep[i].arcsec)
+            detected_str = "Y" if det_sep_arc <= 1.5 else "N"
+            source_id = gaia_df.source_id.values[i]
+            
+            nearby_stars_data.append({
+                "Separation (arcsec)": round(sep_arc, 3),
+                "Separation (pix)": round(sep_p, 2),
+                "Gaia delta mag": round(delta_mag, 3),
+                "Detected (Y/N)": detected_str,
+                "Contamination Ratio (%)": round(contam_ratio, 4),
+                "Gaia Source ID": str(source_id),
+                "RA (deg)": round(float(gaia_df.ra.values[i]), 6),
+                "Dec (deg)": round(float(gaia_df.dec.values[i]), 6),
+                "Gaia G mag": round(float(g_mag), 3),
+            })
+            
+    assert len(nearby_stars_data) == 1
+    item = nearby_stars_data[0]
+    assert item["Gaia Source ID"] == "456"
+    assert item["Gaia delta mag"] == 2.5
+    assert item["Contamination Ratio (%)"] == 10.0
+

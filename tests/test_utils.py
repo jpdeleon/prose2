@@ -104,3 +104,35 @@ def test_get_simbad_data_no_sources_returns_none_without_caching(
     assert pu.get_simbad_data(coord, "muscat4", fov_arcmin=5) is None
     # a genuine "no sources" answer is not written to disk
     assert not pu.coord_cache_path("simbad", coord, "muscat4", "5").exists()
+
+
+# --------------------------- get_saturation_from_header ---------------------------
+
+
+def test_get_saturation_from_header_sinistro_central_2k_2x2():
+    # 1. BANZAI-reduced header (GAIN = 1.0, SATURATE in electrons)
+    h_reduced = {
+        "TELID": "1m0a",
+        "SITEID": "coj",
+        "CONFMODE": "central_2k_2x2",
+        "GAIN": 1.0,
+        "SATURATE": 244000.0,
+        "MAXLIN": 244000.0,
+        "filter": "zs",
+    }
+    limits_reduced = pu.get_saturation_from_header(h_reduced)
+    assert limits_reduced["zs"] == 244000.0
+
+    # 2. Raw header / gain != 1.0 (fallback to hardcoded values)
+    h_raw = {
+        "TELID": "1m0a",
+        "SITEID": "coj",
+        "CONFMODE": "central_2k_2x2",
+        "GAIN": 6.6,
+        "SATURATE": 37000.0,
+        "MAXLIN": 37000.0,
+        "filter": "zs",
+    }
+    limits_raw = pu.get_saturation_from_header(h_raw)
+    assert limits_raw["zs"] == pytest.approx(340000.0 / 6.6)
+

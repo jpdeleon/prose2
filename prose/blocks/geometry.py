@@ -254,7 +254,8 @@ class ComputeTransformTwirl(Block):
             image.discard = True
 
     def solve(self, coords, tolerance=2, refine=True):
-        quads_image, asterisms_image = quads.hashes(coords)
+        n_stars = min(len(coords), self.n if self.n is not None else 12, 15)
+        quads_image, asterisms_image = quads.hashes(coords[0:n_stars])
         tree_image = cKDTree(quads_image)
         min_match = 0.7
 

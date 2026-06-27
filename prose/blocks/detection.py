@@ -110,15 +110,17 @@ class _SourceDetection(Block):
                 _sources = sources[idxs]
             if self.min_separation:
                 final_sources = _sources.copy()
+                # build an (N, 2) coords array that works whether final_sources
+                # is a Sources collection (PointSourceDetection) or a plain
+                # ndarray of source objects (AutoSourceDetection/TraceDetection)
+                coords = np.array([source.coords for source in final_sources])
 
                 for s in final_sources:
                     s.keep = True
 
                 for i, s in enumerate(final_sources):
                     if final_sources[i].keep:
-                        distances = np.linalg.norm(
-                            s.coords - final_sources.coords, axis=1
-                        )
+                        distances = np.linalg.norm(s.coords - coords, axis=1)
                         distances[i] = np.nan
                         idxs = np.flatnonzero(distances < self.min_separation)
                         for j in idxs[idxs > i]:

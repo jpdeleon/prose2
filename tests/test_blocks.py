@@ -63,6 +63,46 @@ def test_sourcedetection_min_separation(d):
     np.testing.assert_allclose(distances > d, True)
 
 
+@pytest.mark.parametrize("d", [10, 50, 80, 100])
+def test_autosourcedetection_min_separation(d):
+    # AutoSourceDetection.run() feeds clean() a raw ndarray of source objects
+    # (unlike PointSourceDetection, which wraps them in a Sources collection).
+    # Exercise the full detection path with min_separation enabled.
+    from prose.blocks.detection import AutoSourceDetection
+
+    im = image.copy()
+    AutoSourceDetection(min_separation=d).run(im)
+
+    distances = np.linalg.norm(im.sources.coords - im.sources.coords[:, None], axis=-1)
+    distances = np.where(np.eye(distances.shape[0]).astype(bool), np.nan, distances)
+    distances = np.nanmin(distances, 0)
+    np.testing.assert_allclose(distances > d, True)
+
+
+def test_clean_min_separation_accepts_ndarray():
+    # Regression: with min_separation set, _SourceDetection.clean() must accept a
+    # raw ndarray of source objects (the AutoSourceDetection/TraceDetection input).
+    # It previously did `final_sources.coords`, raising AttributeError because an
+    # ndarray has no `.coords` property (only a Sources collection does).
+    from prose.blocks.detection import AutoSourceDetection
+    from prose.core.source import PointSource
+
+    sources = np.array(
+        [
+            PointSource(coords=np.array([0.0, 0.0]), peak=100.0),
+            PointSource(coords=np.array([3.0, 0.0]), peak=50.0),  # within 5 px of first
+            PointSource(coords=np.array([100.0, 100.0]), peak=10.0),
+        ]
+    )
+
+    cleaned = AutoSourceDetection(min_separation=5).clean(sources)
+
+    coords = np.array([s.coords for s in cleaned])
+    # the dimmer of the two close sources (3, 0) is dropped; brightest + far survive
+    assert len(cleaned) == 2
+    np.testing.assert_array_equal(np.sort(coords[:, 0]), [0.0, 100.0])
+
+
 def test_Trim():
     blocks.Trim(30).run(image.copy())
 

@@ -199,8 +199,12 @@ def get_saturation_from_header(h) -> dict:
             raise ValueError(f"Site ID must be one of {sinistro_sites} for 1m0a telescopes")
         
         url = "https://lco.global/observatory/instruments/sinistro/"
-        gain = 6.6 if h['CONFMODE'] == 'central_2k_2x2' else 1
-        base_limit = 340_000 / gain
+        if float(h.get('GAIN', 1.0)) == 1.0 and 'SATURATE' in h:
+            base_limit = h['SATURATE']
+            gain = 1.0
+        else:
+            gain = 6.6 if h.get('CONFMODE') == 'central_2k_2x2' else 1.0
+            base_limit = 340_000 / gain
         saturation_limits = {'gp': base_limit, 'rp': base_limit, 'ip': base_limit, 'zs': base_limit}
     
     else:

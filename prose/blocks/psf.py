@@ -21,17 +21,64 @@ def moments(data):
     """Returns (height, x, y, width_x, width_y)
     the gaussian parameters of a 2D distribution by calculating its
     moments"""
+    if data is None or data.size == 0 or np.all(np.isnan(data)):
+        sh = data.shape if (data is not None and len(data.shape) > 0) else (21, 21)
+        w = max(sh)
+        return {
+            "amplitude": 1.0,
+            "x": sh[0] / 2.0,
+            "y": sh[1] / 2.0,
+            "sigma_x": w / 4.0,
+            "sigma_y": w / 4.0,
+            "background": 0.0,
+            "theta": 0.0,
+            "beta": 3.0,
+        }
+    
+    if np.any(np.isnan(data)):
+        data = np.nan_to_num(data, nan=0.0)
+
     height = data.max()
     background = data.min()
     data = data - np.min(data)
     total = data.sum()
+    if total == 0:
+        sh = data.shape
+        w = max(sh)
+        return {
+            "amplitude": 1.0,
+            "x": sh[0] / 2.0,
+            "y": sh[1] / 2.0,
+            "sigma_x": w / 4.0,
+            "sigma_y": w / 4.0,
+            "background": background,
+            "theta": 0.0,
+            "beta": 3.0,
+        }
+
     x, y = np.indices(data.shape)
     x = (x * data).sum() / total
     y = (y * data).sum() / total
+
+    if np.isnan(x) or np.isnan(y):
+        sh = data.shape
+        x = sh[0] / 2.0
+        y = sh[1] / 2.0
+
     col = data[:, int(y)]
-    width_x = np.sqrt(abs((np.arange(col.size) - y) ** 2 * col).sum() / col.sum())
+    col_sum = col.sum()
+    if col_sum == 0:
+        width_x = 1.0
+    else:
+        width_x = np.sqrt(abs((np.arange(col.size) - y) ** 2 * col).sum() / col_sum)
+        
     row = data[int(x), :]
-    width_y = np.sqrt(abs((np.arange(row.size) - x) ** 2 * row).sum() / row.sum())
+    row_sum = row.sum()
+    if row_sum == 0:
+        width_y = 1.0
+    else:
+        width_y = np.sqrt(abs((np.arange(row.size) - x) ** 2 * row).sum() / row_sum)
+
     width_x /= gaussian_sigma_to_fwhm
     width_y /= gaussian_sigma_to_fwhm
     return {
@@ -82,9 +129,16 @@ class MedianEPSF(Block):
         good_cutouts = np.array(
             [c.data for c in image.cutouts if len(c.sources) <= self.max_sources]
         )
-        if self.normalize:
-            good_cutouts = good_cutouts / np.nanmax(good_cutouts, (1, 2))[:, None, None]
-        epsf = np.nanmedian(good_cutouts, 0)
+        if len(good_cutouts) == 0:
+            shape = image.cutouts[0].data.shape if len(image.cutouts) > 0 else (21, 21)
+            epsf = np.zeros(shape)
+        else:
+            if self.normalize:
+                maxs = np.nanmax(good_cutouts, (1, 2))
+                maxs = np.where(maxs == 0, 1.0, maxs)
+                good_cutouts = good_cutouts / maxs[:, None, None]
+            epsf = np.nanmedian(good_cutouts, 0)
+            epsf = np.nan_to_num(epsf, nan=0.0)
         image.epsf = Image(epsf)
         image.set("epsf_n_sources", len(good_cutouts))
 
@@ -117,6 +171,9 @@ class _PSFModelBase(Block):
         self._parallel_friendly = True
 
     def run(self, image: Image):
+        if np.any(np.isnan(image.epsf.data)):
+            image.epsf.data = np.nan_to_num(image.epsf.data, nan=0.0)
+
         if np.all(image.epsf.shape != self.shape):
             self.shape = image.epsf.shape
             self.x, self.y = np.indices(self.shape)

@@ -579,12 +579,13 @@ def reference_sequence(
     return Sequence(
         [
             blocks.Trim(ccd_trim_size_yx),
-            blocks.AutoSourceDetection(
+            # blocks.AutoSourceDetection(
+            blocks.PointSourceDetection(
                 n=n_detect,
                 min_area=min_area,
                 min_separation=min_star_separation,
             ),
-            FilterPointSources(),
+            # FilterPointSources(),
             blocks.Cutouts(shape=cutout_size, wcs=True),
             blocks.MedianEPSF(),
             blocks.psf.Gaussian2D(),
@@ -682,6 +683,11 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
     cache_path = coord_cache_path("gaia", target_coord, GAIA_CUTOUT[0])
     if cache_path in _gaia_cache:  # same target, another band of this run
         return _gaia_cache[cache_path]
+
+    df = load_cached_df(cache_path)
+    if df is not None:
+        _gaia_cache[cache_path] = df
+        return df
 
     try:
         c = ref.copy()
@@ -1190,13 +1196,14 @@ def photometry_sequence(
         n_stars_align = max_num_stars
     blocks_list = [
         blocks.Trim(ccd_trim_size_yx),
-        blocks.AutoSourceDetection(
+        # blocks.AutoSourceDetection(
+        blocks.PointSourceDetection(
             n=max_num_stars,
             min_area=min_area,
             min_separation=min_star_separation,
             min_sources=2,
         ),
-        FilterPointSources(),
+        # FilterPointSources(),
         blocks.Cutouts(shape=cutout_size),
         blocks.MedianEPSF(),
         blocks.Gaussian2D(ref),
@@ -2043,12 +2050,13 @@ def plot_alignment(
         seq = Sequence(
             [
                 blocks.Trim(ccd_trim_size_yx),
-                blocks.AutoSourceDetection(
+                # blocks.AutoSourceDetection(
+                blocks.PointSourceDetection(
                     n=max_num_stars,
                     min_area=min_area,
                     min_separation=min_star_separation,
                 ),
-                FilterPointSources(),
+                # FilterPointSources(),
                 blocks.ComputeTransformTwirl(ref, n=n_stars_align),
             ]
         )
@@ -3735,10 +3743,80 @@ def main(argv=None) -> int:
         )
         if args.test_run:
             logger.info(f"test-run: skipping {stem}.csv")
+            logger.info(f"test-run: skipping {stem}_nearby_stars.csv")
         else:
             csv_path = args.results_dir / f"{stem}.csv"
             photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
             logger.info(f"wrote {csv_path}")
+
+            # Compile nearby stars within the outer annulus
+            nearby_stars_data = []
+            gaia_df = r.get("gaia_df")
+            ref = r["ref"]
+            rout = r["rout"]
+            pixscale = float(ref.telescope.pixel_scale)
+
+            if (
+                gaia_df is not None
+                and len(gaia_df)
+                and getattr(ref, "wcs", None) is not None
+                and len(ref.sources) > 0
+            ):
+                try:
+                    gaia_coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
+                    target_idx_in_gaia = target_coord.separation(gaia_coords).argmin()
+                    target_g_mag = float(gaia_df.phot_g_mean_mag.values[target_idx_in_gaia])
+
+                    # Project detected sources to RA/Dec
+                    detected_pix_coords = np.array([s.coords for s in ref.sources], dtype=float)
+                    detected_coords = ref.wcs.pixel_to_world(*detected_pix_coords.T)
+
+                    # Match Gaia catalog to detected catalog
+                    match_idx, match_sep, _ = gaia_coords.match_to_catalog_sky(detected_coords)
+
+                    for i in range(len(gaia_df)):
+                        if i == target_idx_in_gaia:
+                            continue
+
+                        sep_arc = float(target_coord.separation(gaia_coords[i]).arcsec)
+                        sep_p = sep_arc / pixscale
+
+                        if sep_p <= rout:
+                            g_mag = gaia_df.phot_g_mean_mag.values[i]
+                            if np.isnan(g_mag) or np.isnan(target_g_mag):
+                                delta_mag = np.nan
+                                contam_ratio = np.nan
+                            else:
+                                delta_mag = float(g_mag - target_g_mag)
+                                contam_ratio = float(10 ** (-delta_mag / 2.5) * 100)
+
+                            det_sep_arc = float(match_sep[i].arcsec)
+                            detected_str = "Y" if det_sep_arc <= 1.5 else "N"
+
+                            source_id = (
+                                gaia_df.source_id.values[i]
+                                if "source_id" in gaia_df
+                                else (gaia_df.id.values[i] if "id" in gaia_df else "")
+                            )
+
+                            nearby_stars_data.append({
+                                "Separation (arcsec)": round(sep_arc, 3),
+                                "Separation (pix)": round(sep_p, 2),
+                                "Gaia delta mag": round(delta_mag, 3) if not np.isnan(delta_mag) else None,
+                                "Detected (Y/N)": detected_str,
+                                "Contamination Ratio (%)": round(contam_ratio, 4) if not np.isnan(contam_ratio) else None,
+                                "Gaia Source ID": str(source_id),
+                                "RA (deg)": round(float(gaia_df.ra.values[i]), 6),
+                                "Dec (deg)": round(float(gaia_df.dec.values[i]), 6),
+                                "Gaia G mag": round(float(g_mag), 3) if not np.isnan(g_mag) else None,
+                            })
+                except Exception as exc:
+                    logger.warning(f"Failed to compile nearby stars: {exc}")
+
+            nearby_stars_data.sort(key=lambda x: x["Separation (arcsec)"])
+            nearby_csv_path = args.results_dir / f"{stem}_nearby_stars.csv"
+            pd.DataFrame(nearby_stars_data).to_csv(nearby_csv_path, index=False)
+            logger.info(f"wrote {nearby_csv_path}")
 
         plot_ref_image(
             r,
