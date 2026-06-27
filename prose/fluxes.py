@@ -44,9 +44,10 @@ def weights(
         # Use median absolute deviation for robust weight calculation against outliers
         mad = median_absolute_deviation(fluxes, axis=-1)
         # fallback to standard deviation if MAD is 0 (e.g. constant/noiseless flux)
-        mad = np.where(mad == 0.0, np.nanstd(fluxes, axis=-1), mad)
-        # fallback to 1.0 if std is also 0
-        mad = np.where(mad == 0.0, 1.0, mad)
+        std = np.nanstd(fluxes, axis=-1)
+        # if both std and mad are 0, it is a constant/masked star, weight should be 0 (via inf)
+        # otherwise if only mad is 0, fallback to std
+        mad = np.where((mad == 0.0) & (std != 0.0), std, mad)
         return 1 / mad
 
     i = 0

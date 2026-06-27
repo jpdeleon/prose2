@@ -3743,80 +3743,10 @@ def main(argv=None) -> int:
         )
         if args.test_run:
             logger.info(f"test-run: skipping {stem}.csv")
-            logger.info(f"test-run: skipping {stem}_nearby_stars.csv")
         else:
             csv_path = args.results_dir / f"{stem}.csv"
             photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
             logger.info(f"wrote {csv_path}")
-
-            # Compile nearby stars within the outer annulus
-            nearby_stars_data = []
-            gaia_df = r.get("gaia_df")
-            ref = r["ref"]
-            rout = r["rout"]
-            pixscale = float(ref.telescope.pixel_scale)
-
-            if (
-                gaia_df is not None
-                and len(gaia_df)
-                and getattr(ref, "wcs", None) is not None
-                and len(ref.sources) > 0
-            ):
-                try:
-                    gaia_coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
-                    target_idx_in_gaia = target_coord.separation(gaia_coords).argmin()
-                    target_g_mag = float(gaia_df.phot_g_mean_mag.values[target_idx_in_gaia])
-
-                    # Project detected sources to RA/Dec
-                    detected_pix_coords = np.array([s.coords for s in ref.sources], dtype=float)
-                    detected_coords = ref.wcs.pixel_to_world(*detected_pix_coords.T)
-
-                    # Match Gaia catalog to detected catalog
-                    match_idx, match_sep, _ = gaia_coords.match_to_catalog_sky(detected_coords)
-
-                    for i in range(len(gaia_df)):
-                        if i == target_idx_in_gaia:
-                            continue
-
-                        sep_arc = float(target_coord.separation(gaia_coords[i]).arcsec)
-                        sep_p = sep_arc / pixscale
-
-                        if sep_p <= rout:
-                            g_mag = gaia_df.phot_g_mean_mag.values[i]
-                            if np.isnan(g_mag) or np.isnan(target_g_mag):
-                                delta_mag = np.nan
-                                contam_ratio = np.nan
-                            else:
-                                delta_mag = float(g_mag - target_g_mag)
-                                contam_ratio = float(10 ** (-delta_mag / 2.5) * 100)
-
-                            det_sep_arc = float(match_sep[i].arcsec)
-                            detected_str = "Y" if det_sep_arc <= 1.5 else "N"
-
-                            source_id = (
-                                gaia_df.source_id.values[i]
-                                if "source_id" in gaia_df
-                                else (gaia_df.id.values[i] if "id" in gaia_df else "")
-                            )
-
-                            nearby_stars_data.append({
-                                "Separation (arcsec)": round(sep_arc, 3),
-                                "Separation (pix)": round(sep_p, 2),
-                                "Gaia delta mag": round(delta_mag, 3) if not np.isnan(delta_mag) else None,
-                                "Detected (Y/N)": detected_str,
-                                "Contamination Ratio (%)": round(contam_ratio, 4) if not np.isnan(contam_ratio) else None,
-                                "Gaia Source ID": str(source_id),
-                                "RA (deg)": round(float(gaia_df.ra.values[i]), 6),
-                                "Dec (deg)": round(float(gaia_df.dec.values[i]), 6),
-                                "Gaia G mag": round(float(g_mag), 3) if not np.isnan(g_mag) else None,
-                            })
-                except Exception as exc:
-                    logger.warning(f"Failed to compile nearby stars: {exc}")
-
-            nearby_stars_data.sort(key=lambda x: x["Separation (arcsec)"])
-            nearby_csv_path = args.results_dir / f"{stem}_nearby_stars.csv"
-            pd.DataFrame(nearby_stars_data).to_csv(nearby_csv_path, index=False)
-            logger.info(f"wrote {nearby_csv_path}")
 
         plot_ref_image(
             r,
@@ -3878,6 +3808,83 @@ def main(argv=None) -> int:
                 stride_step,
                 cmap=args.cmap,
             )
+
+    # Compile nearby stars within the outer annulus once for the entire run
+    if args.test_run:
+        logger.info(f"test-run: skipping {stem_multi}_nearby_stars.csv")
+    else:
+        r_ref = None
+        for r in band_results.values():
+            if (
+                r.get("gaia_df") is not None
+                and len(r["gaia_df"])
+                and getattr(r.get("ref"), "wcs", None) is not None
+                and len(r["ref"].sources) > 0
+            ):
+                r_ref = r
+                break
+
+        nearby_stars_data = []
+        if r_ref is not None:
+            gaia_df = r_ref["gaia_df"]
+            ref = r_ref["ref"]
+            rout = r_ref["rout"]
+            pixscale = float(ref.telescope.pixel_scale)
+            try:
+                gaia_coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
+                target_idx_in_gaia = target_coord.separation(gaia_coords).argmin()
+                target_g_mag = float(gaia_df.phot_g_mean_mag.values[target_idx_in_gaia])
+
+                # Project detected sources to RA/Dec
+                detected_pix_coords = np.array([s.coords for s in ref.sources], dtype=float)
+                detected_coords = ref.wcs.pixel_to_world(*detected_pix_coords.T)
+
+                # Match Gaia catalog to detected catalog
+                match_idx, match_sep, _ = gaia_coords.match_to_catalog_sky(detected_coords)
+
+                for i in range(len(gaia_df)):
+                    if i == target_idx_in_gaia:
+                        continue
+
+                    sep_arc = float(target_coord.separation(gaia_coords[i]).arcsec)
+                    sep_p = sep_arc / pixscale
+
+                    if sep_p <= rout:
+                        g_mag = gaia_df.phot_g_mean_mag.values[i]
+                        if np.isnan(g_mag) or np.isnan(target_g_mag):
+                            delta_mag = np.nan
+                            contam_ratio = np.nan
+                        else:
+                            delta_mag = float(g_mag - target_g_mag)
+                            contam_ratio = float(10 ** (-delta_mag / 2.5) * 100)
+
+                        det_sep_arc = float(match_sep[i].arcsec)
+                        detected_str = "Y" if det_sep_arc <= 1.5 else "N"
+
+                        source_id = (
+                            gaia_df.source_id.values[i]
+                            if "source_id" in gaia_df
+                            else (gaia_df.id.values[i] if "id" in gaia_df else "")
+                        )
+
+                        nearby_stars_data.append({
+                            "Separation (arcsec)": round(sep_arc, 3),
+                            "Separation (pix)": round(sep_p, 2),
+                            "Gaia delta mag": round(delta_mag, 3) if not np.isnan(delta_mag) else None,
+                            "Detected (Y/N)": detected_str,
+                            "Contamination Ratio (%)": round(contam_ratio, 4) if not np.isnan(contam_ratio) else None,
+                            "Gaia Source ID": str(source_id),
+                            "RA (deg)": round(float(gaia_df.ra.values[i]), 6),
+                            "Dec (deg)": round(float(gaia_df.dec.values[i]), 6),
+                            "Gaia G mag": round(float(g_mag), 3) if not np.isnan(g_mag) else None,
+                        })
+            except Exception as exc:
+                logger.warning(f"Failed to compile nearby stars: {exc}")
+
+        nearby_stars_data.sort(key=lambda x: x["Separation (arcsec)"])
+        nearby_csv_path = args.results_dir / f"{stem_multi}_nearby_stars.csv"
+        pd.DataFrame(nearby_stars_data).to_csv(nearby_csv_path, index=False)
+        logger.info(f"wrote {nearby_csv_path}")
 
     bin_size_days = args.bin_size_minutes / (24 * 60)
     target_index = next(iter(band_results.values()))["target_index"]
