@@ -26,11 +26,11 @@ structural reference; the reduction itself is pure ``prose``)::
     {target}_{inst}_{band}_{date}_alignment.png
     {target}_{inst}_{band}_{date}.gif
     {target}_{inst}_{band}_{date}.csv
-    {target}_{inst}_{date}_lightcurves.png
-    {target}_{inst}_{date}_raw_flux.png
-    {target}_{inst}_{date}_covariates.png
-    {target}_{inst}_{date}_stacks.png
-    {target}_{inst}_{date}.npz
+    {target}_{inst}_{bands}_{date}_lightcurves.png
+    {target}_{inst}_{bands}_{date}_raw_flux.png
+    {target}_{inst}_{bands}_{date}_covariates.png
+    {target}_{inst}_{bands}_{date}_stacks.png
+    {target}_{inst}_{bands}_{date}.npz
     {iso-timestamp}.log
 
 Example
@@ -64,6 +64,7 @@ import sys
 import time as time_module
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 import matplotlib
 
@@ -76,7 +77,6 @@ import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.time import Time
-from astropy.visualization import ZScaleInterval
 from astroquery.mast import Mast
 from astroquery.simbad import Simbad
 from rich.progress import track
@@ -100,6 +100,7 @@ from prose.utils import (
     load_cached_df,
     read_filename_per_band,
     save_cached_df,
+    z_scale,
 )
 
 # --------------------------- constants / defaults ---------------------------
@@ -151,6 +152,14 @@ CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
 CCD_TRIM_SIZE_YX = (0, 0)  # trim image edges [pix]
 MIN_STAR_AREA = 10  # min detected-source area [pix]
 MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
+ALIGN_DISCARD_TOLERANCE = 0.4  # cross-filter alignments can share <50% top sources
+# Close-companion exclusion for the comparison-star pool. The auto threshold is
+# conservative: keep detection deblending at 10 px, then reject candidate comps
+# that still have a nearby detected/Gaia neighbour inside max(2 x FWHM, 3").
+AVOID_NEARBY_STAR_AUTO = "auto"
+AVOID_NEARBY_STAR_AUTO_FWHM = 2.0
+AVOID_NEARBY_STAR_AUTO_MIN_ARCSEC = 3.0
+AVOID_NEARBY_STAR_MATCH_ARCSEC = 1.5
 # Exclude detected stars whose centroid is within this many pixels of any CCD
 # edge from the comparison-star pool (the target is never excluded). ``None``
 # means auto: half the cutout size, so the PSF cutout box stays fully on-chip.
@@ -160,7 +169,7 @@ EDGE_MARGIN_PIX = None
 # Color scheme for plots
 COLOR_TARGET = "red"       # distinct, visible on all grey levels
 COLOR_APERTURE = "gold"        # complementary to target, high contrast
-COLOR_SKY_ANNULUS = "cyan"      # visible on both dark and light sky
+COLOR_SKY_ANNULUS = "yellow"      # visible on both dark and light sky
 COLOR_SIMBAD_DEFAULT = "orange"  # works on dark image backgrounds
 COLOR_SIMBAD_ECLBIN = "magenta"   # warmer, more visible than orange on light
 COLOR_SOURCES = "lime"        # pops against dark source regions
@@ -172,7 +181,7 @@ _SIMBAD_FLAG_TYPES = {
     "sb*": "simbad_eclbin",
 }
 
-_BRIGHT_COLORS = {  # dark background
+_DARK_COLORS = {  # for light background
     "target": COLOR_TARGET,
     "aperture": COLOR_APERTURE,
     "sky_annulus": COLOR_SKY_ANNULUS,
@@ -180,7 +189,7 @@ _BRIGHT_COLORS = {  # dark background
     "simbad_eclbin": COLOR_SIMBAD_ECLBIN,
     "sources": COLOR_SOURCES,
 }
-_DARK_COLORS = {  # light background
+_BRIGHT_COLORS = {  # for dark background
     "target": "red",
     "aperture": "darkgreen",
     "sky_annulus": "yellow",
@@ -418,15 +427,25 @@ def build_stem(
     return f"{target}_{inst}_{band}_{date}{suffix}"
 
 
+def build_summary_stem(
+    target: str,
+    inst: str,
+    date: str,
+    bands: Iterable[str],
+    site: str | None = None,
+    confmode: str | None = None,
+) -> str:
+    """Build a summary-product stem scoped to the exact reduced band set."""
+    band_token = "_".join(str(b).strip() for b in bands if str(b).strip())
+    if not band_token:
+        return build_stem(target, inst, date, site=site, confmode=confmode)
+    return build_stem(target, inst, date, band_token, site=site, confmode=confmode)
+
+
 def _savefig(fig, path: Path) -> None:
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"wrote {path}")
-
-
-def _zscale(data: np.ndarray) -> np.ndarray:
-    vmin, vmax = ZScaleInterval().get_limits(data)
-    return np.clip((data - vmin) / max(vmax - vmin, 1e-9), 0, 1)
 
 
 def parse_aper_grid(s: str) -> np.ndarray:
@@ -476,6 +495,24 @@ def parse_trim(s: str) -> tuple[int, int]:
     if y < 0 or x < 0:
         raise argparse.ArgumentTypeError(f"--ccd_trim values must be >= 0, got {s!r}")
     return y, x
+
+
+def parse_avoid_nearby_star(s: str) -> float | str:
+    """Parse ``--avoid_nearby_star`` into an arcsec value or ``"auto"``."""
+    s = str(s).strip().lower()
+    if s in ("", AVOID_NEARBY_STAR_AUTO):
+        return AVOID_NEARBY_STAR_AUTO
+    try:
+        value = float(s)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--avoid_nearby_star expects a positive arcsec value or 'auto', got {s!r}"
+        ) from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(
+            f"--avoid_nearby_star must be > 0 arcsec, got {value}"
+        )
+    return value
 
 
 def aper_radii_pix(r: dict):
@@ -769,6 +806,22 @@ def resolve_edge_margin(edge_margin: int | None, cutout_size: int) -> int:
     return int(edge_margin)
 
 
+def resolve_avoid_nearby_star_arcsec(
+    avoid_nearby_star: float | str | None,
+    fwhm_pix: float,
+    pixscale: float,
+) -> float | None:
+    """Resolve ``--avoid_nearby_star`` to an effective arcsec threshold."""
+    if avoid_nearby_star is None:
+        return None
+    if avoid_nearby_star == AVOID_NEARBY_STAR_AUTO:
+        return max(
+            AVOID_NEARBY_STAR_AUTO_FWHM * float(fwhm_pix) * float(pixscale),
+            AVOID_NEARBY_STAR_AUTO_MIN_ARCSEC,
+        )
+    return float(avoid_nearby_star)
+
+
 def _edge_source_indices(ref, margin: int, target_index: int) -> list[int]:
     """Indices of detected sources within ``margin`` px of any image border.
 
@@ -795,6 +848,107 @@ def _edge_source_indices(ref, margin: int, target_index: int) -> list[int]:
     return sorted(int(i) for i in np.nonzero(near)[0])
 
 
+def _saturated_source_indices(
+    ref, saturation_level: float | None, target_index: int
+) -> list[int]:
+    """Indices of detected sources whose peak pixel value exceeds saturation.
+
+    Uses ``s.peak`` (set during source detection from ``region.intensity_max``).
+    The ``target_index`` is always protected so the target is never dropped
+    from photometry. Returns a sorted list of comparison-star indices (empty
+    when ``saturation_level`` is ``None``, ``<= 0``, or no sources).
+    """
+    if saturation_level is None or saturation_level <= 0:
+        return []
+    n = len(ref.sources)
+    if n == 0:
+        return []
+    peaks = np.array([s.peak for s in ref.sources])
+    saturated = peaks >= saturation_level
+    if 0 <= target_index < len(saturated):
+        saturated[target_index] = False
+    return sorted(int(i) for i in np.nonzero(saturated)[0])
+
+
+def _nearby_detected_source_indices(
+    ref,
+    max_sep_pix: float,
+    target_index: int,
+) -> list[int]:
+    """Detected-source indices whose nearest detected neighbour is too close."""
+    if max_sep_pix <= 0:
+        return []
+    coords = np.array([s.coords for s in ref.sources], dtype=float)
+    if coords.shape[0] < 2:
+        return []
+    from scipy.spatial import KDTree
+
+    tree = KDTree(coords)
+    dists, _ = tree.query(coords, k=2)
+    nearest = np.asarray(dists[:, 1], dtype=float)
+    near = np.isfinite(nearest) & (nearest <= float(max_sep_pix))
+    if 0 <= target_index < near.size:
+        near[target_index] = False
+    return sorted(int(i) for i in np.nonzero(near)[0])
+
+
+def _nearby_gaia_source_indices(
+    ref,
+    gaia_df,
+    max_sep_arcsec: float,
+    target_index: int,
+) -> list[int]:
+    """Detected-source indices with a close Gaia neighbour.
+
+    A matched source is rejected when another Gaia source lies within
+    ``max_sep_arcsec`` and is bright enough to contribute at least ~10% of the
+    matched source flux (same ``CONTAM_DMAG`` criterion used for the target
+    aperture heuristic). When Gaia magnitudes are unavailable, any neighbour
+    within the separation threshold is considered contaminating.
+    """
+    if (
+        gaia_df is None
+        or not len(gaia_df)
+        or getattr(ref, "wcs", None) is None
+        or len(ref.sources) < 2
+    ):
+        return []
+    try:
+        coords = np.array([s.coords for s in ref.sources], dtype=float)
+        source_coords = ref.wcs.pixel_to_world(*coords.T)
+        if not _skycoord_has_finite_data(source_coords):
+            return []
+        gaia_coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
+        match_idx, match_sep, _ = source_coords.match_to_catalog_sky(gaia_coords)
+        match_sep_arcsec = np.asarray(np.atleast_1d(match_sep.arcsec), dtype=float)
+        mags = None
+        if "phot_g_mean_mag" in gaia_df:
+            mags = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)
+        nearby: list[int] = []
+        for src_idx, (gidx, sep_arcsec) in enumerate(zip(match_idx, match_sep_arcsec)):
+            if src_idx == target_index or not np.isfinite(sep_arcsec):
+                continue
+            if sep_arcsec > AVOID_NEARBY_STAR_MATCH_ARCSEC:
+                continue
+            seps = np.asarray(gaia_coords[gidx].separation(gaia_coords).arcsec, dtype=float)
+            mask = np.ones(len(seps), dtype=bool)
+            mask[int(gidx)] = False
+            if mags is not None and np.isfinite(mags[int(gidx)]):
+                contam = _contaminant_seps(seps[mask], mags[mask], float(mags[int(gidx)]))
+                if len(contam) and float(contam.min()) <= float(max_sep_arcsec):
+                    nearby.append(int(src_idx))
+            else:
+                neigh = np.sort(seps[mask & np.isfinite(seps)])
+                if len(neigh) and float(neigh[0]) <= float(max_sep_arcsec):
+                    nearby.append(int(src_idx))
+        return sorted(set(nearby))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"nearby-star Gaia screening failed ({exc}); using detected-source fallback only"
+        )
+        return []
+
+
 def build_reference(
     ref_file,
     target_coord,
@@ -810,6 +964,7 @@ def build_reference(
     min_area: int = MIN_STAR_AREA,
     plot_gaia_sources: bool = False,
     edge_margin: int | None = EDGE_MARGIN_PIX,
+    avoid_nearby_star: float | str | None = None,
     annulus_pix: tuple[float, float] | None = None,
 ):
     """Build the reference image, target index and aperture geometry.
@@ -928,7 +1083,11 @@ def build_reference(
     overlay_wcs_ok = _wcs_can_project(getattr(ref, "wcs", None), target_coord)
     if plot_gaia_sources and not overlay_wcs_ok:
         logger.warning("Gaia overlay skipped: reference image has no usable WCS")
-    if (not aper_radii_was_custom or plot_gaia_sources) and overlay_wcs_ok:
+    if (
+        not aper_radii_was_custom
+        or plot_gaia_sources
+        or avoid_nearby_star is not None
+    ) and overlay_wcs_ok:
         gaia_df = _gaia_catalog_df(ref, target_index, target_coord, pixel_scale)
     logger.info(
         f"reference {Path(ref_file).name}: FWHM {float(ref.fwhm):.2f} px, "
@@ -958,6 +1117,32 @@ def build_reference(
                 f"edge exclusion ({margin} px margin): {len(edge_cids)} "
                 f"comparison star(s) flagged near border: {edge_cids}"
             )
+    nearby_cids: list[int] = []
+    nearby_sep_arcsec = resolve_avoid_nearby_star_arcsec(
+        avoid_nearby_star, float(ref.fwhm), pixel_scale
+    )
+    nearby_sep_pix = (
+        float(nearby_sep_arcsec) / pixel_scale if nearby_sep_arcsec is not None else None
+    )
+    if nearby_sep_arcsec is not None:
+        detected_nearby = _nearby_detected_source_indices(ref, nearby_sep_pix, target_index)
+        gaia_nearby = _nearby_gaia_source_indices(
+            ref, gaia_df, nearby_sep_arcsec, target_index
+        )
+        nearby_cids = sorted(set(detected_nearby) | set(gaia_nearby))
+        if nearby_cids:
+            mode = "Gaia+detected" if gaia_nearby else "detected"
+            logger.info(
+                f"nearby-star exclusion ({nearby_sep_arcsec:.2f} arcsec = "
+                f"{nearby_sep_pix:.1f} px, {mode}): {len(nearby_cids)} "
+                f"comparison star(s) flagged: {nearby_cids}"
+            )
+    saturated_cids = _saturated_source_indices(ref, saturation, target_index)
+    if saturated_cids:
+        logger.info(
+            f"saturation exclusion ({saturation} ADU): {len(saturated_cids)} "
+            f"comparison star(s) flagged as saturated: {saturated_cids}"
+        )
     return dict(
         ref=ref,
         target_index=target_index,
@@ -967,6 +1152,10 @@ def build_reference(
         scale=scale,
         gaia_df=gaia_df,
         edge_cids=edge_cids,
+        saturated_cids=saturated_cids,
+        nearby_cids=nearby_cids,
+        nearby_sep_arcsec=nearby_sep_arcsec,
+        nearby_sep_pix=nearby_sep_pix,
         defaulted_to_brightest=defaulted_to_brightest,
     )
 
@@ -1005,7 +1194,9 @@ def photometry_sequence(
     ]
     if n_stars_align >= 3:
         blocks_list.append(blocks.ComputeTransformTwirl(ref, n=n_stars_align))
-        blocks_list.append(blocks.AlignReferenceSources(ref))
+        blocks_list.append(
+            blocks.AlignReferenceSources(ref, discard_tolerance=ALIGN_DISCARD_TOLERANCE)
+        )
     blocks_list.extend(
         [
             blocks.CentroidQuadratic(),
@@ -1064,6 +1255,7 @@ def run_band(
     min_area: int = MIN_STAR_AREA,
     plot_gaia_sources: bool = False,
     edge_margin: int | None = EDGE_MARGIN_PIX,
+    avoid_nearby_star: float | str | None = None,
     annulus_pix: tuple[float, float] | None = None,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
@@ -1092,9 +1284,27 @@ def run_band(
         min_area=min_area,
         plot_gaia_sources=plot_gaia_sources,
         edge_margin=edge_margin,
+        avoid_nearby_star=avoid_nearby_star,
         annulus_pix=annulus_pix,
     )
     ref = reference["ref"]
+    target_index = reference["target_index"]
+
+    if ref_source_positions is not None:
+        this_positions = np.array([s.coords for s in ref.sources])
+        if len(this_positions) and 0 <= target_index < len(ref_source_positions):
+            from scipy.spatial import KDTree
+
+            tree = KDTree(this_positions)
+            target_dist, mapped_target = tree.query(ref_source_positions[target_index])
+            if target_dist < _CROSSMATCH_TOLERANCE_PX:
+                target_index = int(mapped_target)
+            else:
+                logger.warning(
+                    f"[{band}] target index {reference['target_index']} from reference band "
+                    f"maps {target_dist:.1f} px away in this band (> {_CROSSMATCH_TOLERANCE_PX} px); "
+                    "using reference-band index"
+                )
 
     # Cross-match avoid_cids from ref-band index space -> this band's indices
     # via nearest-neighbor KDTree (ref_source_positions is pre-populated from
@@ -1142,7 +1352,7 @@ def run_band(
     edge_cids = reference.get("edge_cids") or []
     if edge_cids:
         current_avoid = set(mapped_avoid or [])
-        target_idx = reference["target_index"]
+        target_idx = target_index
         n_sources = len(ref.sources)
         candidates = [i for i in range(n_sources) if i != target_idx and i not in current_avoid]
         after_edge = [i for i in candidates if i not in set(edge_cids)]
@@ -1164,6 +1374,61 @@ def run_band(
                     )
                     cids = None
 
+    nearby_cids = reference.get("nearby_cids") or []
+    if nearby_cids:
+        current_avoid = set(mapped_avoid or [])
+        target_idx = target_index
+        n_sources = len(ref.sources)
+        candidates = [i for i in range(n_sources) if i != target_idx and i not in current_avoid]
+        after_nearby = [i for i in candidates if i not in set(nearby_cids)]
+        nearby_desc = reference.get("nearby_sep_arcsec")
+        if candidates and not after_nearby:
+            logger.warning(
+                f"[{band}] nearby-star exclusion ({nearby_desc:.2f} arcsec) would remove all "
+                f"comparison stars; relaxing nearby-star exclusion to preserve comparison pool"
+            )
+        else:
+            mapped_avoid = sorted(current_avoid | set(nearby_cids))
+            if cids is not None:
+                cids = [c for c in cids if c not in set(nearby_cids)]
+                if not cids:
+                    logger.warning(
+                        f"[{band}] all explicit cIDs fail nearby-star exclusion; "
+                        f"falling back to auto-selection"
+                    )
+                    cids = None
+
+    saturated_cids = reference.get("saturated_cids") or []
+    if saturated_cids:
+        current_avoid = set(mapped_avoid or [])
+        target_idx = target_index
+        n_sources = len(ref.sources)
+        candidates = [i for i in range(n_sources) if i != target_idx and i not in current_avoid]
+        after_sat = [i for i in candidates if i not in set(saturated_cids)]
+        if candidates and not after_sat:
+            logger.warning(
+                f"[{band}] saturation exclusion would remove all comparison stars; "
+                f"relaxing saturation exclusion to preserve comparison pool"
+            )
+        else:
+            mapped_avoid = sorted(current_avoid | set(saturated_cids))
+            if cids is not None:
+                cids = [c for c in cids if c not in set(saturated_cids)]
+                if not cids:
+                    logger.warning(
+                        f"[{band}] all explicit cIDs are saturated; "
+                        f"falling back to auto-selection"
+                    )
+                    cids = None
+
+    requested_n_stars_align = n_stars_align if n_stars_align else len(ref.sources)
+    effective_n_stars_align = min(requested_n_stars_align, len(ref.sources), max_num_stars)
+    if effective_n_stars_align < requested_n_stars_align:
+        logger.info(
+            f"[{band}] capping alignment stars from {requested_n_stars_align} "
+            f"to {effective_n_stars_align} (max_num_stars={max_num_stars})"
+        )
+
     phot = photometry_sequence(
         ref,
         reference["aper_radii"],
@@ -1174,22 +1439,29 @@ def run_band(
         max_num_stars=max_num_stars,
         min_star_separation=min_star_separation,
         cutout_size=cutout_size,
-        n_stars_align=min(n_stars_align, len(ref.sources))
-        if n_stars_align
-        else len(ref.sources),
-        target_index=reference["target_index"],
+        n_stars_align=effective_n_stars_align,
+        target_index=target_index,
         min_area=min_area,
     )
     phot.run(files)
 
     fluxes: Fluxes = phot.data[0].fluxes
     if fluxes is None:
-        logger.warning(f"[{band}] no valid frames (all discarded); skipping")
+        discard_summary = getattr(phot, "discards", None) or {}
+        if discard_summary:
+            summary = ", ".join(
+                f"{block}={len(idxs)}" for block, idxs in discard_summary.items()
+            )
+            logger.warning(f"[{band}] all frames discarded by blocks: {summary}")
+        logger.warning(
+            f"[{band}] no valid frames (all discarded); skipping "
+            f"(alignment/source matching likely failed)"
+        )
         return None
-    fluxes.target = reference["target_index"]
+    fluxes.target = target_index
 
     diff = differential_photometry(
-        fluxes, reference["target_index"], cids=cids, avoid_cids=mapped_avoid
+        fluxes, target_index, cids=cids, avoid_cids=mapped_avoid
     )
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
@@ -1207,7 +1479,7 @@ def run_band(
         fluxes=fluxes,
         diff=diff,
         avoid_cids=mapped_avoid,
-        target_index=reference["target_index"],
+        target_index=target_index,
         aper_radii=np.asarray(reference["aper_radii"]),
         rin=reference["rin"],
         rout=reference["rout"],
@@ -1251,13 +1523,26 @@ def differential_photometry(
         if avoid_cids:
             mask[list(avoid_cids)] = False
         fluxes = fluxes.mask_stars(mask)
+        kept = int(np.sum(mask)) - 1 if mask[target_index] else int(np.sum(mask))
+        logger.info(
+            f"comparison pool (explicit cIDs): {kept} candidates "
+            f"after masking target + explicit comparisons"
+        )
     else:
         keep = ~np.any(np.isnan(fluxes.fluxes), axis=(0, 2))
+        logger.info(
+            f"comparison pool (auto): {int(np.sum(keep)) - 1 if keep[target_index] else int(np.sum(keep))} "
+            f"candidates after NaN filtering"
+        )
         if avoid_cids:
             keep = np.array(keep, dtype=bool)
             valid_avoid = [a for a in avoid_cids if 0 <= a < n_sources]
             if valid_avoid:
                 keep[valid_avoid] = False
+                logger.info(
+                    f"comparison pool (auto): {int(np.sum(keep)) - 1 if keep[target_index] else int(np.sum(keep))} "
+                    f"candidates after avoid_cids filtering (removed {valid_avoid})"
+                )
         fluxes = fluxes.mask_stars(keep)
     n_before = len(fluxes.time) if fluxes.time is not None else 0
     sigma_kwargs = {
@@ -1294,6 +1579,9 @@ def differential_photometry(
         logger.info(
             f"autodiff chosen comparison stars (based on Broeg et al. 2005): "
             f"{original_comps} out of {n_considered} stars considered"
+        )
+        logger.info(
+            f"comparison pool (auto): final selected {len(original_comps)} comparison star(s)"
         )
     return diff
 
@@ -1754,8 +2042,8 @@ def plot_alignment(
         1, 2, figsize=(6, 3), sharex=True, sharey=True, constrained_layout=True
     )
     for ax, img, title in zip(axes, (raw, aligned), ("raw", "aligned")):
-        ax.imshow(_zscale(ref.data), cmap=cmap, origin="lower")
-        ax.imshow(_zscale(img), cmap=cmap, origin="lower", alpha=0.5)
+        ax.imshow(z_scale(ref.data), cmap=cmap, origin="lower")
+        ax.imshow(z_scale(img), cmap=cmap, origin="lower", alpha=0.5)
         ax.set_title(title)
         ax.grid(True, linestyle=":", alpha=0.5, color="white")
         for spine in ax.spines.values():
@@ -1970,7 +2258,7 @@ def plot_stacks(
         center = np.array(c.data.shape)[::-1] / 2
         
         colors = get_plot_colors(cmap)
-        axes[row, 0].imshow(_zscale(c.data), cmap=cmap, origin="lower")
+        axes[row, 0].imshow(z_scale(c.data), cmap=cmap, origin="lower")
         axes[row, 0].set_title(f"target zoom ({band})")
         axes[row, 0].axis("off")
         if plot_gaia_sources:
@@ -2154,7 +2442,8 @@ def plot_cutouts(
         ax[i].add_artist(plt.Circle(tuple(center), best, color=colors["aperture"], fill=False, lw=1.5, alpha=0.8))
         peak = ref.sources[idx].peak
         is_target = " (Target)" if idx == target_idx else ""
-        ax[i].set_title(f"Star {idx}{is_target}\npeak={peak:,.0f}")
+        tcolor = "r" if idx == target_idx else "k" 
+        ax[i].set_title(f"Star {idx}{is_target}\npeak={peak:,.0f}", color=tcolor)
 
     for j in range(ncutouts, len(ax)):
         ax[j].axis("off")
@@ -2171,10 +2460,17 @@ def plot_cutouts(
     except (ValueError, TypeError):
         z = float("nan")
 
-    focus_str = f"{focus:.2f}" if not np.isnan(focus) else "nan"
-    z_str = f"{z:.2f}" if not np.isnan(z) else "nan"
+    exptime = ref.header.get("EXPTIME")
+    try:
+        exptime = float(exptime) if exptime is not None else float("nan")
+    except (ValueError, TypeError):
+        exptime = float("nan")
 
-    desc = f"cutouts (focus={focus_str} airmass={z_str})"
+    focus_str = f"{focus:.1f}" if not np.isnan(focus) else "nan"
+    z_str = f"{z:.1f}" if not np.isnan(z) else "nan"
+    exptime_str = f"{exptime:.0f}" if not np.isnan(exptime) else "nan"
+
+    desc = f"cutouts (focus={focus_str} airmass={z_str} exptime={exptime_str}s)"
     title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
     fig.suptitle(title)
     _savefig(fig, path)
@@ -2196,7 +2492,7 @@ def _gif_frame(
     """
     from PIL import Image, ImageDraw
 
-    zscaled = _zscale(data)
+    zscaled = z_scale(data)
     try:
         colormap = plt.get_cmap(cmap)
     except Exception:
@@ -2665,6 +2961,20 @@ def parse_args(argv=None) -> argparse.Namespace:
         "of any CCD edge from the comparison-star pool (the target is never "
         "excluded). Default: half of --cutout_size, so the PSF cutout box stays "
         "on-chip. Set 0 to disable.",
+    )
+    ap.add_argument(
+        "--avoid_nearby_star",
+        "--avoid-nearby-star",
+        nargs="?",
+        type=parse_avoid_nearby_star,
+        const=AVOID_NEARBY_STAR_AUTO,
+        default=None,
+        dest="avoid_nearby_star",
+        help="Reject detected stars from the comparison-star pool when a nearby "
+        "companion is present. A numeric value is interpreted as the maximum "
+        "companion separation in arcsec. Passing the flag with no value uses "
+        "the conservative auto threshold max(2 x FWHM, 3 arcsec); without Gaia "
+        "the same threshold is converted to pixels using PIXSCALE. Default: off.",
     )
     ap.add_argument(
         "--bin_size_minutes",
@@ -3261,6 +3571,7 @@ def main(argv=None) -> int:
                 min_area=args.min_star_area,
                 plot_gaia_sources=args.plot_gaia_sources,
                 edge_margin=args.edge_margin,
+                avoid_nearby_star=args.avoid_nearby_star,
                 annulus_pix=args.annulus_pix,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
@@ -3306,7 +3617,14 @@ def main(argv=None) -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"SIMBAD query failed: {exc}")
 
-    stem_multi = build_stem(args.target_name, instrument, date, site=site, confmode=resolved_confmode)
+    stem_multi = build_summary_stem(
+        args.target_name,
+        instrument,
+        date,
+        active_bands,
+        site=site,
+        confmode=resolved_confmode,
+    )
     bjds = {}
     for band, r in band_results.items():
         stem = build_stem(args.target_name, instrument, date, band, site=site, confmode=resolved_confmode)
@@ -3377,31 +3695,37 @@ def main(argv=None) -> int:
 
     bin_size_days = args.bin_size_minutes / (24 * 60)
     target_index = next(iter(band_results.values()))["target_index"]
-    plot_lightcurves(
-        band_results,
-        args.results_dir / f"{stem_multi}_lightcurves.png",
-        args.target_name,
-        instrument,
-        date,
-        target_index=target_index,
-        bin_size_days=bin_size_days,
-    )
-    plot_raw_flux(
-        band_results,
-        args.results_dir / f"{stem_multi}_raw_flux.png",
-        args.target_name,
-        instrument,
-        date,
-        target_index=target_index,
-    )
-    plot_covariates(
-        band_results,
-        args.results_dir / f"{stem_multi}_covariates.png",
-        args.target_name,
-        instrument,
-        date,
-        target_index=target_index,
-    )
+    if args.test_run:
+        logger.info("test-run: skipping combined lightcurve plot")
+    else:
+        plot_lightcurves(
+            band_results,
+            args.results_dir / f"{stem_multi}_lightcurves.png",
+            args.target_name,
+            instrument,
+            date,
+            target_index=target_index,
+            bin_size_days=bin_size_days,
+        )
+    if args.test_run:
+        logger.info("test-run: skipping raw flux and covariate plots")
+    else:
+        plot_raw_flux(
+            band_results,
+            args.results_dir / f"{stem_multi}_raw_flux.png",
+            args.target_name,
+            instrument,
+            date,
+            target_index=target_index,
+        )
+        plot_covariates(
+            band_results,
+            args.results_dir / f"{stem_multi}_covariates.png",
+            args.target_name,
+            instrument,
+            date,
+            target_index=target_index,
+        )
     plot_stacks(
         band_results,
         args.results_dir / f"{stem_multi}_stacks.png",
