@@ -38,8 +38,16 @@ def weights(
     # normalize
     dfluxes = fluxes / np.expand_dims(np.nanmean(fluxes, -1), -1)
 
+    from astropy.stats import median_absolute_deviation
+
     def weight_function(fluxes):
-        return 1 / np.std(fluxes, axis=-1)
+        # Use median absolute deviation for robust weight calculation against outliers
+        mad = median_absolute_deviation(fluxes, axis=-1)
+        # fallback to standard deviation if MAD is 0 (e.g. constant/noiseless flux)
+        mad = np.where(mad == 0.0, np.nanstd(fluxes, axis=-1), mad)
+        # fallback to 1.0 if std is also 0
+        mad = np.where(mad == 0.0, 1.0, mad)
+        return 1 / mad
 
     i = 0
     evolution = 1e25
