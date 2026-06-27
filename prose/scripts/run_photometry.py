@@ -167,12 +167,12 @@ AVOID_NEARBY_STAR_MATCH_ARCSEC = 1.5
 EDGE_MARGIN_PIX = None
 
 # Color scheme for plots
-COLOR_TARGET = "red"       # distinct, visible on all grey levels
-COLOR_APERTURE = "gold"        # complementary to target, high contrast
-COLOR_SKY_ANNULUS = "yellow"      # visible on both dark and light sky
+COLOR_TARGET = "red"  # distinct, visible on all grey levels
+COLOR_APERTURE = "gold"  # complementary to target, high contrast
+COLOR_SKY_ANNULUS = "yellow"  # visible on both dark and light sky
 COLOR_SIMBAD_DEFAULT = "orange"  # works on dark image backgrounds
-COLOR_SIMBAD_ECLBIN = "magenta"   # warmer, more visible than orange on light
-COLOR_SOURCES = "lime"        # pops against dark source regions
+COLOR_SIMBAD_ECLBIN = "magenta"  # warmer, more visible than orange on light
+COLOR_SOURCES = "lime"  # pops against dark source regions
 
 # SIMBAD OTYPE substrings to highlight; all flagged types use the eclbin color.
 _SIMBAD_FLAG_TYPES = {
@@ -202,11 +202,9 @@ _BRIGHT_COLORS = {  # for dark background
 def get_plot_colors(cmap: str = "Greys") -> dict:
     return dict(_BRIGHT_COLORS if not cmap.endswith("_r") else _DARK_COLORS)
 
+
 # Gaia aperture-radii / sky-annulus heuristic
 APER_STEP_PIX = 2  # spacing of aperture radii [pix]
-ANNULUS_INNER_FWHM = 6  # nominal inner sky-annulus radius [FWHM]
-ANNULUS_OUTER_FWHM = 10  # nominal outer sky-annulus radius [FWHM]
-ANNULUS_MAX_PIX = 100  # clamp rout when FWHM is large (defocus) [pix]
 CONTAM_DMAG = 2.5  # neighbour contaminates if Gmag - target < this (>=10% target flux)
 CONTAM_MARGIN_PIX = 2  # keep annulus/aperture this far inside a contaminant [pix]
 GAIA_CUTOUT = (200, 200)  # cutout around target for the Gaia query [pix]
@@ -530,9 +528,6 @@ def aper_radii_pix(r: dict):
     return radii, rin, rout
 
 
-
-
-
 class MeasurePeaks(Block):
     def __init__(self, name=None):
         super().__init__(name=name)
@@ -837,12 +832,7 @@ def _edge_source_indices(ref, margin: int, target_index: int) -> list[int]:
         return []
     ny, nx = ref.shape
     x, y = coords[:, 0], coords[:, 1]
-    near = (
-        (x < margin)
-        | (x > nx - 1 - margin)
-        | (y < margin)
-        | (y > ny - 1 - margin)
-    )
+    near = (x < margin) | (x > nx - 1 - margin) | (y < margin) | (y > ny - 1 - margin)
     if 0 <= target_index < near.size:
         near[target_index] = False
     return sorted(int(i) for i in np.nonzero(near)[0])
@@ -930,11 +920,15 @@ def _nearby_gaia_source_indices(
                 continue
             if sep_arcsec > AVOID_NEARBY_STAR_MATCH_ARCSEC:
                 continue
-            seps = np.asarray(gaia_coords[gidx].separation(gaia_coords).arcsec, dtype=float)
+            seps = np.asarray(
+                gaia_coords[gidx].separation(gaia_coords).arcsec, dtype=float
+            )
             mask = np.ones(len(seps), dtype=bool)
             mask[int(gidx)] = False
             if mags is not None and np.isfinite(mags[int(gidx)]):
-                contam = _contaminant_seps(seps[mask], mags[mask], float(mags[int(gidx)]))
+                contam = _contaminant_seps(
+                    seps[mask], mags[mask], float(mags[int(gidx)])
+                )
                 if len(contam) and float(contam.min()) <= float(max_sep_arcsec):
                     nearby.append(int(src_idx))
             else:
@@ -1084,9 +1078,7 @@ def build_reference(
     if plot_gaia_sources and not overlay_wcs_ok:
         logger.warning("Gaia overlay skipped: reference image has no usable WCS")
     if (
-        not aper_radii_was_custom
-        or plot_gaia_sources
-        or avoid_nearby_star is not None
+        not aper_radii_was_custom or plot_gaia_sources or avoid_nearby_star is not None
     ) and overlay_wcs_ok:
         gaia_df = _gaia_catalog_df(ref, target_index, target_coord, pixel_scale)
     logger.info(
@@ -1101,12 +1093,7 @@ def build_reference(
         # of the FOV during the night — a data-quality heads-up, not a drop.
         ny, nx = ref.shape
         tx, ty = ref.sources[target_index].coords
-        if (
-            tx < margin
-            or tx > nx - 1 - margin
-            or ty < margin
-            or ty > ny - 1 - margin
-        ):
+        if tx < margin or tx > nx - 1 - margin or ty < margin or ty > ny - 1 - margin:
             logger.warning(
                 f"target (idx {target_index}) is within {margin} px of a CCD "
                 f"edge at ({tx:.0f}, {ty:.0f}); keeping it but its aperture may "
@@ -1122,10 +1109,14 @@ def build_reference(
         avoid_nearby_star, float(ref.fwhm), pixel_scale
     )
     nearby_sep_pix = (
-        float(nearby_sep_arcsec) / pixel_scale if nearby_sep_arcsec is not None else None
+        float(nearby_sep_arcsec) / pixel_scale
+        if nearby_sep_arcsec is not None
+        else None
     )
     if nearby_sep_arcsec is not None:
-        detected_nearby = _nearby_detected_source_indices(ref, nearby_sep_pix, target_index)
+        detected_nearby = _nearby_detected_source_indices(
+            ref, nearby_sep_pix, target_index
+        )
         gaia_nearby = _nearby_gaia_source_indices(
             ref, gaia_df, nearby_sep_arcsec, target_index
         )
@@ -1354,7 +1345,9 @@ def run_band(
         current_avoid = set(mapped_avoid or [])
         target_idx = target_index
         n_sources = len(ref.sources)
-        candidates = [i for i in range(n_sources) if i != target_idx and i not in current_avoid]
+        candidates = [
+            i for i in range(n_sources) if i != target_idx and i not in current_avoid
+        ]
         after_edge = [i for i in candidates if i not in set(edge_cids)]
         if candidates and not after_edge:
             logger.warning(
@@ -1379,7 +1372,9 @@ def run_band(
         current_avoid = set(mapped_avoid or [])
         target_idx = target_index
         n_sources = len(ref.sources)
-        candidates = [i for i in range(n_sources) if i != target_idx and i not in current_avoid]
+        candidates = [
+            i for i in range(n_sources) if i != target_idx and i not in current_avoid
+        ]
         after_nearby = [i for i in candidates if i not in set(nearby_cids)]
         nearby_desc = reference.get("nearby_sep_arcsec")
         if candidates and not after_nearby:
@@ -1403,7 +1398,9 @@ def run_band(
         current_avoid = set(mapped_avoid or [])
         target_idx = target_index
         n_sources = len(ref.sources)
-        candidates = [i for i in range(n_sources) if i != target_idx and i not in current_avoid]
+        candidates = [
+            i for i in range(n_sources) if i != target_idx and i not in current_avoid
+        ]
         after_sat = [i for i in candidates if i not in set(saturated_cids)]
         if candidates and not after_sat:
             logger.warning(
@@ -1422,7 +1419,9 @@ def run_band(
                     cids = None
 
     requested_n_stars_align = n_stars_align if n_stars_align else len(ref.sources)
-    effective_n_stars_align = min(requested_n_stars_align, len(ref.sources), max_num_stars)
+    effective_n_stars_align = min(
+        requested_n_stars_align, len(ref.sources), max_num_stars
+    )
     if effective_n_stars_align < requested_n_stars_align:
         logger.info(
             f"[{band}] capping alignment stars from {requested_n_stars_align} "
@@ -1857,7 +1856,7 @@ def plot_ref_image(
     wcs_ok = _wcs_can_project(getattr(ref, "wcs", None), target_coord)
     fig = plt.figure(figsize=(7, 7), constrained_layout=True)
     ax = fig.add_subplot(111, projection=ref.wcs) if wcs_ok else fig.add_subplot(111)
-    
+
     colors = get_plot_colors(cmap)
     ref.show(ax=ax, frame=True, sources=False, cmap=cmap)
     target_idx = r["target_index"]
@@ -1901,7 +1900,11 @@ def plot_ref_image(
         except Exception:  # noqa: BLE001
             pass
 
-        simbad = simbad_df if simbad_df is not None else get_simbad_data(target_coord, instrument)
+        simbad = (
+            simbad_df
+            if simbad_df is not None
+            else get_simbad_data(target_coord, instrument)
+        )
         if simbad is not None and not simbad.empty:
             simbad = simbad[simbad.OTYPE != "Star"]
             if not simbad.empty:
@@ -1958,10 +1961,10 @@ def plot_apertures(
     c = ref.cutout(coords, GAIA_CUTOUT, reset_index=False)
     radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
     fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
-    
+
     colors = get_plot_colors(cmap)
     c.show(ax=ax, zscale=True, sources=False, cmap=cmap)
-    
+
     target_source = next(
         (s for s in c.sources if s.i == r["target_index"]), c.sources[0]
     )
@@ -2059,7 +2062,9 @@ def plot_alignment(
             labelleft=False,
         )
     desc = "alignment"
-    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_index}\n{desc}"
+    title = (
+        f"{target_name} | {instrument} | {date} | {band} | tID={target_index}\n{desc}"
+    )
     fig.suptitle(title)
     _savefig(fig, path)
 
@@ -2256,7 +2261,7 @@ def plot_stacks(
             ref.sources[r["target_index"]].coords, GAIA_CUTOUT, reset_index=False
         )
         center = np.array(c.data.shape)[::-1] / 2
-        
+
         colors = get_plot_colors(cmap)
         axes[row, 0].imshow(z_scale(c.data), cmap=cmap, origin="lower")
         axes[row, 0].set_title(f"target zoom ({band})")
@@ -2274,7 +2279,7 @@ def plot_stacks(
         peaks = _radial_peak_profile(c.data, center)
         axes[row, 1].plot(peaks, ".", c="0.5", ms=4, alpha=0.5)
         axes[row, 1].plot(peaks, ls="--", c="0.5", alpha=0.5, label="peak")
-        
+
         prof = _radial_profile(c.data, center)
         ax_twin = axes[row, 1].twinx()
         ax_twin.plot(prof, ".", c=bc, ms=6, alpha=0.5)
@@ -2283,20 +2288,34 @@ def plot_stacks(
         ax_twin.set_ylabel("flux (ADU)")
 
         best = float(radii_pix[min(int(diff.aperture), len(radii_pix) - 1)])
-        axes[row, 1].axvline(best, color=colors["aperture"], alpha=0.6, label=f"best: r={best:.0f}")
-        axes[row, 0].add_artist(plt.Circle(tuple(center), best, color=colors["aperture"], fill=False))
+        axes[row, 1].axvline(
+            best, color=colors["aperture"], alpha=0.6, label=f"best: r={best:.0f}"
+        )
+        axes[row, 0].add_artist(
+            plt.Circle(tuple(center), best, color=colors["aperture"], fill=False)
+        )
         for radius in (rin_pix, rout_pix):
-            axes[row, 1].axvline(radius, color=colors["sky_annulus"], ls="--", alpha=0.6)
+            axes[row, 1].axvline(
+                radius, color=colors["sky_annulus"], ls="--", alpha=0.6
+            )
             axes[row, 0].add_artist(
-                plt.Circle(tuple(center), radius, color=colors["sky_annulus"], ls="--", fill=False)
+                plt.Circle(
+                    tuple(center),
+                    radius,
+                    color=colors["sky_annulus"],
+                    ls="--",
+                    fill=False,
+                )
             )
         saturation = getattr(ref.telescope, "saturation", None)
         if saturation is not None:
-            axes[row, 1].axhline(saturation, color='k', ls="--", alpha=0.7, label="saturation")
+            axes[row, 1].axhline(
+                saturation, color="k", ls="--", alpha=0.7, label="saturation"
+            )
         axes[row, 1].set_yscale("log")
         axes[row, 1].set_xlabel("radius (pixels)")
         axes[row, 1].set_ylabel("peak count (ADU)")
-        
+
         # Combine legends from main and twin axes
         lines, labels = axes[row, 1].get_legend_handles_labels()
         lines_twin, labels_twin = ax_twin.get_legend_handles_labels()
@@ -2328,7 +2347,7 @@ def plot_cutouts(
     if not band:
         band = r["band"]
     target_id = r.get("target_index")
-    
+
     cutouts = ref.computed.get("cutouts")
     if not cutouts:
         return
@@ -2338,9 +2357,15 @@ def plot_cutouts(
     avoided = set(avoid_cids or [])
 
     # Filter out avoided stars, and make sure indices are valid
-    candidates = [i for i in range(len(cutouts)) if i not in avoided and 0 <= i < len(cutouts)]
+    candidates = [
+        i for i in range(len(cutouts)) if i not in avoided and 0 <= i < len(cutouts)
+    ]
 
-    if target_idx is not None and target_idx not in avoided and 0 <= target_idx < len(cutouts):
+    if (
+        target_idx is not None
+        and target_idx not in avoided
+        and 0 <= target_idx < len(cutouts)
+    ):
         top_candidates = candidates[:max_num_stars]
         if target_idx not in top_candidates:
             if len(top_candidates) == max_num_stars:
@@ -2356,7 +2381,9 @@ def plot_cutouts(
         return
 
     # Check if WCS is OK for target_coord to query/project SIMBAD
-    wcs_ok = target_coord is not None and _wcs_can_project(getattr(ref, "wcs", None), target_coord)
+    wcs_ok = target_coord is not None and _wcs_can_project(
+        getattr(ref, "wcs", None), target_coord
+    )
     simbad_coords_list = []
     if wcs_ok:
         wcs_offset = np.array([0.0, 0.0])
@@ -2367,7 +2394,11 @@ def plot_cutouts(
         except Exception:  # noqa: BLE001
             pass
 
-        simbad = simbad_df if simbad_df is not None else get_simbad_data(target_coord, instrument)
+        simbad = (
+            simbad_df
+            if simbad_df is not None
+            else get_simbad_data(target_coord, instrument)
+        )
         if simbad is not None and not simbad.empty:
             simbad = simbad[simbad.OTYPE != "Star"]
             if not simbad.empty:
@@ -2376,7 +2407,8 @@ def plot_cutouts(
                         ra=simbad.RA, dec=simbad.DEC, unit=(u.hourangle, u.deg)
                     )
                     x_pix_all, y_pix_all = ref.wcs.wcs_world2pix(
-                        np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]), 0
+                        np.column_stack([simbad_coords.ra.deg, simbad_coords.dec.deg]),
+                        0,
                     ).T
                     x_pix_all += wcs_offset[0]
                     y_pix_all += wcs_offset[1]
@@ -2387,7 +2419,9 @@ def plot_cutouts(
     ncols = min(5, ncutouts)
     nrows = ncutouts // ncols if ncutouts % ncols == 0 else ncutouts // ncols + 1
 
-    fig, axs = plt.subplots(nrows, ncols, figsize=(2 * ncols, 2.5 * nrows), constrained_layout=True)
+    fig, axs = plt.subplots(
+        nrows, ncols, figsize=(2 * ncols, 2.5 * nrows), constrained_layout=True
+    )
     ax = np.atleast_1d(axs).flatten()
 
     radii_pix, _, _ = aper_radii_pix(r)
@@ -2399,7 +2433,7 @@ def plot_cutouts(
         img = cutouts[idx]
         img.show(ax=ax[i], cmap=cmap)
         ax[i].axis("off")
-        
+
         if plot_gaia_sources and r.get("gaia_df") is not None:
             star_coord = None
             if ref.wcs is not None and hasattr(ref.wcs, "pixel_to_world"):
@@ -2427,7 +2461,16 @@ def plot_cutouts(
                             if keyword in label_lower:
                                 color = colors[color_key]
                                 break
-                    ax[i].scatter([xi_c], [yi_c], marker="D", s=40, ec=color, fc="none", lw=1, zorder=10)
+                    ax[i].scatter(
+                        [xi_c],
+                        [yi_c],
+                        marker="D",
+                        s=40,
+                        ec=color,
+                        fc="none",
+                        lw=1,
+                        zorder=10,
+                    )
                     ax[i].annotate(
                         label,
                         (xi_c, yi_c),
@@ -2439,10 +2482,19 @@ def plot_cutouts(
                     )
 
         center = np.array(img.data.shape)[::-1] / 2
-        ax[i].add_artist(plt.Circle(tuple(center), best, color=colors["aperture"], fill=False, lw=1.5, alpha=0.8))
+        ax[i].add_artist(
+            plt.Circle(
+                tuple(center),
+                best,
+                color=colors["aperture"],
+                fill=False,
+                lw=1.5,
+                alpha=0.8,
+            )
+        )
         peak = ref.sources[idx].peak
         is_target = " (Target)" if idx == target_idx else ""
-        tcolor = "r" if idx == target_idx else "k" 
+        tcolor = "r" if idx == target_idx else "k"
         ax[i].set_title(f"Star {idx}{is_target}\npeak={peak:,.0f}", color=tcolor)
 
     for j in range(ncutouts, len(ax)):
@@ -2551,7 +2603,9 @@ def _npz_safe(v):
     return arr if arr.dtype != object else np.array(v, dtype=object)
 
 
-def save_all_bands_npz(band_results, bjds, path: Path, meta: dict | None = None) -> None:
+def save_all_bands_npz(
+    band_results, bjds, path: Path, meta: dict | None = None
+) -> None:
     out = {}
     for band, r in band_results.items():
         diff = r["diff"]
@@ -2594,9 +2648,7 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
     # MUSCAT_OBSLOG_DIR env var (inherited from the launching muscat-db process,
     # or sourced from .env for manual runs). Default matches muscat-db (/ut3).
     obslog_base = os.environ.get("MUSCAT_OBSLOG_DIR", "/ut3/muscat/obslog")
-    obslog_dir = Path(
-        f"{obslog_base}/{data_dir.parent.name.lower()}/{data_dir.name}"
-    )
+    obslog_dir = Path(f"{obslog_base}/{data_dir.parent.name.lower()}/{data_dir.name}")
     if obslog_dir.is_dir():
         for ccd_csv in sorted(obslog_dir.glob("obslog-*-ccd?.csv")):
             with open(ccd_csv) as f:
@@ -2713,12 +2765,15 @@ def parse_args(argv=None) -> argparse.Namespace:
             obslog_records = frames_from_obslog(temp_args.data_dir, inst_obslog)
             if obslog_records is not None:
                 for rec in obslog_records:
-                    if temp_args.target_name and rec.get("object") != temp_args.target_name:
+                    if (
+                        temp_args.target_name
+                        and rec.get("object") != temp_args.target_name
+                    ):
                         continue
                     mode = rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
                     if mode:
                         unique.add(str(mode).strip().lower())
-            
+
             if not unique:
                 files = sorted(temp_args.data_dir.glob(temp_args.glob or "*.fits"))
                 if not files:
@@ -3159,18 +3214,24 @@ def main(argv=None) -> int:
     instrument = get_instrument(probe)
 
     if args.site is not None and instrument != "sinistro":
-        logger.error(f"--site can only be specified when instrument is 'sinistro' (found '{instrument}')")
+        logger.error(
+            f"--site can only be specified when instrument is 'sinistro' (found '{instrument}')"
+        )
         return 1
 
     if args.mode is not None and instrument != "sinistro":
-        logger.error(f"--mode can only be specified when instrument is 'sinistro' (found '{instrument}')")
+        logger.error(
+            f"--mode can only be specified when instrument is 'sinistro' (found '{instrument}')"
+        )
         return 1
 
     if instrument == "sinistro" and args.site:
         site_to_match = args.site.lower()
         allowed_sites = ("lsc", "cpt", "coj", "tfn", "elp")
         if site_to_match not in allowed_sites:
-            logger.error(f"Invalid site '{args.site}' for sinistro. Must be one of {allowed_sites}")
+            logger.error(
+                f"Invalid site '{args.site}' for sinistro. Must be one of {allowed_sites}"
+            )
             return 1
 
         filtered_sciences = {}
@@ -3194,7 +3255,9 @@ def main(argv=None) -> int:
             for f in fs:
                 try:
                     hdr = fits.getheader(f)
-                    file_site = str(hdr.get("SITEID") or hdr.get("SITE") or "").strip().lower()
+                    file_site = (
+                        str(hdr.get("SITEID") or hdr.get("SITE") or "").strip().lower()
+                    )
                 except Exception as e:
                     logger.warning(f"Could not read header of {f}: {e}")
                     file_site = ""
@@ -3210,7 +3273,9 @@ def main(argv=None) -> int:
         mode_to_match = args.mode.lower()
         allowed_modes = ("central_2k_2x2", "full_frame")
         if mode_to_match not in allowed_modes:
-            logger.error(f"Invalid mode '{args.mode}' for sinistro. Must be one of {allowed_modes}")
+            logger.error(
+                f"Invalid mode '{args.mode}' for sinistro. Must be one of {allowed_modes}"
+            )
             return 1
 
         filtered_sciences = {}
@@ -3220,7 +3285,9 @@ def main(argv=None) -> int:
                 rec = filepath_to_obslog.get(f)
                 confmode = None
                 if rec is not None:
-                    confmode = rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                    confmode = (
+                        rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                    )
                 if not confmode:
                     try:
                         hdr = fits.getheader(f)
@@ -3242,7 +3309,9 @@ def main(argv=None) -> int:
                 rec = filepath_to_obslog.get(f)
                 confmode = None
                 if rec is not None:
-                    confmode = rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                    confmode = (
+                        rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                    )
                 if not confmode:
                     try:
                         hdr = fits.getheader(f)
@@ -3278,7 +3347,9 @@ def main(argv=None) -> int:
             if args.mode:
                 details.append(f"mode={args.mode}")
             details_str = " and ".join(details)
-            logger.error(f"no frames for target={args.target_name} at {details_str}; aborting")
+            logger.error(
+                f"no frames for target={args.target_name} at {details_str}; aborting"
+            )
         else:
             logger.error(f"no frames for target={args.target_name}; aborting")
         return 1
@@ -3371,7 +3442,9 @@ def main(argv=None) -> int:
                             need_calib = True
                             break
                         for fp in files:
-                            if not inject_wcs_into_file(fp, wcs, method=args.wcs_method):
+                            if not inject_wcs_into_file(
+                                fp, wcs, method=args.wcs_method
+                            ):
                                 logger.warning(
                                     f"  {calib_label}: failed to inject WCS into {fp}; "
                                     f"marking recalibration required"
@@ -3398,9 +3471,10 @@ def main(argv=None) -> int:
             # BANZAI-reduced muscat3/muscat4/sinistro never reach this branch.
             # 'astrometry.net' needs an Astrometry.net key; fail fast and point at twirl
             # rather than dying deep inside calibration after wasted work.
-            if args.wcs_method == "astrometry.net" and not os.environ.get(
-                "ASTROMETRY_NET_API_KEY", ""
-            ).strip():
+            if (
+                args.wcs_method == "astrometry.net"
+                and not os.environ.get("ASTROMETRY_NET_API_KEY", "").strip()
+            ):
                 logger.error(
                     f"{calib_label}: --wcs_method astrometry.net requires the "
                     "ASTROMETRY_NET_API_KEY environment variable, which is not "
@@ -3606,7 +3680,9 @@ def main(argv=None) -> int:
             first_file = sciences[active_bands[0]][0]
             rec = filepath_to_obslog.get(first_file)
             if rec is not None:
-                resolved_confmode = rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                resolved_confmode = (
+                    rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                )
             if not resolved_confmode:
                 resolved_confmode = probe.get("CONFMODE")
 
@@ -3627,13 +3703,23 @@ def main(argv=None) -> int:
     )
     bjds = {}
     for band, r in band_results.items():
-        stem = build_stem(args.target_name, instrument, date, band, site=site, confmode=resolved_confmode)
+        stem = build_stem(
+            args.target_name,
+            instrument,
+            date,
+            band,
+            site=site,
+            confmode=resolved_confmode,
+        )
         bjds[band] = compute_bjd_tdb(
             r["diff"], r["ref"].header, target_coord, args.use_barycorrpy, instrument
         )
-        csv_path = args.results_dir / f"{stem}.csv"
-        photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
-        logger.info(f"wrote {csv_path}")
+        if args.test_run:
+            logger.info(f"test-run: skipping {stem}.csv")
+        else:
+            csv_path = args.results_dir / f"{stem}.csv"
+            photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
+            logger.info(f"wrote {csv_path}")
 
         plot_ref_image(
             r,
@@ -3687,11 +3773,14 @@ def main(argv=None) -> int:
         )
         if args.make_gif:
             stride_step = (
-                1
-                if args.test_run
-                else max(1, len(r["files"]) // args.gif_stride)
+                1 if args.test_run else max(1, len(r["files"]) // args.gif_stride)
             )
-            make_gif(r["files"], args.results_dir / f"{stem}.gif", stride_step, cmap=args.cmap)
+            make_gif(
+                r["files"],
+                args.results_dir / f"{stem}.gif",
+                stride_step,
+                cmap=args.cmap,
+            )
 
     bin_size_days = args.bin_size_minutes / (24 * 60)
     target_index = next(iter(band_results.values()))["target_index"]
@@ -3737,7 +3826,12 @@ def main(argv=None) -> int:
         target_coord=target_coord,
         cmap=args.cmap,
     )
-    save_all_bands_npz(band_results, bjds, args.results_dir / f"{stem_multi}.npz", meta=vars(args))
+    if args.test_run:
+        logger.info("test-run: skipping multi-band .npz archive")
+    else:
+        save_all_bands_npz(
+            band_results, bjds, args.results_dir / f"{stem_multi}.npz", meta=vars(args)
+        )
 
     # Dump the reference frame's full FITS header to a sidecar text file so it
     # can be inspected from the web GUI without downloading the data archive.
@@ -3747,7 +3841,10 @@ def main(argv=None) -> int:
         if self_reference:
             ref_files, default_refid = sciences[target_ref_band], 0
         else:
-            ref_files, default_refid = sciences[target_ref_band], len(sciences[target_ref_band]) // 2
+            ref_files, default_refid = (
+                sciences[target_ref_band],
+                len(sciences[target_ref_band]) // 2,
+            )
 
         if args.refid is not None:
             refid = _find_frame_by_number(ref_files, args.refid)
@@ -3758,7 +3855,9 @@ def main(argv=None) -> int:
 
         ref_header = fits.getheader(actual_ref_file)
         header_path = args.results_dir / f"{stem_multi}_ref_header.txt"
-        header_path.write_text(ref_header.tostring(sep="\n", padding=False, endcard=False))
+        header_path.write_text(
+            ref_header.tostring(sep="\n", padding=False, endcard=False)
+        )
         logger.info(f"wrote {header_path} from {actual_ref_file}")
     except Exception as e:
         logger.warning(f"could not write reference header: {e}")

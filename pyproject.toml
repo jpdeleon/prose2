@@ -108,3 +108,8 @@ ipywidgets = "*"
 fitsmanager = 'prose.scripts.fitsmanager:main'
 photometry = 'prose.scripts.run_photometry:main'
 solve-wcs = 'prose.scripts.solve_wcs_astrometry:main'
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.20",
+]
