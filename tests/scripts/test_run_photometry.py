@@ -1286,7 +1286,7 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
 
 def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch):
     from prose import Fluxes
-    from prose.core.source import PointSource, Sources
+    from prose.core.source import Sources
     from astropy.coordinates import SkyCoord
 
     ref_band_positions = np.array([[1.0, 1.0], [9.0, 9.0]])

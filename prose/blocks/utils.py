@@ -27,10 +27,11 @@ __all__ = [
     "SelectiveStack",
 ]
 
+
 class MaskSaturatedPixels(Block):
     def __init__(self, saturation_level=None, name=None):
         """Mask saturated pixels in the image.
-        
+
         Parameters
         ----------
         saturation_level : float, optional
@@ -41,32 +42,33 @@ class MaskSaturatedPixels(Block):
         """
         super().__init__(name=name)
         self.saturation_level = saturation_level
-        
+
     def run(self, image):
         # Determine saturation level
         sat_level = self.saturation_level
-        if sat_level is None and hasattr(image, 'saturation_level'):
+        if sat_level is None and hasattr(image, "saturation_level"):
             sat_level = image.saturation_level
-        
+
         if sat_level is None:
             raise ValueError("No saturation level provided or found in image")
-        
+
         # Store original data
-        if not hasattr(image, 'original_data'):
+        if not hasattr(image, "original_data"):
             image.original_data = image.data.copy()
-        
+
         # Mask saturated pixels with NaN or median value
         mask = image.data >= sat_level
         if mask.any():
             # Option 1: Replace with NaN
             # image.data = image.data.copy()
             # image.data[mask] = np.nan
-            
+
             # Option 2: Replace with median (might be better for detection algorithms)
             median_value = np.nanmedian(image.data)
             image.data = image.data.copy()
             image.data[mask] = median_value
-            
+
+
 # TODO: document and test
 class SortSources(Block):
     def __init__(self, verbose=False, key="cutout_sum", name=None):
@@ -378,13 +380,22 @@ class Calibration(Block):
 
     def _calibration_shared(self, image, exp_time):
         bias = np.memmap(
-            self._cal_paths["bias"], dtype="float32", mode="r", shape=self.shapes["bias"]
+            self._cal_paths["bias"],
+            dtype="float32",
+            mode="r",
+            shape=self.shapes["bias"],
         )
         dark = np.memmap(
-            self._cal_paths["dark"], dtype="float32", mode="r", shape=self.shapes["dark"]
+            self._cal_paths["dark"],
+            dtype="float32",
+            mode="r",
+            shape=self.shapes["dark"],
         )
         flat = np.memmap(
-            self._cal_paths["flat"], dtype="float32", mode="r", shape=self.shapes["flat"]
+            self._cal_paths["flat"],
+            dtype="float32",
+            mode="r",
+            shape=self.shapes["flat"],
         )
         with np.errstate(divide="ignore", invalid="ignore"):
             return (image - (dark * exp_time + bias)) / flat
@@ -456,9 +467,9 @@ class CleanBadPixels(Block):
 
         self.loader = loader
 
-        assert (
-            darks is not None or bad_pixels_map is not None
-        ), "bad_pixels_map or darks must be specified"
+        assert darks is not None or bad_pixels_map is not None, (
+            "bad_pixels_map or darks must be specified"
+        )
         if darks is not None:
             info("buidling bad pixels map")
             if darks is not None:
