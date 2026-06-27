@@ -85,6 +85,7 @@ from prose import FITSImage, Fluxes, Sequence, blocks
 from prose import __version__ as _PROSE_VERSION
 from prose.blocks import catalogs
 from prose.core.block import Block
+from prose.core.source import PointSource, Sources
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
@@ -548,6 +549,21 @@ class MeasurePeaks(Block):
         image.computed["peaks"] = np.array(peaks)
 
 
+class FilterPointSources(Block):
+    """Filter image sources to keep only PointSource instances."""
+
+    def __init__(self, name=None):
+        super().__init__(name=name)
+
+    def run(self, image):
+        sources = image.sources.sources
+        mask = np.array([isinstance(s, PointSource) for s in sources])
+        filtered = [s for s, keep in zip(sources, mask) if keep]
+        for i, s in enumerate(filtered):
+            s.i = i
+        image.sources = Sources(filtered, type="PointSource")
+
+
 # --------------------------- reference building ---------------------------
 
 
@@ -563,11 +579,12 @@ def reference_sequence(
     return Sequence(
         [
             blocks.Trim(ccd_trim_size_yx),
-            blocks.PointSourceDetection(
+            blocks.AutoSourceDetection(
                 n=n_detect,
                 min_area=min_area,
                 min_separation=min_star_separation,
             ),
+            FilterPointSources(),
             blocks.Cutouts(shape=cutout_size, wcs=True),
             blocks.MedianEPSF(),
             blocks.psf.Gaussian2D(),
@@ -1173,12 +1190,13 @@ def photometry_sequence(
         n_stars_align = max_num_stars
     blocks_list = [
         blocks.Trim(ccd_trim_size_yx),
-        blocks.PointSourceDetection(
+        blocks.AutoSourceDetection(
             n=max_num_stars,
             min_area=min_area,
             min_separation=min_star_separation,
             min_sources=2,
         ),
+        FilterPointSources(),
         blocks.Cutouts(shape=cutout_size),
         blocks.MedianEPSF(),
         blocks.Gaussian2D(ref),
@@ -2025,11 +2043,12 @@ def plot_alignment(
         seq = Sequence(
             [
                 blocks.Trim(ccd_trim_size_yx),
-                blocks.PointSourceDetection(
+                blocks.AutoSourceDetection(
                     n=max_num_stars,
                     min_area=min_area,
                     min_separation=min_star_separation,
                 ),
+                FilterPointSources(),
                 blocks.ComputeTransformTwirl(ref, n=n_stars_align),
             ]
         )

@@ -311,8 +311,8 @@ class FitsManager:
                                     row[2] = telescope.name
                                 self._insert(*row)
                             self.con.commit()
-                        except:
-                            "ERROR, batch ignored"
+                        except Exception as e:
+                            info(f"WARNING: Batch failed ({len(batch)} files skipped): {e}")
                 else:
                     df = self.fits_to_df(
                         files_to_scan, verbose=verbose, hdu=hdu, verbose_os=verbose_os
@@ -546,7 +546,7 @@ class FitsManager:
         -------
         bool
         """
-        return len(self.observations(show=False)) == 1
+        return len(self.observations()) == 1
 
     @property
     def all_images(self):
@@ -711,7 +711,8 @@ class FitsManager:
     def obs_name(self):
         """Observation name ({telescope}_{date}_{target}_{filter}) if a single observation is present"""
         if self.unique_obs:
-            return self.label()
+            obs_id = self.observations().index[0]
+            return self.label(obs_id)
         else:
             raise AssertionError(
                 "obs_name property is only available for FitsManager containing a unique observation"

@@ -454,6 +454,9 @@ class DAOFindStars(_SimplePointSourceDetection):
         finder = DAOStarFinder(fwhm=self.fwhm, threshold=self.lower_snr * std)
         sources = finder(image.data - median)
 
+        if sources is None:
+            return np.empty((0, 2)), np.empty(0)
+
         coordinates = np.transpose(
             np.array([sources["xcentroid"].data, sources["ycentroid"].data])
         )
@@ -464,8 +467,8 @@ class DAOFindStars(_SimplePointSourceDetection):
 
 try:
     from sep import extract
-except:
-    raise AssertionError("sep not installed")
+except ImportError as e:
+    raise ImportError("sep is not installed. Install it with: pip install sep") from e
 
 
 class SEDetection(_SimplePointSourceDetection):

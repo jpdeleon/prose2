@@ -91,12 +91,10 @@ class Image:
 
     def __getattr__(self, name):
         if "computed" not in self.__dict__:
-            super.__getattr__(self, name)
-        else:
-            if name in self.computed:
-                return self.computed[name]
-            else:
-                raise AttributeError(f"Image has no '{name}'")
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        if name in self.computed:
+            return self.computed[name]
+        raise AttributeError(f"Image has no '{name}'")
 
     def copy(self, data=True):
         """Copy of image object

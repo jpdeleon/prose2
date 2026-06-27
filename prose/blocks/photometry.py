@@ -150,7 +150,7 @@ class AnnulusBackground(_AnnulusPhotometry):
 
         image.computed["annulus"] = {
             "rin": rin,
-            "rout": rin,
+            "rout": rout,
             "median": np.array(bkg_median),
             "sigma": self.sigma,
             "area": annulus_area,

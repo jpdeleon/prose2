@@ -137,7 +137,7 @@ class Source:
         -------
         float
         """
-        return self.b / self.a
+        return self.b / self.a if self.a != 0 else 0.0
 
     def copy(self):
         """Return a copy of the Source
@@ -294,7 +294,7 @@ class Source:
             a0 = r0 * self.a
             a1, b1 = r1 * self.a, r1 * self.b
         else:
-            a0 = (r0,)
+            a0 = r0
             a1, b1 = r1, r1 * self.eccentricity
         return EllipticalAnnulus(self.coords, a0, a1, b1, theta=self.orientation)
 
@@ -358,11 +358,12 @@ class Source:
         )
 
     def _repr_dict(self, n=8):
+        e_str = f"{self.b/self.a:.2f}".rjust(n) if self.a != 0 else "N/A".rjust(n)
         return {
             "coords": f"{self.coords[0]:.2f}".rjust(n)
             + f"{self.coords[1]:.2f}".rjust(n),
             "a, b": f"{self.a:.2f}".rjust(n) + f"{self.b:.2f}".rjust(n),
-            "e": f"{self.b/self.a:.2f}".rjust(n),
+            "e": e_str,
         }
 
     def __str__(self):
@@ -415,8 +416,8 @@ def auto_source(region, i=None, trace=0.3, extended=0.9, discard=False):
 
 
 class DiscardedSource(Source):
-    def __init__(self, region, i=None):
-        super().__init__(region, i=i)
+    def __init__(self, i=None, **kwargs):
+        super().__init__(i=i, **kwargs)
         self.discarded = True
 
     def plot(self, ms=15, c="C0", ax=None, **kwargs):
