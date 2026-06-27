@@ -2310,7 +2310,7 @@ def plot_stacks(
         prof = _radial_profile(c.data, center)
         ax_twin = axes[row, 1].twinx()
         ax_twin.plot(prof, ".", c=bc, ms=6, alpha=0.5)
-        ax_twin.plot(prof, c=bc, alpha=0.5, label="mean")
+        ax_twin.plot(prof, c=bc, alpha=0.5, label="flux")
         ax_twin.set_yscale("log")
         ax_twin.set_ylabel("flux (ADU)")
 
