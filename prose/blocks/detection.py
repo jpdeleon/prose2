@@ -119,7 +119,7 @@ class _SourceDetection(Block):
                         distances = np.linalg.norm(
                             s.coords - final_sources.coords, axis=1
                         )
-                        distances[i] == np.nan
+                        distances[i] = np.nan
                         idxs = np.flatnonzero(distances < self.min_separation)
                         for j in idxs[idxs > i]:
                             final_sources[int(j)].keep = False

@@ -396,7 +396,7 @@ class Source:
 
 def auto_source(region, i=None, trace=0.3, extended=0.9, discard=False):
     if region is None:
-        return DiscardedSource.from_region(region, i=i)
+        return DiscardedSource(i=i)
     a = region.axis_major_length
     b = region.axis_minor_length
     if a == 0.0:
