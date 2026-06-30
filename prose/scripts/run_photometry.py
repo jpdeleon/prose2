@@ -2780,43 +2780,6 @@ def _calibration_args(
 
 def parse_args(argv=None) -> argparse.Namespace:
     mode_choices = ["central_2k_2x2", "full_frame"]
-    try:
-        temp_ap = argparse.ArgumentParser(add_help=False)
-        temp_ap.add_argument("--data_dir", "--data-dir", type=Path)
-        temp_ap.add_argument("--target_name", "--target-name")
-        temp_ap.add_argument("--glob", default="*.fits")
-        temp_args, _ = temp_ap.parse_known_args(argv)
-        if temp_args.data_dir and temp_args.data_dir.is_dir():
-            unique = set()
-            inst_obslog = temp_args.data_dir.parent.name.lower()
-            obslog_records = frames_from_obslog(temp_args.data_dir, inst_obslog)
-            if obslog_records is not None:
-                for rec in obslog_records:
-                    if (
-                        temp_args.target_name
-                        and rec.get("object") != temp_args.target_name
-                    ):
-                        continue
-                    mode = rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
-                    if mode:
-                        unique.add(str(mode).strip().lower())
-
-            if not unique:
-                files = sorted(temp_args.data_dir.glob(temp_args.glob or "*.fits"))
-                if not files:
-                    files = sorted(temp_args.data_dir.rglob(temp_args.glob or "*.fits"))
-                for f in files[:50]:
-                    try:
-                        hdr = fits.getheader(f)
-                        mode = hdr.get("CONFMODE")
-                        if mode:
-                            unique.add(str(mode).strip().lower())
-                    except Exception:
-                        pass
-            if unique:
-                mode_choices = sorted(list(unique))
-    except Exception:
-        pass
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--target_name", "--target-name", required=True)

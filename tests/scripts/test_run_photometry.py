@@ -1779,3 +1779,44 @@ def test_nearby_stars_csv_generation(tmp_path, monkeypatch):
     assert item["Gaia delta mag"] == 2.5
     assert item["Contamination Ratio (%)"] == 10.0
 
+
+def test_parse_args_accepts_both_sinistro_modes():
+    """Verify that argparse accepts both central_2k_2x2 and full_frame modes.
+
+    Both modes should always be valid choices, regardless of which FITS files
+    exist. Runtime validation will ensure the specified mode is present in the
+    filtered data. This allows users to specify a mode even when dynamic
+    discovery doesn't find it (e.g., when filtered by site or band).
+    """
+    # Both modes should be accepted without error
+    args_central = rp.parse_args(
+        [
+            "--target_name", "V1298Tau",
+            "--data_dir", "/tmp",
+            "--results_dir", "/tmp/results",
+            "--mode", "central_2k_2x2",
+        ]
+    )
+    assert args_central.mode == "central_2k_2x2"
+
+    args_full = rp.parse_args(
+        [
+            "--target_name", "V1298Tau",
+            "--data_dir", "/tmp",
+            "--results_dir", "/tmp/results",
+            "--mode", "full_frame",
+        ]
+    )
+    assert args_full.mode == "full_frame"
+
+    # Invalid modes should still be rejected
+    with pytest.raises(SystemExit):
+        rp.parse_args(
+            [
+                "--target_name", "V1298Tau",
+                "--data_dir", "/tmp",
+                "--results_dir", "/tmp/results",
+                "--mode", "invalid_mode",
+            ]
+        )
+
