@@ -3092,8 +3092,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--cmap",
-        default="Greys",
-        help="Colormap for image display plots (default: 'Greys').",
+        default="gray",
+        help="Colormap for image display plots (default: 'gray'; use 'gray_r' to reverse).",
     )
     args = ap.parse_args(argv)
 
