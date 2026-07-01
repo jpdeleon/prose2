@@ -519,6 +519,29 @@ def index_binning(x, size):
     return indexes
 
 
+def binning(time, flux, bins, error=None, std=True):
+    """Bin a time series and return binned time, flux, and uncertainty arrays."""
+    time = np.asarray(time)
+    flux = np.asarray(flux)
+    if time.shape[0] != flux.shape[0]:
+        raise ValueError("time and flux must have the same length")
+    if error is not None:
+        error = np.asarray(error)
+        if error.shape[0] != flux.shape[0]:
+            raise ValueError("error and flux must have the same length")
+
+    idxs = index_binning(time, bins)
+    binned_time = np.array([np.nanmean(time[i]) for i in idxs])
+    binned_flux = np.array([np.nanmean(flux[i]) for i in idxs])
+    if std or error is None:
+        binned_error = np.array([np.nanstd(flux[i]) / np.sqrt(len(i)) for i in idxs])
+    else:
+        binned_error = np.array(
+            [np.sqrt(np.nansum(error[i] ** 2)) / len(i) for i in idxs]
+        )
+    return binned_time, binned_flux, binned_error
+
+
 def z_scale(data, c=0.05):
     interval = ZScaleInterval(contrast=c)
     return interval(data.copy())

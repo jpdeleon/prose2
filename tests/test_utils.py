@@ -6,6 +6,7 @@ unavailable (offline fallback). These tests are deterministic and need no
 network -- the SIMBAD query is monkeypatched.
 """
 
+import numpy as np
 import pandas as pd
 import pytest
 from astropy.coordinates import SkyCoord
@@ -15,6 +16,27 @@ from prose import utils as pu
 
 def _coord(ra=10.12345678, dec=-20.87654321):
     return SkyCoord(ra, dec, unit="deg")
+
+
+def test_binning_returns_mean_flux_and_standard_error():
+    time = np.array([0.0, 0.1, 0.2, 0.3])
+    flux = np.array([1.0, 3.0, 5.0, 7.0])
+
+    bt, bf, be = pu.binning(time, flux, bins=2)
+
+    np.testing.assert_allclose(bt, [0.05, 0.25])
+    np.testing.assert_allclose(bf, [2.0, 6.0])
+    np.testing.assert_allclose(be, [1 / np.sqrt(2), 1 / np.sqrt(2)])
+
+
+def test_binning_propagates_supplied_errors():
+    time = np.array([0.0, 0.1, 0.2, 0.3])
+    flux = np.array([1.0, 3.0, 5.0, 7.0])
+    error = np.ones(4)
+
+    _, _, be = pu.binning(time, flux, bins=2, error=error, std=False)
+
+    np.testing.assert_allclose(be, [1 / np.sqrt(2), 1 / np.sqrt(2)])
 
 
 # --------------------------- coord_cache_path ---------------------------
@@ -135,4 +157,3 @@ def test_get_saturation_from_header_sinistro_central_2k_2x2():
     }
     limits_raw = pu.get_saturation_from_header(h_raw)
     assert limits_raw["zs"] == pytest.approx(340000.0 / 6.6)
-

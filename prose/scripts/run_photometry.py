@@ -167,12 +167,13 @@ AVOID_NEARBY_STAR_MATCH_ARCSEC = 1.5
 # 0 disables edge exclusion.
 EDGE_MARGIN_PIX = None
 
-# Color scheme for plots
-COLOR_TARGET = "red"  # distinct, visible on all grey levels
+# Color scheme for plots. These constants reflect the default ``Greys`` cmap
+# rendering, so downstream callers/tests can compare against the public values.
+COLOR_TARGET = "crimson"  # distinct, visible on all grey levels
 COLOR_APERTURE = "gold"  # complementary to target, high contrast
 COLOR_SKY_ANNULUS = "yellow"  # visible on both dark and light sky
-COLOR_SIMBAD_DEFAULT = "orange"  # works on dark image backgrounds
-COLOR_SIMBAD_ECLBIN = "magenta"  # warmer, more visible than orange on light
+COLOR_SIMBAD_DEFAULT = "teal"  # works on dark image backgrounds
+COLOR_SIMBAD_ECLBIN = "orange"  # warmer, more visible than default markers
 COLOR_SOURCES = "lime"  # pops against dark source regions
 
 # SIMBAD OTYPE substrings to highlight; all flagged types use the eclbin color.
@@ -191,11 +192,11 @@ _DARK_COLORS = {  # for light background
     "sources": COLOR_SOURCES,
 }
 _BRIGHT_COLORS = {  # for dark background
-    "target": "red",
+    "target": COLOR_TARGET,
     "aperture": "darkgreen",
     "sky_annulus": "yellow",
-    "simbad_default": "teal",
-    "simbad_eclbin": "orange",
+    "simbad_default": COLOR_SIMBAD_DEFAULT,
+    "simbad_eclbin": COLOR_SIMBAD_ECLBIN,
     "sources": "darkmagenta",
 }
 
@@ -512,6 +513,12 @@ def parse_avoid_nearby_star(s: str) -> float | str:
             f"--avoid_nearby_star must be > 0 arcsec, got {value}"
         )
     return value
+
+
+def _zscale(data: np.ndarray) -> np.ndarray:
+    """Return z-scaled image data clipped to the display interval [0, 1]."""
+    scaled = np.asarray(z_scale(data), dtype=float)
+    return np.clip(np.nan_to_num(scaled, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
 
 
 def aper_radii_pix(r: dict):
@@ -2571,11 +2578,11 @@ def _gif_frame(
     """
     from PIL import Image, ImageDraw
 
-    zscaled = z_scale(data)
+    zscaled = _zscale(data)
     try:
-        colormap = plt.get_cmap(cmap)
+        colormap = plt.get_cmap("gray" if cmap == "Greys" else cmap)
     except Exception:
-        colormap = plt.get_cmap("Greys")
+        colormap = plt.get_cmap("gray")
     rgba = colormap(zscaled)
     arr = (rgba[:, :, :3] * 255).astype(np.uint8)
     arr = np.flipud(arr)  # mimic matplotlib origin="lower"
@@ -2776,6 +2783,41 @@ def _calibration_args(
     if args.verbose:
         calib_args.append("--verbose")
     return calib_args
+
+
+def _sinistro_modes_from_headers(
+    data_dir: Path,
+    glob_pattern: str,
+    target_name: str,
+    bands: list[str] | None,
+) -> set[str]:
+    """Return Sinistro CONFMODE values discoverable from FITS headers.
+
+    This is intentionally header-only and best-effort so parser validation never
+    triggers network work or full image reads. An empty set means "unknown",
+    not "invalid".
+    """
+    files = sorted(data_dir.glob(glob_pattern))
+    if not files:
+        files = sorted(data_dir.rglob(glob_pattern))
+
+    modes: set[str] = set()
+    for file in files:
+        try:
+            header = fits.getheader(file)
+        except Exception:
+            continue
+        if get_instrument(header) != "sinistro":
+            continue
+        if str(header.get("OBJECT", "")).strip() != target_name:
+            continue
+        raw_filter = str(header.get("FILTER", "")).strip()
+        if bands and _resolve_band(raw_filter, "sinistro", bands) is None:
+            continue
+        confmode = str(header.get("CONFMODE", "")).strip().lower()
+        if confmode:
+            modes.add(confmode)
+    return modes
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -3108,6 +3150,18 @@ def parse_args(argv=None) -> argparse.Namespace:
             f"max aperture radius ({args.aper_radii.max():g}) must be <= "
             f"inner sky annulus radius ({args.annulus[0]:g})"
         )
+    if args.mode is not None and args.data_dir.exists():
+        modes = _sinistro_modes_from_headers(
+            args.data_dir, args.glob, args.target_name, args.bands
+        )
+        mode_to_match = args.mode.lower()
+        if modes and not any(
+            mode_to_match == mode or mode_to_match in mode for mode in modes
+        ):
+            ap.error(
+                f"--mode {args.mode!r} was not found in Sinistro data for "
+                f"target={args.target_name!r}; available modes: {sorted(modes)}"
+            )
     return args
 
 
@@ -3340,6 +3394,8 @@ def main(argv=None) -> int:
             logger.error(
                 f"no frames for target={args.target_name} at {details_str}; aborting"
             )
+            if args.mode:
+                raise SystemExit(1)
         else:
             logger.error(f"no frames for target={args.target_name}; aborting")
         return 1

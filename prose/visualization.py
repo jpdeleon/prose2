@@ -3,7 +3,13 @@ import matplotlib.offsetbox
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+import astropy.units as u
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
+from astropy.visualization.wcsaxes import SphericalCircle
+from astropy.wcs import WCS
+from astropy.wcs import utils as wcsutils
+from astroquery.mast import Catalogs
 from matplotlib import patches
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.legend_handler import HandlerPatch
@@ -12,11 +18,10 @@ from matplotlib.ticker import AutoMinorLocator
 from mpl_toolkits import axes_grid1
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes, zoomed_inset_axes
 from skimage.transform import resize
-from astropy.visualization.wcsaxes import SphericalCircle
-from astropy.coordinates import SkyCoord
-import astropy.units as u
 
 from prose import utils
+from prose.telescope import Telescope
+from prose.utils import NETWORK_TIMEOUT_S, _run_with_timeout
 
 FOV_IN_ARCMIN = {
     "sinistro_full": 26.5,  # CONFMODE= 'full_frame'
@@ -257,7 +262,7 @@ def plot(
     plt.plot(time, flux, ".", color=color, alpha=alpha, zorder=0, label=label)
 
     if bins is not None:
-        blc = binning(time, flux, bins=bins, error=error, std=std)
+        blc = utils.binning(time, flux, bins=bins, error=error, std=std)
         plt.errorbar(
             *blc, fmt=".", zorder=1, color=bincolor, alpha=binalpha, label=binlabel
         )
@@ -723,7 +728,6 @@ def plot_marks(
         circle = mpatches.Circle((_x, _y), ms, fill=None, ec=color, alpha=alpha)
         ax = plt.gca()
         ax.add_artist(circle)
-        f = 5
         if _label is not None:
             plt.annotate(
                 _label,
@@ -774,10 +778,6 @@ def fancy_show_stars(
     ax = fig.add_subplot(111)
     ax.imshow(image, cmap="Greys_r")
     plt.title("Stack image", loc="left")
-
-    size_factor = size / 15
-    fontsize = min(size_factor, 1) * 15
-    label_yoffset = min(size_factor, 1) * 30
 
     if view == "all":
         for i, coord in enumerate(stars):
@@ -1052,7 +1052,7 @@ def array_to_tex(a, fmt="{: 0.3f}", dim=True):
     with np.printoptions(formatter={"float": fmt.format}):
         lines = str(a).replace("[", "").replace("]", "").splitlines()
         rv = [r"\begin{bmatrix}"]
-        rv += ["  " + " & ".join(l.split()) + r"\\" for l in lines]
+        rv += ["  " + " & ".join(line.split()) + r"\\" for line in lines]
         rv += [r"\end{bmatrix}"]
     if dim:
         if len(shape) == 2:
@@ -1073,6 +1073,13 @@ def print_tex(tex):
     display(Math(r"{}".format(tex)))
 
 
+def _box_transit_model(time, epoch, period, duration, depth):
+    phase = ((np.asarray(time) - epoch + period / 2) % period) - period / 2
+    model = np.zeros_like(phase, dtype=float)
+    model[np.abs(phase) <= duration / 2] = -abs(depth)
+    return model
+
+
 def plot_expected_transit(time, epoch, period, duration, depth=None, color="gainsboro"):
     tmax = time.max()
     t_epoch = tmax - epoch
@@ -1085,7 +1092,7 @@ def plot_expected_transit(time, epoch, period, duration, depth=None, color="gain
     plt.axvline(egress, color=color, alpha=0.3, zorder=-1)
 
     if depth is not None:
-        model = transit(time, epoch, duration, depth, period=period).flatten()
+        model = _box_transit_model(time, epoch, period, duration, depth).flatten()
         plt.plot(time, model + 1.0, c="grey")
 
 
@@ -1123,14 +1130,6 @@ def plot_section(y, s, t0, duration, c="C0", y0=1, offset=0.002):
 
 
 # Debugging helpers
-
-import numpy as np
-from astropy.wcs import WCS
-from astropy.wcs import utils as wcsutils
-from astroquery.mast import Catalogs
-
-from prose.telescope import Telescope
-from prose.utils import NETWORK_TIMEOUT_S, _run_with_timeout
 
 
 def _show_tics(data, header=None, telescope_kw="TELESCOP", r=12 * u.arcminute):

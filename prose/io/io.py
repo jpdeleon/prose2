@@ -198,19 +198,23 @@ def fits_to_df(
     )
 
     if len(df) > 0 and _telescope is not None:
-        df.type.loc[
-            df.type.str.lower().str.contains(_telescope.keyword_light_images.lower())
+        df.loc[
+            df.type.str.lower().str.contains(_telescope.keyword_light_images.lower()),
+            "type",
         ] = "light"
-        df.type.loc[
-            df.type.str.lower().str.contains(_telescope.keyword_dark_images.lower())
+        df.loc[
+            df.type.str.lower().str.contains(_telescope.keyword_dark_images.lower()),
+            "type",
         ] = "dark"
-        df.type.loc[
-            df.type.str.lower().str.contains(_telescope.keyword_bias_images.lower())
+        df.loc[
+            df.type.str.lower().str.contains(_telescope.keyword_bias_images.lower()),
+            "type",
         ] = "bias"
-        df.type.loc[
-            df.type.str.lower().str.contains(_telescope.keyword_flat_images.lower())
+        df.loc[
+            df.type.str.lower().str.contains(_telescope.keyword_flat_images.lower()),
+            "type",
         ] = "flat"
-        df.telescope.loc[df.telescope.str.lower().str.contains("unknown")] = ""
+        df.loc[df.telescope.str.lower().str.contains("unknown"), "telescope"] = ""
         df.date = pd.to_datetime(df.date)
         df["filter"] = df["filter"].str.replace("'", "p")
 
