@@ -701,9 +701,24 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
         c.metadata["pixel_scale"] = float(pixscale)  # required before Gaia query
         c = catalogs.GaiaCatalog(mode="replace")(c)
         df = c.catalogs["gaia"]
-        if save_cached_df(cache_path, df):  # refresh cache whenever online
+        is_valid = False
+        if df is not None and len(df) and target_coord is not None:
+            from astropy.coordinates import SkyCoord
+            gaia_coords = SkyCoord(df.ra.values, df.dec.values, unit="deg")
+            min_sep = float(np.min(target_coord.separation(gaia_coords).arcsec))
+            if min_sep <= 15.0:
+                is_valid = True
+            else:
+                logger.warning(
+                    f"Queried Gaia catalog center is far from target coordinates "
+                    f"(min separation {min_sep:.1f} arcsec); skipping caching to prevent contamination."
+                )
+        if is_valid and save_cached_df(cache_path, df):  # refresh cache whenever online
             logger.info(f"cached Gaia result -> {cache_path}")
     except Exception as exc:  # noqa: BLE001 - degrade to cache then FWHM-only
+        is_timeout = "timeout" in str(exc).lower() or "time out" in str(exc).lower()
+        if is_timeout:
+            logger.warning(f"Gaia query timed out: {exc}")
         df = load_cached_df(cache_path)
         if df is not None:
             logger.warning(
@@ -1280,6 +1295,7 @@ def run_band(
     edge_margin: int | None = EDGE_MARGIN_PIX,
     avoid_nearby_star: float | str | None = None,
     annulus_pix: tuple[float, float] | None = None,
+    nan_imputation_method: str = "linear",
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -1492,7 +1508,11 @@ def run_band(
     fluxes.target = target_index
 
     diff = differential_photometry(
-        fluxes, target_index, cids=cids, avoid_cids=mapped_avoid
+        fluxes,
+        target_index,
+        cids=cids,
+        avoid_cids=mapped_avoid,
+        nan_imputation_method=nan_imputation_method,
     )
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
@@ -1525,6 +1545,7 @@ def differential_photometry(
     target_index: int,
     cids: list[int] | None = None,
     avoid_cids: list[int] | None = None,
+    nan_imputation_method: str = "linear",
 ):
     """Clean NaN comparison stars, sigma-clip, and run differential photometry.
 
@@ -1534,9 +1555,31 @@ def differential_photometry(
     When ``avoid_cids`` is given, those stars are excluded from the comparison
     pool in both explicit and auto modes.  The caller is responsible for
     cross-mapping indices from the reference band to the current band.
+
+    Parameters
+    ----------
+    nan_imputation_method : str, optional
+        Method to impute NaN values in flux matrix. Default: "linear".
     """
     fluxes = fluxes.copy()
     fluxes.target = target_index
+
+    # Impute NaNs before filtering, to recover partially-valid comparison stars
+    if nan_imputation_method != "none":
+        from prose.fluxes import impute_nans
+
+        logger.info(
+            f"imputing NaNs using method='{nan_imputation_method}' "
+            f"before comparison star selection"
+        )
+        imputed_fluxes = impute_nans(fluxes.fluxes, method=nan_imputation_method)
+        # Create new Fluxes instance with imputed data
+        from copy import deepcopy
+
+        fluxes_copy = deepcopy(fluxes)
+        fluxes_copy.fluxes = imputed_fluxes
+        fluxes = fluxes_copy
+
     n_sources = fluxes.fluxes.shape[1]
     if cids is not None:
         valid_cids = [c for c in cids if 0 <= c < n_sources]
@@ -1600,7 +1643,8 @@ def differential_photometry(
     if cids:
         return fluxes.diff(comps=np.array(cids))
 
-    diff = fluxes.autodiff()
+    # Imputation is already done above, so skip it in autodiff
+    diff = fluxes.autodiff(nan_imputation_method="none")
     comps = getattr(diff, "comparisons", None)
     if comps is not None:
         original_comps = list(comps)
@@ -3137,6 +3181,19 @@ def parse_args(argv=None) -> argparse.Namespace:
         default="gray",
         help="Colormap for image display plots (default: 'gray'; use 'gray_r' to reverse).",
     )
+    ap.add_argument(
+        "--nan_imputation_method",
+        "--nan-imputation-method",
+        dest="nan_imputation_method",
+        choices=["none", "mean", "median", "linear", "spline", "forward_fill"],
+        default="linear",
+        help="Method to impute NaN values in differential photometry: "
+        "'none' (fail if NaNs present), 'mean' (star-wise mean), "
+        "'median' (star-wise median), 'linear' (linear interpolation), "
+        "'spline' (cubic spline), 'forward_fill' (last-observation-carried-forward). "
+        "Default: %(default)s. The Broeg et al. 2005 algorithm requires no NaNs "
+        "in the flux matrix.",
+    )
     args = ap.parse_args(argv)
 
     if args.aper_radii is not None and args.annulus is None:
@@ -3693,6 +3750,7 @@ def main(argv=None) -> int:
                 edge_margin=args.edge_margin,
                 avoid_nearby_star=args.avoid_nearby_star,
                 annulus_pix=args.annulus_pix,
+                nan_imputation_method=args.nan_imputation_method,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
@@ -3844,22 +3902,57 @@ def main(argv=None) -> int:
                 break
 
         nearby_stars_data = []
+        gaia_df = None
+        ref = None
+        rout = None
+        pixscale = None
+
         if r_ref is not None:
             gaia_df = r_ref["gaia_df"]
             ref = r_ref["ref"]
             rout = r_ref["rout"]
             pixscale = float(ref.telescope.pixel_scale)
+        else:
+            # Fallback: if the full-image Gaia query failed, attempt a target-centered query
+            # with a small radius (e.g. 3 arcminutes) and a tight limit (e.g. 1000)
+            # to retrieve nearby stars for plotting/contamination analysis.
+            logger.info("Attempting small-region fallback Gaia query around target coordinates...")
+            for r in band_results.values():
+                if getattr(r.get("ref"), "wcs", None) is not None:
+                    ref = r["ref"]
+                    rout = r["rout"]
+                    pixscale = float(ref.telescope.pixel_scale)
+                    break
+            if ref is not None and target_coord is not None:
+                try:
+                    from prose.utils import gaia_query
+                    fallback_radius_deg = 180.0 / 3600.0  # 180 arcseconds = 3 arcminutes
+                    table = gaia_query(target_coord, fallback_radius_deg * 2, "*", limit=1000)
+                    if table is not None and len(table) > 0:
+                        table.rename_column("DESIGNATION", "id")
+                        gaia_df = table.to_pandas()
+                        logger.info(f"Fallback small-region Gaia query succeeded: {len(gaia_df)} rows")
+                except Exception as exc:
+                    logger.warning(f"Fallback Gaia query failed: {exc}")
+
+        if gaia_df is not None and ref is not None:
             try:
-                gaia_coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
+                gaia_coords = SkyCoord(
+                    gaia_df.ra.values, gaia_df.dec.values, unit="deg"
+                )
                 target_idx_in_gaia = target_coord.separation(gaia_coords).argmin()
                 target_g_mag = float(gaia_df.phot_g_mean_mag.values[target_idx_in_gaia])
 
                 # Project detected sources to RA/Dec
-                detected_pix_coords = np.array([s.coords for s in ref.sources], dtype=float)
+                detected_pix_coords = np.array(
+                    [s.coords for s in ref.sources], dtype=float
+                )
                 detected_coords = ref.wcs.pixel_to_world(*detected_pix_coords.T)
 
                 # Match Gaia catalog to detected catalog
-                match_idx, match_sep, _ = gaia_coords.match_to_catalog_sky(detected_coords)
+                match_idx, match_sep, _ = gaia_coords.match_to_catalog_sky(
+                    detected_coords
+                )
 
                 for i in range(len(gaia_df)):
                     if i == target_idx_in_gaia:
@@ -3886,17 +3979,25 @@ def main(argv=None) -> int:
                             else (gaia_df.id.values[i] if "id" in gaia_df else "")
                         )
 
-                        nearby_stars_data.append({
-                            "Separation (arcsec)": round(sep_arc, 3),
-                            "Separation (pix)": round(sep_p, 2),
-                            "Gaia delta mag": round(delta_mag, 3) if not np.isnan(delta_mag) else None,
-                            "Detected (Y/N)": detected_str,
-                            "Contamination Ratio (%)": round(contam_ratio, 4) if not np.isnan(contam_ratio) else None,
-                            "Gaia Source ID": str(source_id),
-                            "RA (deg)": round(float(gaia_df.ra.values[i]), 6),
-                            "Dec (deg)": round(float(gaia_df.dec.values[i]), 6),
-                            "Gaia G mag": round(float(g_mag), 3) if not np.isnan(g_mag) else None,
-                        })
+                        nearby_stars_data.append(
+                            {
+                                "Separation (arcsec)": round(sep_arc, 3),
+                                "Separation (pix)": round(sep_p, 2),
+                                "Gaia delta mag": round(delta_mag, 3)
+                                if not np.isnan(delta_mag)
+                                else None,
+                                "Detected (Y/N)": detected_str,
+                                "Contamination Ratio (%)": round(contam_ratio, 4)
+                                if not np.isnan(contam_ratio)
+                                else None,
+                                "Gaia Source ID": str(source_id),
+                                "RA (deg)": round(float(gaia_df.ra.values[i]), 6),
+                                "Dec (deg)": round(float(gaia_df.dec.values[i]), 6),
+                                "Gaia G mag": round(float(g_mag), 3)
+                                if not np.isnan(g_mag)
+                                else None,
+                            }
+                        )
             except Exception as exc:
                 logger.warning(f"Failed to compile nearby stars: {exc}")
 
