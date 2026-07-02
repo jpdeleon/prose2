@@ -15,16 +15,24 @@ from prose.scripts import calibrate_muscat as cm1
 from prose.scripts import calibrate_muscat2 as cm
 from prose.scripts import solve_wcs_astrometry as swa
 
-CCDS = {0: "g", 1: "r", 2: "i", 3: "z_s"}
+CCD_FILTERS = {0: "g", 1: "r", 2: "i", 3: "z_s"}
+CCD_BANDS = {0: "gp", 1: "rp", 2: "ip", 3: "zs"}
 DATA_TYP = "OBJECT"  # MuSCAT2 FITS convention
 
 
-def _fake_fits(path: Path, object_val: str, exptime: float = 1.0) -> None:
+def _fake_fits(
+    path: Path,
+    object_val: str,
+    exptime: float = 1.0,
+    filter_value: str | None = "g",
+) -> None:
     """Create a minimal valid FITS file with MuSCAT2-like headers."""
     data = np.random.default_rng().poisson(1000, size=(32, 32)).astype(np.int16)
     hdu = fits.PrimaryHDU(data)
     hdu.header["DATA-TYP"] = DATA_TYP
     hdu.header["OBJECT"] = object_val
+    if filter_value is not None:
+        hdu.header["FILTER"] = filter_value
     hdu.header["EXPTIME"] = exptime
     hdu.header["MJD-STRT"] = 60000.0
     hdu.header["NAXIS1"] = 32
@@ -42,7 +50,7 @@ def fake_data_dir(tmp_path):
     flat_exptimes = {0: 12.5, 1: 3.2, 2: 1.1, 3: 0.9}
     science_counts = {0: 5, 1: 7, 2: 6, 3: 4}
 
-    for ccd, _band in CCDS.items():
+    for ccd, raw_filter in CCD_FILTERS.items():
         prefix = f"MCT2{ccd}_250310"
         seq = 0
 
@@ -53,6 +61,7 @@ def fake_data_dir(tmp_path):
                 tmp_path / f"{prefix}{seq:04d}.fits",
                 "FLAT",
                 exptime=flat_exptimes[ccd],
+                filter_value=raw_filter,
             )
 
         # 15 darks (same exptime as flats)
@@ -62,6 +71,7 @@ def fake_data_dir(tmp_path):
                 tmp_path / f"{prefix}{seq:04d}.fits",
                 "DARK",
                 exptime=flat_exptimes[ccd],
+                filter_value=raw_filter,
             )
 
         # science frames for TOI00663.02
@@ -71,6 +81,7 @@ def fake_data_dir(tmp_path):
                 tmp_path / f"{prefix}{seq:04d}.fits",
                 "TOI00663.02",
                 exptime=20.0,
+                filter_value=raw_filter,
             )
 
         # science frames for other target (not our target)
@@ -80,6 +91,7 @@ def fake_data_dir(tmp_path):
                 tmp_path / f"{prefix}{seq:04d}.fits",
                 "TOI04717.01",
                 exptime=20.0,
+                filter_value=raw_filter,
             )
 
     return tmp_path
@@ -91,29 +103,52 @@ def fake_data_dir(tmp_path):
 class TestFindFiles:
     def test_returns_three_dicts(self, fake_data_dir):
         darks, flats = cm.find_files(fake_data_dir)
-        assert list(darks) == [0, 1, 2, 3]
-        assert list(flats) == [0, 1, 2, 3]
+        assert list(darks) == ["gp", "rp", "ip", "zs"]
+        assert list(flats) == ["gp", "rp", "ip", "zs"]
 
-    @pytest.mark.parametrize("ccd", [0, 1, 2, 3])
-    def test_per_ccd_counts(self, fake_data_dir, ccd):
+    @pytest.mark.parametrize("band", ["gp", "rp", "ip", "zs"])
+    def test_per_band_counts(self, fake_data_dir, band):
         darks, flats = cm.find_files(fake_data_dir)
-        assert len(darks[ccd]) == 15, f"CCD{ccd} darks"
-        assert len(flats[ccd]) == 50, f"CCD{ccd} flats"
+        assert len(darks[band]) == 15, f"{band} darks"
+        assert len(flats[band]) == 50, f"{band} flats"
 
     def test_returns_paths_to_existing_files(self, fake_data_dir):
         darks, flats = cm.find_files(fake_data_dir)
-        for fp in darks[0] + flats[0]:
+        for fp in darks["gp"] + flats["gp"]:
             assert Path(fp).is_file()
 
     def test_empty_directory(self, tmp_path):
         darks, flats = cm.find_files(tmp_path)
-        assert all(len(darks[c]) == 0 for c in CCDS)
-        assert all(len(flats[c]) == 0 for c in CCDS)
+        assert all(len(darks[b]) == 0 for b in cm.BAND_ORDER)
+        assert all(len(flats[b]) == 0 for b in cm.BAND_ORDER)
 
     def test_skips_non_muscat2_files(self, tmp_path):
         _fake_fits(tmp_path / "random.fits", "DARK")
         darks, flats = cm.find_files(tmp_path)
-        assert all(len(darks[c]) == 0 for c in CCDS)
+        assert all(len(darks[b]) == 0 for b in cm.BAND_ORDER)
+
+    def test_filter_header_overrides_ccd_index_when_layout_differs(self, tmp_path):
+        # Regression: classification must follow FILTER, not the filename CCD index.
+        # This catches nights where CCD1/CCD3 carry a non-standard r/z_s layout.
+        z_flat = tmp_path / "MCT21_0001.fits"
+        z_dark = tmp_path / "MCT21_0002.fits"
+        z_science = tmp_path / "MCT21_0003.fits"
+        r_flat = tmp_path / "MCT23_0001.fits"
+        r_dark = tmp_path / "MCT23_0002.fits"
+        r_science = tmp_path / "MCT23_0003.fits"
+        for path, kind in ((z_flat, "FLAT"), (z_dark, "DARK"), (z_science, "TOI")):
+            _fake_fits(path, kind, filter_value="z_s")
+        for path, kind in ((r_flat, "FLAT"), (r_dark, "DARK"), (r_science, "TOI")):
+            _fake_fits(path, kind, filter_value="r")
+
+        darks, flats, sciences = cm.find_frames(tmp_path, "TOI")
+
+        assert flats["zs"] == [str(z_flat)]
+        assert darks["zs"] == [str(z_dark)]
+        assert sciences["zs"] == [str(z_science)]
+        assert flats["rp"] == [str(r_flat)]
+        assert darks["rp"] == [str(r_dark)]
+        assert sciences["rp"] == [str(r_science)]
 
 
 # ---------- find_science_files ----------
@@ -122,43 +157,43 @@ class TestFindFiles:
 class TestFindScienceFiles:
     def test_finds_target_per_ccd(self, fake_data_dir):
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
-        expected = {0: 5, 1: 7, 2: 6, 3: 4}
-        for ccd, band in CCDS.items():
-            assert len(sciences[ccd]) == expected[ccd], f"{band}"
+        expected = {"gp": 5, "rp": 7, "ip": 6, "zs": 4}
+        for band, count in expected.items():
+            assert len(sciences[band]) == count, f"{band}"
 
     def test_other_target_counts(self, fake_data_dir):
         sciences = cm.find_science_files(fake_data_dir, "TOI04717.01")
-        for ccd in CCDS:
-            assert len(sciences[ccd]) == 3, f"CCD{ccd}"
+        for band in cm.BAND_ORDER:
+            assert len(sciences[band]) == 3, f"{band}"
 
     def test_nonexistent_target(self, fake_data_dir):
         sciences = cm.find_science_files(fake_data_dir, "NONEXIST")
-        for ccd in CCDS:
-            assert len(sciences[ccd]) == 0
+        for band in cm.BAND_ORDER:
+            assert len(sciences[band]) == 0
 
     def test_excludes_empty_str(self, fake_data_dir):
         sciences = cm.find_science_files(fake_data_dir, "")
-        for ccd in CCDS:
-            assert len(sciences[ccd]) == 0
+        for band in cm.BAND_ORDER:
+            assert len(sciences[band]) == 0
 
 
 # ---------- calibrate_band (integration) ----------
 
 
 class TestCalibrateBand:
-    @pytest.mark.parametrize("ccd,band", [(0, "g"), (1, "r"), (2, "i"), (3, "z_s")])
-    def test_calibrates_all_science_frames(self, fake_data_dir, tmp_path, ccd, band):
+    @pytest.mark.parametrize("band", ["gp", "rp", "ip", "zs"])
+    def test_calibrates_all_science_frames(self, fake_data_dir, tmp_path, band):
         darks, flats = cm.find_files(fake_data_dir)
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
-        cm.calibrate_band(darks[ccd], flats[ccd], sciences[ccd], tmp_path, band)
+        cm.calibrate_band(darks[band], flats[band], sciences[band], tmp_path, band)
         out_files = sorted(tmp_path.glob("*_calibrated.fits"))
-        assert len(out_files) == len(sciences[ccd])
+        assert len(out_files) == len(sciences[band])
 
-    @pytest.mark.parametrize("ccd,band", [(0, "g"), (1, "r"), (2, "i"), (3, "z_s")])
-    def test_output_valid_fits(self, fake_data_dir, tmp_path, ccd, band):
+    @pytest.mark.parametrize("band", ["gp", "rp", "ip", "zs"])
+    def test_output_valid_fits(self, fake_data_dir, tmp_path, band):
         darks, flats = cm.find_files(fake_data_dir)
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
-        cm.calibrate_band(darks[ccd], flats[ccd], sciences[ccd], tmp_path, band)
+        cm.calibrate_band(darks[band], flats[band], sciences[band], tmp_path, band)
         out_files = sorted(tmp_path.glob("*_calibrated.fits"))
         for fp in out_files:
             hdr = fits.getheader(fp)
@@ -181,7 +216,7 @@ class TestCalibrateBand:
     def test_output_files_have_calstage(self, fake_data_dir, tmp_path):
         darks, flats = cm.find_files(fake_data_dir)
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
-        cm.calibrate_band(darks[0], flats[0], sciences[0], tmp_path, "g")
+        cm.calibrate_band(darks["gp"], flats["gp"], sciences["gp"], tmp_path, "gp")
         hdr = fits.getheader(sorted(tmp_path.glob("*_calibrated.fits"))[0])
         assert hdr["CALSTAGE"] == "calibrated"
 
@@ -190,10 +225,10 @@ class TestCalibrateBand:
         darks, flats = cm.find_files(fake_data_dir)
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
         cm.calibrate_band(
-            darks[0], flats[0], sciences[0], tmp_path, "g", solve_wcs=True
+            darks["gp"], flats["gp"], sciences["gp"], tmp_path, "gp", solve_wcs=True
         )
         out_files = sorted(tmp_path.glob("*_calibrated.fits"))
-        assert len(out_files) == len(sciences[0])
+        assert len(out_files) == len(sciences["gp"])
 
     @pytest.mark.parametrize("module,instrument", [(cm1, "muscat"), (cm, "muscat2")])
     def test_astrometry_net_only_updates_current_band(
@@ -338,10 +373,10 @@ class TestExposureMatching:
         """Fixture darks (12.5s) differ from science (20s): no-match fallback runs."""
         darks, flats = cm.find_files(fake_data_dir)
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
-        _, status = cm.select_darks_for_exposure(darks[0], 20.0, "g")
+        _, status = cm.select_darks_for_exposure(darks["gp"], 20.0, "gp")
         assert status == "no-match"
-        cm.calibrate_band(darks[0], flats[0], sciences[0], tmp_path, "g")
-        assert len(list(tmp_path.glob("*_calibrated.fits"))) == len(sciences[0])
+        cm.calibrate_band(darks["gp"], flats["gp"], sciences["gp"], tmp_path, "gp")
+        assert len(list(tmp_path.glob("*_calibrated.fits"))) == len(sciences["gp"])
 
 
 # ---------- main ----------
@@ -383,7 +418,7 @@ class TestMain:
     def test_bands_limits_calibrated_ccds(self, tmp_path, monkeypatch):
         (tmp_path / "MCT20_0001.fits").touch()
         calls = []
-        empty_frames = {ccd: [] for ccd in cm.CCD_BANDS}
+        empty_frames = {band: [] for band in cm.BAND_ORDER}
 
         monkeypatch.setattr(
             cm,

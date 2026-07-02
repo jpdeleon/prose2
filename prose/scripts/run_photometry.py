@@ -536,6 +536,48 @@ def aper_radii_pix(r: dict):
     return radii, rin, rout
 
 
+def _format_pix_value(value: float) -> str:
+    value = float(value)
+    if np.isclose(value, round(value), rtol=0.0, atol=1e-6):
+        return str(int(round(value)))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def aperture_geometry_title(radii_pix, rin_pix: float, rout_pix: float) -> str:
+    radii = np.asarray(radii_pix, dtype=float)
+    rmin = radii[0] if len(radii) else np.nan
+    rmax = radii[-1] if len(radii) else np.nan
+    dr = np.median(np.diff(radii)) if len(radii) > 1 else 0.0
+    return (
+        "apertures: "
+        f"r=({_format_pix_value(rmin)}, {_format_pix_value(rmax)}) "
+        f"dr={_format_pix_value(dr)}; "
+        f"annuli=({_format_pix_value(rin_pix)}, {_format_pix_value(rout_pix)}) pix"
+    )
+
+
+def _header_float(header, key: str) -> float:
+    value = header.get(key)
+    try:
+        return float(value) if value is not None else float("nan")
+    except (ValueError, TypeError):
+        return float("nan")
+
+
+def ref_header_desc(ref, label: str, details: list[str] | None = None) -> str:
+    focus = _header_float(ref.header, "FOCPOSN")
+    z = _header_float(ref.header, "AIRMASS")
+    exptime = _header_float(ref.header, "EXPTIME")
+
+    focus_str = f"{focus:.1f}" if not np.isnan(focus) else "nan"
+    z_str = f"{z:.1f}" if not np.isnan(z) else "nan"
+    exptime_str = f"{exptime:.0f}" if not np.isnan(exptime) else "nan"
+
+    parts = list(details or [])
+    parts.extend([f"focus={focus_str}", f"airmass={z_str}", f"exptime={exptime_str}s"])
+    return f"{label} ({' '.join(parts)})"
+
+
 class MeasurePeaks(Block):
     def __init__(self, name=None):
         super().__init__(name=name)
@@ -1958,7 +2000,7 @@ def plot_ref_image(
     avoided = set(avoid_cids or [])
     plotted_source_ids = [i for i in range(len(ref.sources)) if i not in avoided]
     ref.sources[plotted_source_ids].plot(ax=ax, c=colors["sources"])
-    desc = "reference frame"
+    desc = ref_header_desc(ref, "reference frame")
     if not wcs_ok:
         desc += " (pixel frame; WCS unusable)"
     title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
@@ -2060,7 +2102,7 @@ def plot_apertures(
         )
         if n:
             ax.legend(loc="upper right", fontsize=7, framealpha=0.6)
-    desc = "apertures"
+    desc = ref_header_desc(ref, aperture_geometry_title(radii_pix, rin_pix, rout_pix))
     title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
     ax.set_title(title)
     _savefig(fig, path)
@@ -2139,7 +2181,7 @@ def plot_alignment(
             labelbottom=False,
             labelleft=False,
         )
-    desc = "alignment"
+    desc = ref_header_desc(ref, "alignment")
     title = (
         f"{target_name} | {instrument} | {date} | {band} | tID={target_index}\n{desc}"
     )
@@ -2398,7 +2440,8 @@ def plot_stacks(
         lines, labels = axes[row, 1].get_legend_handles_labels()
         lines_twin, labels_twin = ax_twin.get_legend_handles_labels()
         axes[row, 1].legend(lines + lines_twin, labels + labels_twin, loc="upper right")
-    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
+    desc = ref_header_desc(band_results[bands[0]]["ref"], "stacks")
+    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}\n{desc}")
     _savefig(fig, path)
 
 
@@ -2578,29 +2621,7 @@ def plot_cutouts(
     for j in range(ncutouts, len(ax)):
         ax[j].axis("off")
 
-    focus = ref.header.get("FOCPOSN")
-    try:
-        focus = float(focus) if focus is not None else float("nan")
-    except (ValueError, TypeError):
-        focus = float("nan")
-
-    z = ref.header.get("AIRMASS")
-    try:
-        z = float(z) if z is not None else float("nan")
-    except (ValueError, TypeError):
-        z = float("nan")
-
-    exptime = ref.header.get("EXPTIME")
-    try:
-        exptime = float(exptime) if exptime is not None else float("nan")
-    except (ValueError, TypeError):
-        exptime = float("nan")
-
-    focus_str = f"{focus:.1f}" if not np.isnan(focus) else "nan"
-    z_str = f"{z:.1f}" if not np.isnan(z) else "nan"
-    exptime_str = f"{exptime:.0f}" if not np.isnan(exptime) else "nan"
-
-    desc = f"cutouts (focus={focus_str} airmass={z_str} exptime={exptime_str}s)"
+    desc = ref_header_desc(ref, "cutouts", [f"r={_format_pix_value(best)} pix"])
     title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
     fig.suptitle(title)
     _savefig(fig, path)

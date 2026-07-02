@@ -5,6 +5,8 @@ these tests focus on the deterministic, side-effect-free helpers (naming,
 header parsing, z-scaling, CSV column mapping).
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -297,6 +299,40 @@ def test_aper_radii_pix_fwhm_unit_scales_by_reference_fwhm():
     radii, rin, rout = rp.aper_radii_pix(r)
     np.testing.assert_allclose(radii, [4.0, 8.0])
     assert (rin, rout) == (12.0, 20.0)
+
+
+def test_aperture_geometry_title_formats_pixel_grid():
+    title = rp.aperture_geometry_title(np.array([2.0, 4.0, 6.0, 8.0, 10.0]), 20.0, 40.0)
+    assert title == "apertures: r=(2, 10) dr=2; annuli=(20, 40) pix"
+
+
+def test_aperture_geometry_title_formats_fractional_pixels():
+    title = rp.aperture_geometry_title(np.array([2.5, 4.0]), 12.25, 20.5)
+    assert title == "apertures: r=(2.5, 4) dr=1.5; annuli=(12.25, 20.5) pix"
+
+
+def test_ref_header_desc_formats_focus_airmass_exptime():
+    ref = SimpleNamespace(header={"FOCPOSN": "123.45", "AIRMASS": "1.23", "EXPTIME": "60"})
+    assert (
+        rp.ref_header_desc(ref, "cutouts")
+        == "cutouts (focus=123.5 airmass=1.2 exptime=60s)"
+    )
+
+
+def test_ref_header_desc_handles_missing_or_bad_values():
+    ref = SimpleNamespace(header={"FOCPOSN": "bad", "AIRMASS": None})
+    assert (
+        rp.ref_header_desc(ref, "reference frame")
+        == "reference frame (focus=nan airmass=nan exptime=nans)"
+    )
+
+
+def test_ref_header_desc_includes_extra_details_before_header_values():
+    ref = SimpleNamespace(header={"FOCPOSN": "123.45", "AIRMASS": "1.23", "EXPTIME": "60"})
+    assert (
+        rp.ref_header_desc(ref, "cutouts", ["r=20 pix"])
+        == "cutouts (r=20 pix focus=123.5 airmass=1.2 exptime=60s)"
+    )
 
 
 # --------------------------- SIMBAD overlay on ref plot ---------------------------
@@ -1245,6 +1281,10 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
                     @property
                     def fluxes(self):
                         class FakeFluxes:
+                            def __init__(self):
+                                self._fluxes = np.ones((5, 2, 2))
+                                self._time = np.arange(5)
+
                             def copy(self):
                                 return self
                             def mask_stars(self, mask):
@@ -1256,17 +1296,22 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
                                     def __init__(self):
                                         self.time = np.arange(5)
                                 return FakeDiff()
-                            def autodiff(self):
+                            def autodiff(self, nan_imputation_method="linear"):
                                 class FakeDiff:
                                     def __init__(self):
                                         self.time = np.arange(5)
                                 return FakeDiff()
                             @property
                             def fluxes(self):
-                                return np.ones((5, 2, 2))
+                                return self._fluxes
+
+                            @fluxes.setter
+                            def fluxes(self, value):
+                                self._fluxes = value
+
                             @property
                             def time(self):
-                                return np.arange(5)
+                                return self._time
                         return FakeFluxes()
                 return [FakeData()]
         return MockPhot()
@@ -1335,7 +1380,7 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
 
         return MockPhot()
 
-    def mock_diff(fluxes, target_index, cids=None, avoid_cids=None):
+    def mock_diff(fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"):
         captured["diff_target_index"] = target_index
         class FakeDiff:
             def __init__(self):
@@ -1538,6 +1583,7 @@ def test_main_mode_filtering_fallback_to_header(tmp_path, monkeypatch, caplog):
         ret = rp.main(argv)
     # The return code will still be 1 (due to MAST/Simbad/photometry failures downstream),
     # but it should NOT have aborted at the mode check!
+    assert ret == 1
     assert not any("with mode=central_2k_2x2; aborting" in r.message for r in caplog.records)
 
 
@@ -1671,7 +1717,6 @@ def test_plot_ref_image_custom_cmap(tmp_path, monkeypatch):
     out = tmp_path / "ref_inverted.png"
 
     show_kwargs = {}
-    original_show = ref.show
     def mock_show(*args, **kwargs):
         show_kwargs.update(kwargs)
         # Avoid plotting the actual image to speed up/prevent window pops
@@ -1819,4 +1864,3 @@ def test_parse_args_accepts_both_sinistro_modes():
                 "--mode", "invalid_mode",
             ]
         )
-

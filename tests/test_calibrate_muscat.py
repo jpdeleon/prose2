@@ -21,11 +21,18 @@ from prose.scripts import calibrate_muscat as cm
 CCD_BANDS = {0: "gp", 1: "rp", 2: "zs"}
 
 
-def _fake_fits(path: Path, object_val: str, exptime: float = 1.0) -> None:
+def _fake_fits(
+    path: Path,
+    object_val: str,
+    exptime: float = 1.0,
+    filter_value: str | None = "g",
+) -> None:
     """Create a minimal valid FITS file with MuSCAT-like headers."""
     data = np.random.default_rng().poisson(1000, size=(16, 16)).astype(np.int16)
     hdu = fits.PrimaryHDU(data)
     hdu.header["OBJECT"] = object_val
+    if filter_value is not None:
+        hdu.header["FILTER"] = filter_value
     hdu.header["EXPTIME"] = exptime
     hdu.writeto(path, overwrite=True)
 
@@ -134,6 +141,31 @@ class TestSelectDarksForExposure:
 
 
 # ---------- calibrate_band integration ----------
+
+
+class TestFindFrames:
+    def test_filter_header_overrides_ccd_index_when_layout_differs(self, tmp_path):
+        # Regression: classification must follow FILTER, not the filename CCD index.
+        # MuSCAT nights can expose a non-nominal CCD/filter layout.
+        z_flat = tmp_path / "MSCT0_0001.fits"
+        z_dark = tmp_path / "MSCT0_0002.fits"
+        z_science = tmp_path / "MSCT0_0003.fits"
+        r_flat = tmp_path / "MSCT1_0001.fits"
+        r_dark = tmp_path / "MSCT1_0002.fits"
+        r_science = tmp_path / "MSCT1_0003.fits"
+        for path, kind in ((z_flat, "FLAT"), (z_dark, "DARK"), (z_science, "TOI")):
+            _fake_fits(path, kind, filter_value="z_s")
+        for path, kind in ((r_flat, "FLAT"), (r_dark, "DARK"), (r_science, "TOI")):
+            _fake_fits(path, kind, filter_value="r")
+
+        darks, flats, sciences = cm.find_frames(tmp_path, "TOI")
+
+        assert flats["zs"] == [str(z_flat)]
+        assert darks["zs"] == [str(z_dark)]
+        assert sciences["zs"] == [str(z_science)]
+        assert flats["rp"] == [str(r_flat)]
+        assert darks["rp"] == [str(r_dark)]
+        assert sciences["rp"] == [str(r_science)]
 
 
 class TestCalibrateBandExposure:
