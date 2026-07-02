@@ -1371,8 +1371,20 @@ def run_band(
     ref = reference["ref"]
     target_index = reference["target_index"]
 
+    ref_band_star_ids: list[int] | None = None
     if ref_source_positions is not None:
         this_positions = np.array([s.coords for s in ref.sources])
+        if len(this_positions) > 0:
+            from scipy.spatial import KDTree
+            tree_ref = KDTree(ref_source_positions)
+            ref_band_star_ids = []
+            for i, pos in enumerate(this_positions):
+                dist, nearest = tree_ref.query(pos)
+                if dist < _CROSSMATCH_TOLERANCE_PX:
+                    ref_band_star_ids.append(int(nearest))
+                else:
+                    ref_band_star_ids.append(-1)
+
         if len(this_positions) and 0 <= target_index < len(ref_source_positions):
             from scipy.spatial import KDTree
 
@@ -1416,8 +1428,37 @@ def run_band(
         else:
             mapped_avoid = list(avoid_cids)
 
+    # Cross-match cids from ref-band index space -> this band's indices
+    # via nearest-neighbor KDTree (ref_source_positions is pre-populated from
+    # the reference band, so all bands share the same alignment frame).
+    if cids is not None:
+        if ref_source_positions is not None:
+            this_positions = np.array([s.coords for s in ref.sources])
+            from scipy.spatial import KDTree
+
+            tree = KDTree(this_positions)
+            mapped_cids = []
+            for idx in cids:
+                if idx >= len(ref_source_positions):
+                    logger.warning(
+                        f"[{band}] cID {idx}: out of range "
+                        f"(ref band has {len(ref_source_positions)} sources)"
+                    )
+                    continue
+                dist, nearest = tree.query(ref_source_positions[idx])
+                if dist < _CROSSMATCH_TOLERANCE_PX:
+                    mapped_cids.append(int(nearest))
+                else:
+                    logger.warning(
+                        f"[{band}] cID {idx}: nearest source is "
+                        f"{dist:.1f} px away (> {_CROSSMATCH_TOLERANCE_PX} px); skipping"
+                    )
+            cids = mapped_cids
+        else:
+            cids = list(cids)
+
         # Filter avoided indices from explicit comparison list
-        if cids is not None and mapped_avoid:
+        if mapped_avoid:
             cids = [c for c in cids if c not in mapped_avoid]
             if not cids:
                 logger.warning(
@@ -1560,6 +1601,23 @@ def run_band(
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
         return None
 
+    # Map the selected comparison star IDs back to the chosen band's index space for consistent logging
+    comps = getattr(diff, "comparisons", None)
+    if comps is not None and ref_band_star_ids is not None:
+        mapped_comps = []
+        for c in comps:
+            if c < len(ref_band_star_ids):
+                mapped_id = ref_band_star_ids[c]
+                if mapped_id != -1:
+                    mapped_comps.append(mapped_id)
+                else:
+                    mapped_comps.append(f"{c}(unmapped)")
+            else:
+                mapped_comps.append(c)
+        logger.info(
+            f"[{band}] comparison stars mapped to chosen band's IDs: {mapped_comps}"
+        )
+
     # normalize the time axis to JD (e.g. MuSCAT2/TCS reports MJD) so that BJD
     # correction, CSV export, and plots all operate on a true Julian Date.
     diff.time = normalize_time_to_jd(diff.time, ref.telescope.jd_scale)
@@ -1573,6 +1631,7 @@ def run_band(
         diff=diff,
         avoid_cids=mapped_avoid,
         target_index=target_index,
+        ref_band_star_ids=ref_band_star_ids,
         aper_radii=np.asarray(reference["aper_radii"]),
         rin=reference["rin"],
         rout=reference["rout"],
@@ -1965,6 +2024,11 @@ def plot_ref_image(
         date = date_from_header(ref.header)
     band = r["band"]
     target_id = r["target_index"]
+    ref_band_star_ids = r.get("ref_band_star_ids")
+    if ref_band_star_ids is not None and target_id < len(ref_band_star_ids):
+        mapped_id = ref_band_star_ids[target_id]
+        if mapped_id != -1:
+            target_id = mapped_id
 
     # Only trust the reference WCS for celestial decorations (RA/Dec projection
     # and SIMBAD markers) when it can actually project the target. A rejected or
@@ -1999,7 +2063,16 @@ def plot_ref_image(
         )
     avoided = set(avoid_cids or [])
     plotted_source_ids = [i for i in range(len(ref.sources)) if i not in avoided]
-    ref.sources[plotted_source_ids].plot(ax=ax, c=colors["sources"])
+    
+    sources_to_plot = ref.sources[plotted_source_ids]
+    if ref_band_star_ids is not None:
+        sources_to_plot = sources_to_plot.copy()
+        for s in sources_to_plot.sources:
+            if s.i is not None and s.i < len(ref_band_star_ids):
+                mapped_id = ref_band_star_ids[s.i]
+                if mapped_id != -1:
+                    s.i = mapped_id
+    sources_to_plot.plot(ax=ax, c=colors["sources"])
     desc = ref_header_desc(ref, "reference frame")
     if not wcs_ok:
         desc += " (pixel frame; WCS unusable)"
@@ -2074,6 +2147,11 @@ def plot_apertures(
         date = date_from_header(ref.header)
     band = r["band"]
     target_id = r["target_index"]
+    ref_band_star_ids = r.get("ref_band_star_ids")
+    if ref_band_star_ids is not None and target_id < len(ref_band_star_ids):
+        mapped_id = ref_band_star_ids[target_id]
+        if mapped_id != -1:
+            target_id = mapped_id
 
     coords = ref.sources[r["target_index"]].coords
     c = ref.cutout(coords, GAIA_CUTOUT, reset_index=False)
@@ -2102,8 +2180,9 @@ def plot_apertures(
         )
         if n:
             ax.legend(loc="upper right", fontsize=7, framealpha=0.6)
-    desc = ref_header_desc(ref, aperture_geometry_title(radii_pix, rin_pix, rout_pix))
-    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
+    desc = ref_header_desc(ref, "Target cutout")
+    desc2 = aperture_geometry_title(radii_pix, rin_pix, rout_pix)
+    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}\n{desc2}"
     ax.set_title(title)
     _savefig(fig, path)
 
@@ -2279,15 +2358,24 @@ def plot_raw_flux(
         if comps is not None and len(comps) > 0:
             stars.extend([c for c in comps if c != diff.target])
 
+        ref_band_star_ids = band_results[band].get("ref_band_star_ids")
+
         for j, i in enumerate(stars):
             y = fluxes.fluxes[diff.aperture, i][mask].copy()
             std_val = np.std(y)
             denom = std_val or 1e-12
             y = (y - np.mean(y)) / denom + 8 * j
+
+            label_id = i
+            if ref_band_star_ids is not None and i < len(ref_band_star_ids):
+                mapped_id = ref_band_star_ids[i]
+                if mapped_id != -1:
+                    label_id = mapped_id
+
             ax.text(
                 t.max(),
                 np.mean(y) + 4,
-                i if i != diff.target else "target",
+                label_id if i != diff.target else "target",
                 ha="right",
             )
             ax.plot(t, y, ".", c="0.8" if i != diff.target else band_color(band))
@@ -2333,7 +2421,8 @@ def plot_covariates(
         ax.set_title(band)
         ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
-    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
+    desc = ref_header_desc(band_results[bands[0]]["ref"], "stacks")
+    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}\n{desc}")
     _savefig(fig, path)
 
 
@@ -2468,6 +2557,11 @@ def plot_cutouts(
     if not band:
         band = r["band"]
     target_id = r.get("target_index")
+    ref_band_star_ids = r.get("ref_band_star_ids")
+    if ref_band_star_ids is not None and target_id is not None and target_id < len(ref_band_star_ids):
+        mapped_id = ref_band_star_ids[target_id]
+        if mapped_id != -1:
+            target_id = mapped_id
 
     cutouts = ref.computed.get("cutouts")
     if not cutouts:
@@ -2616,13 +2710,18 @@ def plot_cutouts(
         peak = ref.sources[idx].peak
         is_target = " (Target)" if idx == target_idx else ""
         tcolor = "r" if idx == target_idx else "k"
-        ax[i].set_title(f"Star {idx}{is_target}\npeak={peak:,.0f}", color=tcolor)
+        star_id_label = idx
+        if ref_band_star_ids is not None and idx < len(ref_band_star_ids):
+            mapped_id = ref_band_star_ids[idx]
+            if mapped_id != -1:
+                star_id_label = mapped_id
+        ax[i].set_title(f"Star {star_id_label}{is_target}\npeak={peak:,.0f}", color=tcolor)
 
     for j in range(ncutouts, len(ax)):
         ax[j].axis("off")
 
-    desc = ref_header_desc(ref, "cutouts", [f"r={_format_pix_value(best)} pix"])
-    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
+    desc = ref_header_desc(ref, "cutouts")
+    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id} | r={_format_pix_value(best)} pix\n{desc}"
     fig.suptitle(title)
     _savefig(fig, path)
 
@@ -2716,7 +2815,30 @@ def save_all_bands_npz(
         out[f"{band}__rin"] = np.array(r["rin"])
         out[f"{band}__rout"] = np.array(r["rout"])
         out[f"{band}__aper_unit"] = np.array("fwhm" if r.get("scale") else "pix")
-        out[f"{band}__target_index"] = np.array(r["target_index"])
+
+        # Map target_index back to reference band if a reference band mapping is available
+        target_idx = r["target_index"]
+        ref_band_star_ids = r.get("ref_band_star_ids")
+        if ref_band_star_ids is not None and target_idx < len(ref_band_star_ids):
+            mapped_id = ref_band_star_ids[target_idx]
+            if mapped_id != -1:
+                target_idx = mapped_id
+        out[f"{band}__target_index"] = np.array(target_idx)
+
+        # Map comparisons back to reference band if a reference band mapping is available
+        comps = getattr(diff, "comparisons", None)
+        if comps is not None:
+            if ref_band_star_ids is not None:
+                mapped_comps = []
+                for c in comps:
+                    if c < len(ref_band_star_ids):
+                        mapped_id = ref_band_star_ids[c]
+                        if mapped_id != -1:
+                            mapped_comps.append(mapped_id)
+                out[f"{band}__comparisons"] = np.array(mapped_comps)
+            else:
+                out[f"{band}__comparisons"] = _npz_safe(comps)
+
         out[f"{band}__aperture"] = np.array(diff.aperture)
         out[f"{band}__wcs_header"] = np.array(r["ref"].wcs.to_header_string(relax=True))
         for key in ("fwhm", "airmass", "bkg", "dx", "dy", "peak"):
@@ -3727,7 +3849,7 @@ def main(argv=None) -> int:
     # to the other bands' source catalogs (all bands are aligned to the same
     # reference frame, so pixel positions correspond).
     ordered_bands = list(active_bands)
-    if not self_reference and args.avoid_cids:
+    if not self_reference:
         ref_band = args.ref_band if args.ref_band in active_bands else active_bands[0]
         if ref_band in ordered_bands:
             ordered_bands.remove(ref_band)
@@ -3782,7 +3904,7 @@ def main(argv=None) -> int:
             failed_bands.append(band)
             continue
         band_results[band] = res
-        if not self_reference and args.avoid_cids and band == ref_band:
+        if not self_reference and band == ref_band:
             ref_source_positions = np.array([s.coords for s in res["ref"].sources])
 
     elapsed = time_module.time() - t0

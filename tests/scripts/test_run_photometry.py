@@ -1406,6 +1406,84 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
     assert result["target_index"] == 1
 
 
+def test_run_band_remaps_cids_and_avoid_cids_from_reference_band(tmp_path, monkeypatch):
+    from prose import Fluxes
+    from prose.core.source import Sources
+    from astropy.coordinates import SkyCoord
+
+    ref_band_positions = np.array([[1.0, 1.0], [9.0, 9.0]])
+    current_band_positions = np.array([[9.2, 9.1], [1.1, 1.0]])
+
+    class FakeImage:
+        def __init__(self):
+            self.sources = Sources(np.array(current_band_positions))
+            self.shape = (20, 20)
+            self.telescope = self
+            self.jd_scale = "jd"
+            self.header = {}
+            self.fwhm = 4.0
+
+    reference = {
+        "ref": FakeImage(),
+        "target_index": 0,
+        "aper_radii": np.array([3.0]),
+        "rin": 8.0,
+        "rout": 12.0,
+        "scale": False,
+        "edge_cids": [],
+        "gaia_df": None,
+        "defaulted_to_brightest": False,
+    }
+
+    monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
+
+    captured = {}
+
+    def mock_photometry_sequence(ref, aper_radii, rin, rout, **kwargs):
+        class MockPhot:
+            def run(self, files):
+                return None
+
+            @property
+            def data(self):
+                class FakeData:
+                    @property
+                    def fluxes(self):
+                        return Fluxes(np.ones((2, 4)))
+
+                return [FakeData()]
+
+        return MockPhot()
+
+    def mock_diff(fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"):
+        captured["diff_cids"] = cids
+        captured["diff_avoid_cids"] = avoid_cids
+        class FakeDiff:
+            def __init__(self):
+                self.time = np.arange(4, dtype=float)
+                self.target = target_index
+
+        return FakeDiff()
+
+    monkeypatch.setattr(rp, "photometry_sequence", mock_photometry_sequence)
+    monkeypatch.setattr(rp, "differential_photometry", mock_diff)
+
+    result = rp.run_band(
+        band="gp",
+        files=[str(_write_minimal_fits(tmp_path, "science.fits"))],
+        ref_file=str(_write_minimal_fits(tmp_path, "reference.fits")),
+        target_coord=SkyCoord(0, 0, unit="deg"),
+        ref_source_positions=ref_band_positions,
+        cids=[0],
+        avoid_cids=[1],
+    )
+
+    assert result is not None
+    assert captured["diff_cids"] == [1]
+    assert captured["diff_avoid_cids"] == [0]
+    assert result["ref_band_star_ids"] == [1, 0]
+
+
 def _write_sinistro_fits(tmp_path, name, site_id, filter_name="gp", confmode="central_2k_2x2"):
     from astropy.io import fits
     from astropy.wcs import WCS

@@ -8,8 +8,94 @@ from typing import Union
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy import interpolate
 
 from prose import utils
+
+
+def impute_nans(fluxes: np.ndarray, method: str = "linear") -> np.ndarray:
+    """Impute NaN values in flux matrix using specified method.
+
+    The Broeg et al. 2005 algorithm requires no NaNs in the flux matrix.
+    This function handles realistic photometry NaN patterns (detector dropouts,
+    cosmic rays masked, readout issues).
+
+    Parameters
+    ----------
+    fluxes : np.ndarray
+        Flux matrix with dimensions (star, flux) or (aperture, star, flux)
+    method : str, optional
+        Imputation method: "mean" (star-wise mean), "median" (star-wise median),
+        "linear" (linear interpolation), "spline" (cubic spline),
+        "forward_fill" (forward/backward fill). Default: "linear"
+
+    Returns
+    -------
+    np.ndarray
+        Imputed flux matrix (same shape as input)
+
+    Notes
+    -----
+    Completely masked stars (all NaNs) should be removed from the dataset
+    in preprocessing, not imputed. This function handles partial gaps only.
+    """
+    if method not in ("mean", "median", "linear", "spline", "forward_fill"):
+        raise ValueError(f"Unknown imputation method: {method}")
+
+    result = fluxes.copy()
+    x = np.arange(result.shape[-1])
+
+    # Handle multi-dimensional (aperture, star, flux)
+    if result.ndim == 3:
+        for a in range(result.shape[0]):
+            result[a, :, :] = impute_nans(result[a, :, :], method)
+        return result
+
+    # 2D (star, flux)
+    for i in range(result.shape[0]):
+        mask = np.isnan(result[i, :])
+        if not np.any(mask):
+            continue
+
+        if method == "mean":
+            mean_val = np.nanmean(result[i, :])
+            if np.isfinite(mean_val):
+                result[i, mask] = mean_val
+        elif method == "median":
+            median_val = np.nanmedian(result[i, :])
+            if np.isfinite(median_val):
+                result[i, mask] = median_val
+        elif method == "linear":
+            if np.sum(~mask) >= 2:
+                f = interpolate.interp1d(
+                    x[~mask], result[i, ~mask],
+                    kind="linear", bounds_error=False, fill_value="extrapolate"
+                )
+                result[i, mask] = f(x[mask])
+        elif method == "spline":
+            if np.sum(~mask) >= 4:
+                try:
+                    f = interpolate.CubicSpline(x[~mask], result[i, ~mask])
+                    result[i, mask] = f(x[mask])
+                except (ValueError, np.linalg.LinAlgError):
+                    # Fallback to linear if spline fails
+                    if np.sum(~mask) >= 2:
+                        f = interpolate.interp1d(
+                            x[~mask], result[i, ~mask],
+                            kind="linear", bounds_error=False, fill_value="extrapolate"
+                        )
+                        result[i, mask] = f(x[mask])
+        elif method == "forward_fill":
+            idx = np.where(~mask, np.arange(len(mask)), 0)
+            idx = np.maximum.accumulate(idx)
+            result[i, :] = result[i, idx]
+            # Backward fill for leading NaNs
+            mask = np.isnan(result[i, :])
+            idx = np.where(~mask, np.arange(len(mask)), len(mask) - 1)
+            idx = np.minimum.accumulate(idx[::-1])[::-1]
+            result[i, mask] = result[i, idx[mask]]
+
+    return result
 
 
 def weights(
@@ -419,20 +505,36 @@ class Fluxes:
 
         return _new
 
-    def autodiff(self):
+    def autodiff(self, nan_imputation_method: str = "none"):
         """Automatic differential photometry with Broeg et al. 2005:
         https://ui.adsabs.harvard.edu/abs/2005AN....326..134B/abstract
 
-        `Fluxes.fluxes` must not contain NaNs.
+        `Fluxes.fluxes` must not contain NaNs. Use nan_imputation_method to
+        handle missing data before running autodiff.
+
+        Parameters
+        ----------
+        nan_imputation_method : str, optional
+            Method to impute NaN values: "none" (fail if NaNs present),
+            "mean" (star-wise mean), "median" (star-wise median),
+            "linear" (linear interpolation), "spline" (cubic spline),
+            "forward_fill" (last-observation-carried-forward).
+            Default: "none"
 
         Returns
         -------
         differential :code:`Fluxes`
         """
+        # Impute NaNs if requested
+        if nan_imputation_method != "none":
+            imputed_fluxes = impute_nans(self.fluxes, method=nan_imputation_method)
+        else:
+            imputed_fluxes = self.fluxes
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             diff_fluxes, weights, diff_errors = auto_diff(
-                self.fluxes, self.target, self.errors
+                imputed_fluxes, self.target, self.errors
             )
 
         _new = deepcopy(self)
