@@ -566,9 +566,25 @@ def _header_float(header, key: str) -> float:
         return float("nan")
 
 
+def _header_airmass(header, keyword: str) -> float:
+    """Airmass from a header keyword, guarding against telemetry dropouts.
+
+    Some frames record a blank/zero pointing (e.g. SECZ=0, RA/DEC empty) when the
+    telescope control system briefly loses tracking. Airmass is physically >= 1,
+    so any non-finite or sub-unity value is treated as missing (NaN) rather than
+    entering the design matrix as a spurious airmass=0 outlier.
+    """
+    value = _header_float(header, keyword)
+    return value if np.isfinite(value) and value >= 1.0 else float("nan")
+
+
 def ref_header_desc(ref, label: str, details: list[str] | None = None) -> str:
+    airmass_keyword = (
+        getattr(getattr(ref, "telescope", None), "keyword_airmass", "AIRMASS")
+        or "AIRMASS"
+    )
     focus = _header_float(ref.header, "FOCPOSN")
-    z = _header_float(ref.header, "AIRMASS")
+    z = _header_airmass(ref.header, airmass_keyword)
     exptime = _header_float(ref.header, "EXPTIME")
 
     focus_str = f"{focus:.1f}" if not np.isnan(focus) else "nan"
@@ -1418,12 +1434,20 @@ def photometry_sequence(
         ]
     )
 
+    # Resolve the airmass header keyword from the telescope config so the header
+    # keyword takes precedence over a hardcoded name (e.g. MuSCAT writes SECZ, not
+    # AIRMASS). Falls back to "AIRMASS" when no telescope keyword is available.
+    airmass_keyword = (
+        getattr(getattr(ref, "telescope", None), "keyword_airmass", "AIRMASS")
+        or "AIRMASS"
+    )
+
     return SequenceParallel(
         blocks=blocks_list,
         data_blocks=[
             blocks.GetFluxes(
                 "fwhm",
-                airmass=lambda im: im.header.get("AIRMASS", float("nan")),
+                airmass=lambda im: _header_airmass(im.header, airmass_keyword),
                 dx=lambda im: (
                     im.transform.translation[0]
                     if hasattr(im, "transform") and im.transform is not None

@@ -13,7 +13,7 @@ keyword_bias_images: bias
 keyword_observation_date: DATE-OBS
 keyword_exposure_time: EXPTIME
 keyword_filter: FILTER
-keyword_airmass: AIRMASS
+keyword_airmass: SECZ
 keyword_fwhm: FWHM
 keyword_seeing: SEEING
 keyword_ra: RA
