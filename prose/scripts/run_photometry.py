@@ -77,6 +77,7 @@ import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.time import Time
+from astropy.wcs import WCS
 from astroquery.mast import Mast
 from astroquery.simbad import Simbad
 from rich.progress import track
@@ -3052,6 +3053,120 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
     return DEFAULT_BROAD_BANDS
 
 
+def _header_has_usable_wcs(header) -> bool:
+    """Return True when a FITS header carries celestial WCS axes."""
+    try:
+        return bool(getattr(WCS(header), "has_celestial", False))
+    except Exception:
+        return False
+
+
+def _inject_wcs_from_sidecars(
+    *,
+    calib_label: str,
+    calib_dir: Path,
+    calibrated_files: list[Path],
+    active_bands: list[str],
+    requested_bands: list[str],
+    target_name: str,
+    wcs_method: str,
+) -> bool:
+    """Inject cached per-band WCS sidecars into calibrated MuSCAT FITS files.
+
+    Returns True only when every active band has a readable celestial WCS
+    sidecar and every matching calibrated file was updated successfully.
+    """
+    sidecar_dir = calib_dir / ".wcs"
+    sidecars = {b: sidecar_dir / f"{b}_{wcs_method}.wcs.fits" for b in active_bands}
+    missing = [b for b, path in sidecars.items() if not path.exists()]
+    if missing:
+        logger.info(
+            f"{calib_label}: cached {wcs_method} WCS sidecars missing for "
+            f"{', '.join(missing)}"
+        )
+        return False
+
+    band_files = read_filename_per_band(
+        calibrated_files,
+        requested_bands,
+        target_name,
+        filter_aliases=INSTRUMENT_FILTER_ALIASES.get(calib_label),
+    )
+    for band in active_bands:
+        files = band_files.get(band, [])
+        if not files:
+            logger.warning(
+                f"  {calib_label} [{band}]: no calibrated files matched target "
+                f"{target_name}; cannot inject cached WCS"
+            )
+            return False
+
+        wcs = load_wcs_fits(sidecars[band])
+        if wcs is None:
+            logger.warning(
+                f"  {calib_label}: sidecar {sidecars[band]} unreadable; "
+                f"re-calibrating"
+            )
+            return False
+
+        for fp in files:
+            if not inject_wcs_into_file(fp, wcs, method=wcs_method):
+                logger.warning(
+                    f"  {calib_label}: failed to inject WCS into {fp}; "
+                    f"marking recalibration required"
+                )
+                return False
+
+        logger.info(
+            f"  {calib_label} [{band}]: injected cached {wcs_method} WCS into "
+            f"{len(files)} files"
+        )
+
+    return True
+
+
+def _calibrated_wcs_problems_by_band(
+    *,
+    calib_label: str,
+    calibrated_files: list[Path],
+    active_bands: list[str],
+    requested_bands: list[str],
+    target_name: str,
+    wcs_method: str,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Inspect representative calibrated files for per-band WCS problems.
+
+    Returns ``(missing, unreadable, no_wcs, wrong_method)`` band-name lists.
+    """
+    band_files = read_filename_per_band(
+        calibrated_files,
+        requested_bands,
+        target_name,
+        filter_aliases=INSTRUMENT_FILTER_ALIASES.get(calib_label),
+    )
+    missing: list[str] = []
+    unreadable: list[str] = []
+    no_wcs: list[str] = []
+    wrong_method: list[str] = []
+
+    for band in active_bands:
+        files = band_files.get(band) or []
+        if not files:
+            missing.append(band)
+            continue
+        try:
+            header = fits.getheader(files[0])
+        except OSError:
+            unreadable.append(band)
+            continue
+        if not _header_has_usable_wcs(header):
+            no_wcs.append(band)
+        elif header.get("WCSMTHD", "") != wcs_method:
+            wrong_method.append(band)
+
+    return missing, unreadable, no_wcs, wrong_method
+
+
 def _fits_file_number(path: Path) -> int | None:
     """Extract the FITS frame number from a (calibrated) file path.
 
@@ -3883,74 +3998,55 @@ def main(argv=None) -> int:
                 )
                 need_calib = True
 
-        if calibrated_files:
-            try:
-                h = fits.getheader(calibrated_files[0])
-            except OSError as exc:
-                # Truncated-but-nonzero FITS slips past the size filter above.
-                logger.warning(
-                    f"{calib_label}: calibrated frame "
-                    f"{calibrated_files[0].name} unreadable ({exc}); "
-                    f"will recalibrate"
-                )
+        if calibrated_files and not need_calib:
+            missing, unreadable, no_wcs, wrong_method = _calibrated_wcs_problems_by_band(
+                calib_label=calib_label,
+                calibrated_files=calibrated_files,
+                active_bands=active_bands,
+                requested_bands=args.bands,
+                target_name=args.target_name,
+                wcs_method=args.wcs_method,
+            )
+            if missing or unreadable:
                 need_calib = True
-                h = None
-            if h is None:
-                pass
-            elif "CD1_1" not in h and "CDELT1" not in h:
-                need_calib = True
+                details = []
+                if missing:
+                    details.append(f"missing bands: {', '.join(missing)}")
+                if unreadable:
+                    details.append(f"unreadable headers: {', '.join(unreadable)}")
                 logger.info(
-                    f"{calib_label}: existing calibrated frames lack WCS; re-calibrating"
+                    f"{calib_label}: calibrated frames incomplete/unreadable "
+                    f"({'; '.join(details)}); re-calibrating"
                 )
-            elif h.get("WCSMTHD", "") != args.wcs_method:
-                sidecar_dir = calib_dir / ".wcs"
-                all_have_sidecar = all(
-                    (sidecar_dir / f"{b}_{args.wcs_method}.wcs.fits").exists()
-                    for b in active_bands
-                )
-                if all_have_sidecar:
-                    logger.info(
-                        f"{calib_label}: WCS method changed from "
-                        f"'{h.get('WCSMTHD', '?')}' to '{args.wcs_method}'; "
-                        f"re-injecting from sidecar files"
-                    )
-                    band_files = read_filename_per_band(
-                        calibrated_files,
-                        args.bands,
-                        args.target_name,
-                        filter_aliases=INSTRUMENT_FILTER_ALIASES.get(calib_label),
-                    )
-                    for b, files in band_files.items():
-                        sp = sidecar_dir / f"{b}_{args.wcs_method}.wcs.fits"
-                        wcs = load_wcs_fits(sp)
-                        if wcs is None:
-                            logger.warning(
-                                f"  {calib_label}: sidecar {sp} unreadable; "
-                                f"re-calibrating"
-                            )
-                            need_calib = True
-                            break
-                        for fp in files:
-                            if not inject_wcs_into_file(
-                                fp, wcs, method=args.wcs_method
-                            ):
-                                logger.warning(
-                                    f"  {calib_label}: failed to inject WCS into {fp}; "
-                                    f"marking recalibration required"
-                                )
-                                need_calib = True
-                                break
-                        if need_calib:
-                            break
-                        logger.info(
-                            f"  {calib_label} [{b}]: injected WCS into "
-                            f"{len(files)} files"
+            elif no_wcs or wrong_method:
+                if _inject_wcs_from_sidecars(
+                    calib_label=calib_label,
+                    calib_dir=calib_dir,
+                    calibrated_files=calibrated_files,
+                    active_bands=active_bands,
+                    requested_bands=args.bands,
+                    target_name=args.target_name,
+                    wcs_method=args.wcs_method,
+                ):
+                    details = []
+                    if no_wcs:
+                        details.append(f"lacked usable WCS: {', '.join(no_wcs)}")
+                    if wrong_method:
+                        details.append(
+                            f"method changed to {args.wcs_method}: "
+                            f"{', '.join(wrong_method)}"
                         )
+                    logger.info(
+                        f"{calib_label}: reused cached sidecar WCS "
+                        f"({'; '.join(details)})"
+                    )
                 else:
                     need_calib = True
+                    sidecar_dir = calib_dir / ".wcs"
                     logger.info(
-                        f"{calib_label}: WCS method changed from "
-                        f"'{h.get('WCSMTHD', '?')}' to '{args.wcs_method}'; "
+                        f"{calib_label}: calibrated WCS needs repair "
+                        f"(no usable WCS: {', '.join(no_wcs) or 'none'}; "
+                        f"wrong method: {', '.join(wrong_method) or 'none'}); "
                         f"re-calibrating (sidecar files: "
                         f"{sum(1 for b in active_bands if (sidecar_dir / f'{b}_{args.wcs_method}.wcs.fits').exists())}"
                         f"/{len(active_bands)} bands)"

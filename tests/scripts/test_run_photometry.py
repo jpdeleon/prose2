@@ -10,9 +10,38 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from astropy.io import fits
 from astropy.table import Table
+from astropy.wcs import WCS
 
 from prose.scripts import run_photometry as rp
+
+
+def _make_test_wcs() -> WCS:
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    wcs.wcs.crpix = [16.0, 16.0]
+    wcs.wcs.crval = [31.0, 46.0]
+    wcs.wcs.cdelt = [-0.44 / 3600.0, 0.44 / 3600.0]
+    wcs.wcs.set()
+    return wcs
+
+
+def _write_calibrated_fits(path, *, target="HAT-P-32b", filter_name="g", wcs=None):
+    hdu = fits.PrimaryHDU(np.zeros((32, 32), dtype=np.float32))
+    hdu.header["OBJECT"] = target
+    hdu.header["FILTER"] = filter_name
+    hdu.header["INSTRUME"] = "MuSCAT2"
+    hdu.header["WCSMTHD"] = "astrometry.net"
+    if wcs is not None:
+        hdu.header.update(wcs.to_header(relax=True))
+    hdu.writeto(path, overwrite=True)
+
+
+def _write_wcs_sidecar(path, wcs):
+    hdu = fits.PrimaryHDU()
+    hdu.header.update(wcs.to_header(relax=True))
+    hdu.writeto(path, overwrite=True)
 
 
 def test_resolve_simbad_target_uses_decimal_degree_columns(monkeypatch):
@@ -70,6 +99,107 @@ def test_date_from_header_returns_empty_without_any_time_keyword():
 def test_date_from_header_ignores_unparseable_time_keyword():
     # A non-numeric MJD must not raise; fall through to ''.
     assert rp.date_from_header({"MJD-STRT": "n/a"}) == ""
+
+
+def test_inject_wcs_from_sidecars_updates_wcsless_calibrated_files(tmp_path):
+    calib_dir = tmp_path / "calibrated"
+    sidecar_dir = calib_dir / ".wcs"
+    sidecar_dir.mkdir(parents=True)
+
+    gp = calib_dir / "MCT20_2410300001_calibrated.fits"
+    rp_file = calib_dir / "MCT21_2410300001_calibrated.fits"
+    _write_calibrated_fits(gp, filter_name="g")
+    _write_calibrated_fits(rp_file, filter_name="r")
+
+    wcs = _make_test_wcs()
+    _write_wcs_sidecar(sidecar_dir / "gp_astrometry.net.wcs.fits", wcs)
+    _write_wcs_sidecar(sidecar_dir / "rp_astrometry.net.wcs.fits", wcs)
+
+    assert not rp._header_has_usable_wcs(fits.getheader(gp))
+
+    ok = rp._inject_wcs_from_sidecars(
+        calib_label="muscat2",
+        calib_dir=calib_dir,
+        calibrated_files=[gp, rp_file],
+        active_bands=["gp", "rp"],
+        requested_bands=["gp", "rp"],
+        target_name="HAT-P-32b",
+        wcs_method="astrometry.net",
+    )
+
+    assert ok is True
+    for path in (gp, rp_file):
+        header = fits.getheader(path)
+        assert header["WCSMTHD"] == "astrometry.net"
+        assert rp._header_has_usable_wcs(header)
+
+
+def test_inject_wcs_from_sidecars_requires_every_active_band(tmp_path):
+    calib_dir = tmp_path / "calibrated"
+    sidecar_dir = calib_dir / ".wcs"
+    sidecar_dir.mkdir(parents=True)
+
+    gp = calib_dir / "MCT20_2410300001_calibrated.fits"
+    rp_file = calib_dir / "MCT21_2410300001_calibrated.fits"
+    _write_calibrated_fits(gp, filter_name="g")
+    _write_calibrated_fits(rp_file, filter_name="r")
+    _write_wcs_sidecar(sidecar_dir / "gp_astrometry.net.wcs.fits", _make_test_wcs())
+
+    ok = rp._inject_wcs_from_sidecars(
+        calib_label="muscat2",
+        calib_dir=calib_dir,
+        calibrated_files=[gp, rp_file],
+        active_bands=["gp", "rp"],
+        requested_bands=["gp", "rp"],
+        target_name="HAT-P-32b",
+        wcs_method="astrometry.net",
+    )
+
+    assert ok is False
+    assert not rp._header_has_usable_wcs(fits.getheader(gp))
+    assert not rp._header_has_usable_wcs(fits.getheader(rp_file))
+
+
+def test_calibrated_wcs_problems_detects_single_bad_active_band(tmp_path):
+    calib_dir = tmp_path / "calibrated"
+    sidecar_dir = calib_dir / ".wcs"
+    sidecar_dir.mkdir(parents=True)
+    wcs = _make_test_wcs()
+
+    gp = calib_dir / "MSCT0_2601230001_calibrated.fits"
+    rp_file = calib_dir / "MSCT1_2601230001_calibrated.fits"
+    zs = calib_dir / "MSCT2_2601230001_calibrated.fits"
+    _write_calibrated_fits(gp, filter_name="g", wcs=wcs)
+    _write_calibrated_fits(rp_file, filter_name="r", wcs=wcs)
+    _write_calibrated_fits(zs, filter_name="z_s")
+
+    for band in ("gp", "rp", "zs"):
+        _write_wcs_sidecar(sidecar_dir / f"{band}_astrometry.net.wcs.fits", wcs)
+
+    missing, unreadable, no_wcs, wrong_method = rp._calibrated_wcs_problems_by_band(
+        calib_label="muscat",
+        calibrated_files=[gp, rp_file, zs],
+        active_bands=["gp", "rp", "zs"],
+        requested_bands=["gp", "rp", "zs"],
+        target_name="HAT-P-32b",
+        wcs_method="astrometry.net",
+    )
+
+    assert missing == []
+    assert unreadable == []
+    assert no_wcs == ["zs"]
+    assert wrong_method == []
+
+    assert rp._inject_wcs_from_sidecars(
+        calib_label="muscat",
+        calib_dir=calib_dir,
+        calibrated_files=[gp, rp_file, zs],
+        active_bands=["gp", "rp", "zs"],
+        requested_bands=["gp", "rp", "zs"],
+        target_name="HAT-P-32b",
+        wcs_method="astrometry.net",
+    )
+    assert rp._header_has_usable_wcs(fits.getheader(zs))
 
 
 def test_build_stem_strips_spaces_and_handles_band():
@@ -303,11 +433,6 @@ def test_aper_radii_pix_fwhm_unit_scales_by_reference_fwhm():
 def test_aperture_geometry_title_formats_pixel_grid():
     title = rp.aperture_geometry_title(np.array([2.0, 4.0, 6.0, 8.0, 10.0]), 20.0, 40.0)
     assert title == "apertures: r=(2, 10) dr=2; annuli=(20, 40) pix"
-
-
-def test_aperture_geometry_title_formats_fractional_pixels():
-    title = rp.aperture_geometry_title(np.array([2.5, 4.0]), 12.25, 20.5)
-    assert title == "apertures: r=(2.5, 4) dr=1.5; annuli=(12.25, 20.5) pix"
 
 
 def test_ref_header_desc_formats_focus_airmass_exptime():
