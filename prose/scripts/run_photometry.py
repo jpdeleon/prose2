@@ -224,6 +224,7 @@ BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 # A tolerance of 5 px comfortably covers residual alignment offsets while
 # avoiding spurious matches in crowded fields.
 _CROSSMATCH_TOLERANCE_PX = 5.0
+_TARGET_PIXEL_INFERENCE_TOLERANCE_PX = 25.0
 
 # GJD->BJD sanity bound (light travel time should be well under this)
 MAX_TIME_OFFSET_MIN = 2 * 8.4
@@ -533,14 +534,14 @@ def aper_radii_pix(r: dict):
     if r.get("scale"):
         fwhm = float(r["ref"].fwhm)
         return radii * fwhm, rin * fwhm, rout * fwhm
-    return int(radii), int(rin), int(rout)
+    return radii, rin, rout
 
 
 def _format_pix_value(value: float) -> str:
     value = float(value)
     if np.isclose(value, round(value), rtol=0.0, atol=1e-6):
         return str(int(round(value)))
-    return f"{value:.2f}".rstrip("0").rstrip(".")
+    return f"{value:.0f}".rstrip("0").rstrip(".")
 
 
 def aperture_geometry_title(radii_pix, rin_pix: float, rout_pix: float) -> str:
@@ -788,6 +789,7 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
         is_valid = False
         if df is not None and len(df) and target_coord is not None:
             from astropy.coordinates import SkyCoord
+
             gaia_coords = SkyCoord(df.ra.values, df.dec.values, unit="deg")
             min_sep = float(np.min(target_coord.separation(gaia_coords).arcsec))
             if min_sep <= 15.0:
@@ -883,6 +885,63 @@ def _finite_world_to_pixel(wcs, coord: SkyCoord | None) -> tuple[float, float] |
 
 def _wcs_can_project(wcs, coord: SkyCoord | None) -> bool:
     return _finite_world_to_pixel(wcs, coord) is not None
+
+
+def _reference_file_has_usable_wcs(ref_file, target_coord: SkyCoord | None) -> bool:
+    if target_coord is None:
+        return False
+    try:
+        ref = FITSImage(ref_file)
+        return _wcs_can_project(getattr(ref, "wcs", None), target_coord)
+    except Exception as exc:  # noqa: BLE001 - WCS preflight must not fail the run
+        logger.warning(f"{Path(ref_file).name}: WCS preflight failed ({exc})")
+        return False
+
+
+def _order_bands_for_target_id_inference(
+    ordered_bands: list[str], ref_wcs_ok_by_band: dict[str, bool]
+) -> list[str]:
+    if not ref_wcs_ok_by_band:
+        return ordered_bands
+    if not any(ref_wcs_ok_by_band.values()) or all(ref_wcs_ok_by_band.values()):
+        return ordered_bands
+    return [band for band in ordered_bands if ref_wcs_ok_by_band.get(band, False)] + [
+        band for band in ordered_bands if not ref_wcs_ok_by_band.get(band, False)
+    ]
+
+
+def _nearest_source_index(
+    ref,
+    pixel_position: np.ndarray | tuple[float, float] | list[float],
+    max_distance: float = _TARGET_PIXEL_INFERENCE_TOLERANCE_PX,
+) -> tuple[int, float]:
+    positions = np.array([s.coords for s in ref.sources], dtype=float)
+    if len(positions) == 0:
+        raise ValueError("cannot infer target ID: reference has no detected sources")
+    target_position = np.asarray(pixel_position, dtype=float)
+    distances = np.linalg.norm(positions - target_position, axis=1)
+    nearest = int(np.argmin(distances))
+    distance = float(distances[nearest])
+    if distance > max_distance:
+        raise ValueError(
+            f"inferred target position ({target_position[0]:.1f}, {target_position[1]:.1f}) "
+            f"is {distance:.1f} px from the nearest detected source "
+            f"(> {max_distance:.1f} px)"
+        )
+    return nearest, distance
+
+
+def _target_pixel_override_for_band(
+    manual_target_index: int | None,
+    self_reference: bool,
+    inferred_target_positions: list[np.ndarray],
+    ref_has_usable_wcs: bool,
+) -> np.ndarray | None:
+    if manual_target_index is not None:
+        return None
+    if self_reference and inferred_target_positions and not ref_has_usable_wcs:
+        return np.median(np.asarray(inferred_target_positions, dtype=float), axis=0)
+    return None
 
 
 def _image_center_xy(ref: FITSImage) -> tuple[float, float]:
@@ -1084,6 +1143,7 @@ def build_reference(
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
     target_index_override: int | None = None,
+    target_pixel_override: np.ndarray | tuple[float, float] | None = None,
     min_area: int = MIN_STAR_AREA,
     plot_gaia_sources: bool = False,
     edge_margin: int | None = EDGE_MARGIN_PIX,
@@ -1101,6 +1161,8 @@ def build_reference(
     (``False``) vs FWHM (``True``) units for the photometry blocks.
 
     If ``target_index_override`` is given, it bypasses the Gaia cross-match.
+    If ``target_pixel_override`` is given, the nearest detected source to that
+    pixel coordinate is used as the target.
 
     When ``plot_gaia_sources`` is set and the reference WCS can project the
     target coordinate, the Gaia catalog around the target is fetched (or reused
@@ -1146,6 +1208,7 @@ def build_reference(
     match_found = False
     if (
         target_index_override is None
+        and target_pixel_override is None
         and target_coord is not None
         and ref.wcs is not None
     ):
@@ -1177,14 +1240,22 @@ def build_reference(
             )
 
     defaulted_to_brightest = False
-    if target_index_override is None:
+    if target_index_override is None and target_pixel_override is None:
         defaulted_to_brightest = not match_found
 
-    target_index = (
-        target_index_override
-        if target_index_override is not None
-        else find_target_index(ref, target_coord)
-    )
+    if target_index_override is not None:
+        target_index = target_index_override
+    elif target_pixel_override is not None:
+        target_index, target_pixel_distance = _nearest_source_index(
+            ref, target_pixel_override
+        )
+        logger.info(
+            f"inferred target idx {target_index} from pixel position "
+            f"({float(target_pixel_override[0]):.1f}, {float(target_pixel_override[1]):.1f}); "
+            f"nearest source distance {target_pixel_distance:.1f} px"
+        )
+    else:
+        target_index = find_target_index(ref, target_coord)
     # Validate against the actual number of kept sources (which may be fewer
     # than max_num_stars in sparse fields). An out-of-range target index would
     # otherwise surface as a cryptic IndexError deep inside auto_diff_1d.
@@ -1388,6 +1459,7 @@ def run_band(
     cutout_size: int = CUTOUT_SIZE,
     n_stars_align: int | None = None,
     target_index_override: int | None = None,
+    target_pixel_override: np.ndarray | tuple[float, float] | None = None,
     cids: list[int] | None = None,
     avoid_cids: list[int] | None = None,
     ref_source_positions: np.ndarray | None = None,
@@ -1428,6 +1500,7 @@ def run_band(
         min_star_separation=min_star_separation,
         cutout_size=cutout_size,
         target_index_override=target_index_override,
+        target_pixel_override=target_pixel_override,
         min_area=min_area,
         plot_gaia_sources=plot_gaia_sources,
         edge_margin=edge_margin,
@@ -1443,6 +1516,7 @@ def run_band(
         this_positions = np.array([s.coords for s in ref.sources])
         if len(this_positions) > 0:
             from scipy.spatial import KDTree
+
             tree_ref = KDTree(ref_source_positions)
             ref_band_star_ids = []
             for i, pos in enumerate(this_positions):
@@ -2131,7 +2205,7 @@ def plot_ref_image(
         )
     avoided = set(avoid_cids or [])
     plotted_source_ids = [i for i in range(len(ref.sources)) if i not in avoided]
-    
+
     sources_to_plot = ref.sources[plotted_source_ids]
     if ref_band_star_ids is not None:
         sources_to_plot = sources_to_plot.copy()
@@ -2626,7 +2700,11 @@ def plot_cutouts(
         band = r["band"]
     target_id = r.get("target_index")
     ref_band_star_ids = r.get("ref_band_star_ids")
-    if ref_band_star_ids is not None and target_id is not None and target_id < len(ref_band_star_ids):
+    if (
+        ref_band_star_ids is not None
+        and target_id is not None
+        and target_id < len(ref_band_star_ids)
+    ):
         mapped_id = ref_band_star_ids[target_id]
         if mapped_id != -1:
             target_id = mapped_id
@@ -2783,7 +2861,9 @@ def plot_cutouts(
             mapped_id = ref_band_star_ids[idx]
             if mapped_id != -1:
                 star_id_label = mapped_id
-        ax[i].set_title(f"Star {star_id_label}{is_target}\npeak={peak:,.0f}", color=tcolor)
+        ax[i].set_title(
+            f"Star {star_id_label}{is_target}\npeak={peak:,.0f}", color=tcolor
+        )
 
     for j in range(ncutouts, len(ax)):
         ax[j].axis("off")
@@ -3099,7 +3179,9 @@ def load_bad_pixel_map(
 
     if source.lower() == "header":
         if ref_image is None:
-            logger.warning("bad pixel map source='header' but no reference image provided")
+            logger.warning(
+                "bad pixel map source='header' but no reference image provided"
+            )
             return None
         try:
             header = ref_image.header
@@ -4019,6 +4101,8 @@ def main(argv=None) -> int:
     band_results = {}
     failed_bands = []
     ref_source_positions: np.ndarray | None = None
+    inferred_target_positions: list[np.ndarray] = []
+    inferred_target_bands: list[str] = []
 
     # Load bad pixel map if provided
     bad_pixel_map = None
@@ -4031,9 +4115,12 @@ def main(argv=None) -> int:
                 first_file = sciences[first_band][0]
                 ref_image = FITSImage(first_file)
             except Exception as e:
-                logger.warning(f"could not load reference image for header extraction: {e}")
+                logger.warning(
+                    f"could not load reference image for header extraction: {e}"
+                )
         bad_pixel_map = load_bad_pixel_map(args.bad_pixel_map, ref_image=ref_image)
 
+    selected_ref_files = {}
     for band in ordered_bands:
         band_files = sciences[band]
         if self_reference:
@@ -4045,11 +4132,43 @@ def main(argv=None) -> int:
         else:
             refid = default_refid
         refid = min(refid, len(ref_files) - 1)
+        selected_ref_files[band] = ref_files[refid]
+
+    ref_wcs_ok_by_band: dict[str, bool] = {}
+    if self_reference and args.tID is None and target_coord is not None:
+        ref_wcs_ok_by_band = {
+            band: _reference_file_has_usable_wcs(selected_ref_files[band], target_coord)
+            for band in ordered_bands
+        }
+        inferred_order = _order_bands_for_target_id_inference(
+            ordered_bands, ref_wcs_ok_by_band
+        )
+        if inferred_order != ordered_bands:
+            ordered_bands = inferred_order
+            logger.info(
+                "target ID inference: processing WCS-solved bands first "
+                f"({', '.join(b for b in ordered_bands if ref_wcs_ok_by_band.get(b, False))})"
+            )
+
+    for band in ordered_bands:
+        band_files = sciences[band]
+        target_pixel_override = _target_pixel_override_for_band(
+            args.tID,
+            self_reference,
+            inferred_target_positions,
+            ref_wcs_ok_by_band.get(band, True),
+        )
+        if target_pixel_override is not None:
+            logger.info(
+                f"[{band}] reference has no usable WCS; inferring target ID near "
+                f"pixel ({target_pixel_override[0]:.1f}, {target_pixel_override[1]:.1f}) "
+                f"from {','.join(inferred_target_bands)}-band target position(s)"
+            )
         try:
             res = run_band(
                 band,
                 band_files,
-                ref_files[refid],
+                selected_ref_files[band],
                 target_coord,
                 aper_radii=args.aper_radii,
                 rin=arin,
@@ -4061,6 +4180,7 @@ def main(argv=None) -> int:
                 cutout_size=args.cutout_size,
                 n_stars_align=args.n_stars_align,
                 target_index_override=args.tID,
+                target_pixel_override=target_pixel_override,
                 cids=args.cID,
                 avoid_cids=args.avoid_cids,
                 ref_source_positions=ref_source_positions,
@@ -4081,6 +4201,42 @@ def main(argv=None) -> int:
             failed_bands.append(band)
             continue
         band_results[band] = res
+        if (
+            args.tID is None
+            and self_reference
+            and ref_wcs_ok_by_band.get(band, False)
+            and not res.get("defaulted_to_brightest", False)
+        ):
+            target_pos = np.asarray(
+                res["ref"].sources[int(res["target_index"])].coords, dtype=float
+            )
+            if not inferred_target_positions:
+                inferred_target_positions.append(target_pos)
+                inferred_target_bands.append(band)
+                logger.info(
+                    f"[{band}] target pixel ({target_pos[0]:.1f}, {target_pos[1]:.1f}) available "
+                    "for bands without usable WCS"
+                )
+            else:
+                inferred_pixel = np.median(
+                    np.asarray(inferred_target_positions, dtype=float), axis=0
+                )
+                distance = float(np.linalg.norm(target_pos - inferred_pixel))
+                if distance > _TARGET_PIXEL_INFERENCE_TOLERANCE_PX:
+                    logger.warning(
+                        f"[{band}] WCS-derived target pixel "
+                        f"({target_pos[0]:.1f}, {target_pos[1]:.1f}) is "
+                        f"{distance:.1f} px from previous inferred target position "
+                        f"({inferred_pixel[0]:.1f}, {inferred_pixel[1]:.1f}); "
+                        "excluding it from no-WCS inference"
+                    )
+                else:
+                    inferred_target_positions.append(target_pos)
+                    inferred_target_bands.append(band)
+                    logger.info(
+                        f"[{band}] target pixel ({target_pos[0]:.1f}, {target_pos[1]:.1f}) "
+                        "added for no-WCS inference"
+                    )
         if not self_reference and band == ref_band:
             ref_source_positions = np.array([s.coords for s in res["ref"].sources])
 
@@ -4236,7 +4392,9 @@ def main(argv=None) -> int:
             # Fallback: if the full-image Gaia query failed, attempt a target-centered query
             # with a small radius (e.g. 3 arcminutes) and a tight limit (e.g. 1000)
             # to retrieve nearby stars for plotting/contamination analysis.
-            logger.info("Attempting small-region fallback Gaia query around target coordinates...")
+            logger.info(
+                "Attempting small-region fallback Gaia query around target coordinates..."
+            )
             for r in band_results.values():
                 if getattr(r.get("ref"), "wcs", None) is not None:
                     ref = r["ref"]
@@ -4246,12 +4404,19 @@ def main(argv=None) -> int:
             if ref is not None and target_coord is not None:
                 try:
                     from prose.utils import gaia_query
-                    fallback_radius_deg = 180.0 / 3600.0  # 180 arcseconds = 3 arcminutes
-                    table = gaia_query(target_coord, fallback_radius_deg * 2, "*", limit=1000)
+
+                    fallback_radius_deg = (
+                        180.0 / 3600.0
+                    )  # 180 arcseconds = 3 arcminutes
+                    table = gaia_query(
+                        target_coord, fallback_radius_deg * 2, "*", limit=1000
+                    )
                     if table is not None and len(table) > 0:
                         table.rename_column("DESIGNATION", "id")
                         gaia_df = table.to_pandas()
-                        logger.info(f"Fallback small-region Gaia query succeeded: {len(gaia_df)} rows")
+                        logger.info(
+                            f"Fallback small-region Gaia query succeeded: {len(gaia_df)} rows"
+                        )
                 except Exception as exc:
                     logger.warning(f"Fallback Gaia query failed: {exc}")
 

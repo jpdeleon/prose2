@@ -98,13 +98,12 @@ def test_build_stem_strips_spaces_and_handles_band():
         == "TOI6715_sinistro_gp_250416"
     )
     # Sinistro without site
-    assert (
-        rp.build_stem("TOI 6715", "sinistro", "250416")
-        == "TOI6715_sinistro_250416"
-    )
+    assert rp.build_stem("TOI 6715", "sinistro", "250416") == "TOI6715_sinistro_250416"
     # Sinistro with confmode full
     assert (
-        rp.build_stem("TOI 6715", "sinistro", "250416", site="lsc", confmode="full_frame")
+        rp.build_stem(
+            "TOI 6715", "sinistro", "250416", site="lsc", confmode="full_frame"
+        )
         == "TOI6715_sinistro_lsc_250416_full"
     )
     assert (
@@ -312,7 +311,9 @@ def test_aperture_geometry_title_formats_fractional_pixels():
 
 
 def test_ref_header_desc_formats_focus_airmass_exptime():
-    ref = SimpleNamespace(header={"FOCPOSN": "123.45", "AIRMASS": "1.23", "EXPTIME": "60"})
+    ref = SimpleNamespace(
+        header={"FOCPOSN": "123.45", "AIRMASS": "1.23", "EXPTIME": "60"}
+    )
     assert (
         rp.ref_header_desc(ref, "cutouts")
         == "cutouts (focus=123.5 airmass=1.2 exptime=60s)"
@@ -328,7 +329,9 @@ def test_ref_header_desc_handles_missing_or_bad_values():
 
 
 def test_ref_header_desc_includes_extra_details_before_header_values():
-    ref = SimpleNamespace(header={"FOCPOSN": "123.45", "AIRMASS": "1.23", "EXPTIME": "60"})
+    ref = SimpleNamespace(
+        header={"FOCPOSN": "123.45", "AIRMASS": "1.23", "EXPTIME": "60"}
+    )
     assert (
         rp.ref_header_desc(ref, "cutouts", ["r=20 pix"])
         == "cutouts (r=20 pix focus=123.5 airmass=1.2 exptime=60s)"
@@ -745,15 +748,18 @@ def test_plot_ref_image_labels_defaulted_target(tmp_path, monkeypatch):
     # Mock ax.annotate to capture the label
     annotations = []
     import matplotlib.pyplot as plt
+
     original_annotate = plt.Axes.annotate
+
     def mock_annotate(self, text, xy, *args, **kwargs):
         annotations.append(text)
         return original_annotate(self, text, xy, *args, **kwargs)
+
     monkeypatch.setattr(plt.Axes, "annotate", mock_annotate)
 
     rp.plot_ref_image(r1, target_coord, "muscat4", out1)
     assert "Target" in annotations
-    
+
     # Test case 2: defaulted_to_brightest=True -> should annotate "Target???"
     annotations.clear()
     r2 = {"ref": ref, "band": "gp", "target_index": 0, "defaulted_to_brightest": True}
@@ -767,11 +773,13 @@ def test_plot_ref_image_simbad_eclbin_color(tmp_path, monkeypatch):
     import pandas as pd
 
     # Mock simbad data containing both a regular object ("V*") and an eclipsing binary ("EclBin")
-    simbad_df = pd.DataFrame({
-        "RA": ["00 00 00.5", "00 00 01.0"],
-        "DEC": ["+00 00 05", "+00 00 10"],
-        "OTYPE": ["V*", "EclBin"],
-    })
+    simbad_df = pd.DataFrame(
+        {
+            "RA": ["00 00 00.5", "00 00 01.0"],
+            "DEC": ["+00 00 05", "+00 00 10"],
+            "OTYPE": ["V*", "EclBin"],
+        }
+    )
     monkeypatch.setattr(rp, "get_simbad_data", lambda *a, **kw: simbad_df)
 
     w = WCS(naxis=2)
@@ -805,8 +813,9 @@ def test_plot_ref_image_simbad_eclbin_color(tmp_path, monkeypatch):
     # Capture colors passed to ax.scatter and ax.annotate
     scatter_colors = []
     annotate_colors = []
-    
+
     import matplotlib.pyplot as plt
+
     original_scatter = plt.Axes.scatter
     original_annotate = plt.Axes.annotate
 
@@ -1237,28 +1246,119 @@ def test_find_target_index_falls_back_when_over_5_arcsec(monkeypatch):
             self.telescope = self
             self.pixel_scale = 0.267
             self.header = {}
+
         def pixel_to_world(self, x, y):
             from astropy.coordinates import SkyCoord
+
             return SkyCoord([10.0], [10.0], unit="deg")
 
     from astropy.coordinates import SkyCoord
+
     ref = FakeRef()
     target_coord = SkyCoord(0.0, 0.0, unit="deg")
     assert rp.find_target_index(ref, target_coord) == 0
 
 
+def test_order_bands_for_target_id_inference_delays_no_wcs_bands():
+    bands = ["gp", "rp", "ip", "zs"]
+    ref_wcs_ok = {"gp": False, "rp": True, "ip": True, "zs": True}
+
+    assert rp._order_bands_for_target_id_inference(bands, ref_wcs_ok) == [
+        "rp",
+        "ip",
+        "zs",
+        "gp",
+    ]
+
+
+def test_order_bands_for_target_id_inference_preserves_uniform_wcs_state():
+    bands = ["gp", "rp", "ip", "zs"]
+
+    assert (
+        rp._order_bands_for_target_id_inference(bands, {band: True for band in bands})
+        == bands
+    )
+    assert (
+        rp._order_bands_for_target_id_inference(bands, {band: False for band in bands})
+        == bands
+    )
+
+
+def test_target_pixel_override_for_band_uses_inferred_position_only_without_wcs():
+    inferred = [np.array([10.0, 20.0]), np.array([12.0, 22.0])]
+
+    np.testing.assert_allclose(
+        rp._target_pixel_override_for_band(None, True, inferred, False),
+        np.array([11.0, 21.0]),
+    )
+    assert rp._target_pixel_override_for_band(None, True, inferred, True) is None
+    assert rp._target_pixel_override_for_band(None, False, inferred, False) is None
+    assert rp._target_pixel_override_for_band(2, True, inferred, False) is None
+
+
+def test_build_reference_target_pixel_override_uses_nearest_source(
+    tmp_path, monkeypatch
+):
+    """A no-WCS band should infer target ID by pixel proximity, not source ID."""
+    called = False
+
+    def _never_called(*a, **kw):
+        nonlocal called
+        called = True
+        raise AssertionError("find_target_index should not run for pixel override")
+
+    monkeypatch.setattr(rp, "find_target_index", _never_called)
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    result = rp.build_reference(
+        fpath,
+        SkyCoord(0, 0, unit="deg"),
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_pixel_override=np.array([9.7, 10.2]),
+    )
+
+    assert result["target_index"] == 1
+    assert result["defaulted_to_brightest"] is False
+    assert not called
+
+
+def test_build_reference_target_pixel_override_rejects_far_source(
+    tmp_path, monkeypatch
+):
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    with pytest.raises(ValueError, match="nearest detected source"):
+        rp.build_reference(
+            fpath,
+            SkyCoord(0, 0, unit="deg"),
+            aper_radii=np.array([3.0, 4.0, 5.0]),
+            rin=8.0,
+            rout=12.0,
+            target_pixel_override=np.array([200.0, 200.0]),
+        )
+
+
 def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkeypatch):
     fpath = _write_minimal_fits(tmp_path)
     from astropy.coordinates import SkyCoord
+
     coord = SkyCoord(0, 0, unit="deg")
-    
+
     class FakeImage:
         def __init__(self):
             self.sources = [_FakeSrc([5, 5]), _FakeSrc([10, 10])]
             self.shape = (20, 20)
             self.telescope = self
             self.jd_scale = "jd"
-            
+
     reference = {
         "ref": FakeImage(),
         "target_index": 1,
@@ -1268,13 +1368,14 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
         "scale": False,
         "edge_cids": [0],
     }
-    
+
     monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
-    
+
     def mock_photometry_sequence(ref, aper_radii, rin, rout, **kwargs):
         class MockPhot:
             def run(self, files):
                 pass
+
             @property
             def data(self):
                 class FakeData:
@@ -1287,20 +1388,27 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
 
                             def copy(self):
                                 return self
+
                             def mask_stars(self, mask):
                                 return self
+
                             def sigma_clipping_data(self, **kw):
                                 return self
+
                             def diff(self, comps):
                                 class FakeDiff:
                                     def __init__(self):
                                         self.time = np.arange(5)
+
                                 return FakeDiff()
+
                             def autodiff(self, nan_imputation_method="linear"):
                                 class FakeDiff:
                                     def __init__(self):
                                         self.time = np.arange(5)
+
                                 return FakeDiff()
+
                             @property
                             def fluxes(self):
                                 return self._fluxes
@@ -1312,12 +1420,15 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
                             @property
                             def time(self):
                                 return self._time
+
                         return FakeFluxes()
+
                 return [FakeData()]
+
         return MockPhot()
-        
+
     monkeypatch.setattr(rp, "photometry_sequence", mock_photometry_sequence)
-    
+
     result = rp.run_band(
         band="gp",
         files=[str(fpath)],
@@ -1325,7 +1436,7 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
         target_coord=coord,
         edge_margin=6,
     )
-    
+
     assert result["avoid_cids"] is None or 0 not in result["avoid_cids"]
 
 
@@ -1380,8 +1491,11 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
 
         return MockPhot()
 
-    def mock_diff(fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"):
+    def mock_diff(
+        fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"
+    ):
         captured["diff_target_index"] = target_index
+
         class FakeDiff:
             def __init__(self):
                 self.time = np.arange(4, dtype=float)
@@ -1455,9 +1569,12 @@ def test_run_band_remaps_cids_and_avoid_cids_from_reference_band(tmp_path, monke
 
         return MockPhot()
 
-    def mock_diff(fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"):
+    def mock_diff(
+        fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"
+    ):
         captured["diff_cids"] = cids
         captured["diff_avoid_cids"] = avoid_cids
+
         class FakeDiff:
             def __init__(self):
                 self.time = np.arange(4, dtype=float)
@@ -1484,7 +1601,9 @@ def test_run_band_remaps_cids_and_avoid_cids_from_reference_band(tmp_path, monke
     assert result["ref_band_star_ids"] == [1, 0]
 
 
-def _write_sinistro_fits(tmp_path, name, site_id, filter_name="gp", confmode="central_2k_2x2"):
+def _write_sinistro_fits(
+    tmp_path, name, site_id, filter_name="gp", confmode="central_2k_2x2"
+):
     from astropy.io import fits
     from astropy.wcs import WCS
 
@@ -1514,14 +1633,18 @@ def _write_sinistro_fits(tmp_path, name, site_id, filter_name="gp", confmode="ce
 def test_main_site_argument_rejected_for_non_sinistro(tmp_path):
     # Instrument is muscat4 (default from _write_minimal_fits: TELESCOP="2m0a", SITEID="coj")
     _write_minimal_fits(tmp_path, "test.fits")
-    
+
     argv = [
-        "--target_name", "test",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--site", "lsc"
+        "--target_name",
+        "test",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--site",
+        "lsc",
     ]
-    
+
     ret = rp.main(argv)
     assert ret == 1
 
@@ -1529,14 +1652,18 @@ def test_main_site_argument_rejected_for_non_sinistro(tmp_path):
 def test_main_site_argument_invalid_site_rejected_for_sinistro(tmp_path):
     # Instrument is sinistro, SITEID is lsc
     _write_sinistro_fits(tmp_path, "test.fits", "lsc")
-    
+
     argv = [
-        "--target_name", "TOI-6715",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--site", "abc"
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--site",
+        "abc",
     ]
-    
+
     ret = rp.main(argv)
     assert ret == 1
 
@@ -1544,14 +1671,18 @@ def test_main_site_argument_invalid_site_rejected_for_sinistro(tmp_path):
 def test_main_site_filtering_no_matching_frames(tmp_path):
     # Instrument is sinistro, SITEID is lsc
     _write_sinistro_fits(tmp_path, "test.fits", "lsc")
-    
+
     argv = [
-        "--target_name", "TOI-6715",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--site", "cpt"
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--site",
+        "cpt",
     ]
-    
+
     ret = rp.main(argv)
     assert ret == 1
 
@@ -1559,28 +1690,36 @@ def test_main_site_filtering_no_matching_frames(tmp_path):
 def test_main_mode_argument_rejected_for_non_sinistro(tmp_path):
     # Instrument is muscat4
     _write_minimal_fits(tmp_path, "test.fits")
-    
+
     argv = [
-        "--target_name", "test",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--mode", "central_2k_2x2"
+        "--target_name",
+        "test",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--mode",
+        "central_2k_2x2",
     ]
-    
+
     ret = rp.main(argv)
     assert ret == 1
 
 
 def test_main_mode_argument_invalid_mode_rejected_for_sinistro(tmp_path):
     _write_sinistro_fits(tmp_path, "test.fits", "lsc")
-    
+
     argv = [
-        "--target_name", "TOI-6715",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--mode", "invalid_mode"
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--mode",
+        "invalid_mode",
     ]
-    
+
     with pytest.raises(SystemExit):
         rp.main(argv)
 
@@ -1588,22 +1727,28 @@ def test_main_mode_argument_invalid_mode_rejected_for_sinistro(tmp_path):
 def test_main_mode_filtering_no_matching_frames(tmp_path):
     # Instrument is sinistro, CONFMODE is central_2k_2x2
     _write_sinistro_fits(tmp_path, "test.fits", "lsc", confmode="central_2k_2x2")
-    
+
     argv = [
-        "--target_name", "TOI-6715",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--mode", "full_frame"
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--mode",
+        "full_frame",
     ]
-    
+
     with pytest.raises(SystemExit):
         rp.main(argv)
 
 
 def test_main_mode_filtering_checks_obslog_first(tmp_path, monkeypatch, caplog):
     # FITS header has CONFMODE = central_2k_2x2
-    fpath = _write_sinistro_fits(tmp_path, "test.fits", "lsc", confmode="central_2k_2x2")
-    
+    fpath = _write_sinistro_fits(
+        tmp_path, "test.fits", "lsc", confmode="central_2k_2x2"
+    )
+
     # Mock frames_from_obslog to return confmode = full_frame
     def mock_frames_from_obslog(data_dir, instrument=None):
         return [
@@ -1614,27 +1759,34 @@ def test_main_mode_filtering_checks_obslog_first(tmp_path, monkeypatch, caplog):
                 "exposure": 1.0,
                 "ccd": 1,
                 "path": str(fpath),
-                "confmode": "full_frame"
+                "confmode": "full_frame",
             }
         ]
+
     monkeypatch.setattr(rp, "frames_from_obslog", mock_frames_from_obslog)
-    
+
     # Request mode: central_2k_2x2 (which matches the header, but not the obslog)
     argv = [
-        "--target_name", "TOI-6715",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--mode", "central_2k_2x2"
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--mode",
+        "central_2k_2x2",
     ]
-    
+
     with pytest.raises(SystemExit):
         rp.main(argv)
 
 
 def test_main_mode_filtering_fallback_to_header(tmp_path, monkeypatch, caplog):
     # FITS header has CONFMODE = central_2k_2x2
-    fpath = _write_sinistro_fits(tmp_path, "test.fits", "lsc", confmode="central_2k_2x2")
-    
+    fpath = _write_sinistro_fits(
+        tmp_path, "test.fits", "lsc", confmode="central_2k_2x2"
+    )
+
     # Mock frames_from_obslog to return record WITHOUT confmode
     def mock_frames_from_obslog(data_dir, instrument=None):
         return [
@@ -1644,38 +1796,48 @@ def test_main_mode_filtering_fallback_to_header(tmp_path, monkeypatch, caplog):
                 "filter": "gp",
                 "exposure": 1.0,
                 "ccd": 1,
-                "path": str(fpath)
+                "path": str(fpath),
             }
         ]
+
     monkeypatch.setattr(rp, "frames_from_obslog", mock_frames_from_obslog)
-    
+
     # Request mode: central_2k_2x2 (which matches the header)
     argv = [
-        "--target_name", "TOI-6715",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--mode", "central_2k_2x2"
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--mode",
+        "central_2k_2x2",
     ]
-    
+
     with caplog.at_level("ERROR", logger="prose_run_photometry"):
         ret = rp.main(argv)
     # The return code will still be 1 (due to MAST/Simbad/photometry failures downstream),
     # but it should NOT have aborted at the mode check!
     assert ret == 1
-    assert not any("with mode=central_2k_2x2; aborting" in r.message for r in caplog.records)
+    assert not any(
+        "with mode=central_2k_2x2; aborting" in r.message for r in caplog.records
+    )
 
 
 def test_main_mode_raise_condition_for_multiple_modes_unspecified(tmp_path):
     # Write two fits files with different modes
     _write_sinistro_fits(tmp_path, "test1.fits", "lsc", confmode="central_2k_2x2")
     _write_sinistro_fits(tmp_path, "test2.fits", "lsc", confmode="full_frame")
-    
+
     argv = [
-        "--target_name", "TOI-6715",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results")
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
     ]
-    
+
     with pytest.raises(ValueError, match="Multiple configuration modes found"):
         rp.main(argv)
 
@@ -1736,9 +1898,10 @@ def test_plot_stacks_draws_saturation_axhline(tmp_path, monkeypatch):
         "rout": 5.0,
         "scale": False,
     }
-    
+
     axhline_y_vals = []
     import matplotlib.pyplot as plt
+
     original_axhline = plt.Axes.axhline
 
     def mock_axhline(self, y, *args, **kwargs):
@@ -1749,15 +1912,17 @@ def test_plot_stacks_draws_saturation_axhline(tmp_path, monkeypatch):
 
     twin_axes_created = 0
     original_twinx = plt.Axes.twinx
+
     def mock_twinx(self):
         nonlocal twin_axes_created
         twin_axes_created += 1
         return original_twinx(self)
+
     monkeypatch.setattr(plt.Axes, "twinx", mock_twinx)
 
     out = tmp_path / "stacks.png"
     rp.plot_stacks({"gp": r}, out, "TOI-6715", "muscat4", "2026-06-23", 0)
-    
+
     assert 55000.0 in axhline_y_vals
     assert twin_axes_created == 1
 
@@ -1765,7 +1930,7 @@ def test_plot_stacks_draws_saturation_axhline(tmp_path, monkeypatch):
 def test_plot_ref_image_custom_cmap(tmp_path, monkeypatch):
     from astropy.io import fits
     from astropy.wcs import WCS
-    
+
     w = WCS(naxis=2)
     w.wcs.crpix = [10, 10]
     w.wcs.cdelt = [0.01, 0.01]
@@ -1795,19 +1960,24 @@ def test_plot_ref_image_custom_cmap(tmp_path, monkeypatch):
     out = tmp_path / "ref_inverted.png"
 
     show_kwargs = {}
+
     def mock_show(*args, **kwargs):
         show_kwargs.update(kwargs)
         # Avoid plotting the actual image to speed up/prevent window pops
         return None
+
     monkeypatch.setattr(ref, "show", mock_show)
 
     scatter_colors = []
     import matplotlib.pyplot as plt
+
     original_scatter = plt.Axes.scatter
+
     def mock_scatter(self, x, y, *args, **kwargs):
         if "ec" in kwargs:
             scatter_colors.append(kwargs["ec"])
         return original_scatter(self, x, y, *args, **kwargs)
+
     monkeypatch.setattr(plt.Axes, "scatter", mock_scatter)
 
     r = {"ref": ref, "band": "gp", "target_index": 0}
@@ -1821,13 +1991,13 @@ def test_nearby_stars_csv_generation(tmp_path, monkeypatch):
     import pandas as pd
     from astropy.io import fits
     from astropy.wcs import WCS
-    
+
     w = WCS(naxis=2)
     w.wcs.crpix = [10, 10]
     w.wcs.cdelt = [0.01, 0.01]
     w.wcs.crval = [0.0, 0.0]
     w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-    
+
     data = np.ones((20, 20))
     hdr = w.to_header()
     hdr["TELESCOP"] = "2m0a"
@@ -1842,32 +2012,34 @@ def test_nearby_stars_csv_generation(tmp_path, monkeypatch):
     hdr["PIXSCALE"] = 0.267
     fpath = tmp_path / "test.fits"
     fits.writeto(fpath, data, header=hdr)
-    
+
     from prose import FITSImage
     from prose.core.source import Sources
     from astropy.coordinates import SkyCoord
-    
+
     ref = FITSImage(fpath)
     ref.sources = Sources(np.array([[10, 10], [12, 12]]))
     target_coord = SkyCoord(0, 0, unit="deg")
-    
-    gaia_df = pd.DataFrame({
-        "ra": [0.0, 0.001],
-        "dec": [0.0, 0.001],
-        "phot_g_mean_mag": [10.0, 12.5],
-        "source_id": [123, 456]
-    })
-    
+
+    gaia_df = pd.DataFrame(
+        {
+            "ra": [0.0, 0.001],
+            "dec": [0.0, 0.001],
+            "phot_g_mean_mag": [10.0, 12.5],
+            "source_id": [123, 456],
+        }
+    )
+
     gaia_coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
     target_idx_in_gaia = target_coord.separation(gaia_coords).argmin()
     assert target_idx_in_gaia == 0
     target_g_mag = float(gaia_df.phot_g_mean_mag.values[target_idx_in_gaia])
     assert target_g_mag == 10.0
-    
+
     detected_pix_coords = np.array([s.coords for s in ref.sources], dtype=float)
     detected_coords = ref.wcs.pixel_to_world(*detected_pix_coords.T)
     match_idx, match_sep, _ = gaia_coords.match_to_catalog_sky(detected_coords)
-    
+
     nearby_stars_data = []
     pixscale = 0.267
     rout = 50.0
@@ -1883,19 +2055,21 @@ def test_nearby_stars_csv_generation(tmp_path, monkeypatch):
             det_sep_arc = float(match_sep[i].arcsec)
             detected_str = "Y" if det_sep_arc <= 1.5 else "N"
             source_id = gaia_df.source_id.values[i]
-            
-            nearby_stars_data.append({
-                "Separation (arcsec)": round(sep_arc, 3),
-                "Separation (pix)": round(sep_p, 2),
-                "Gaia delta mag": round(delta_mag, 3),
-                "Detected (Y/N)": detected_str,
-                "Contamination Ratio (%)": round(contam_ratio, 4),
-                "Gaia Source ID": str(source_id),
-                "RA (deg)": round(float(gaia_df.ra.values[i]), 6),
-                "Dec (deg)": round(float(gaia_df.dec.values[i]), 6),
-                "Gaia G mag": round(float(g_mag), 3),
-            })
-            
+
+            nearby_stars_data.append(
+                {
+                    "Separation (arcsec)": round(sep_arc, 3),
+                    "Separation (pix)": round(sep_p, 2),
+                    "Gaia delta mag": round(delta_mag, 3),
+                    "Detected (Y/N)": detected_str,
+                    "Contamination Ratio (%)": round(contam_ratio, 4),
+                    "Gaia Source ID": str(source_id),
+                    "RA (deg)": round(float(gaia_df.ra.values[i]), 6),
+                    "Dec (deg)": round(float(gaia_df.dec.values[i]), 6),
+                    "Gaia G mag": round(float(g_mag), 3),
+                }
+            )
+
     assert len(nearby_stars_data) == 1
     item = nearby_stars_data[0]
     assert item["Gaia Source ID"] == "456"
@@ -1914,20 +2088,28 @@ def test_parse_args_accepts_both_sinistro_modes():
     # Both modes should be accepted without error
     args_central = rp.parse_args(
         [
-            "--target_name", "V1298Tau",
-            "--data_dir", "/tmp",
-            "--results_dir", "/tmp/results",
-            "--mode", "central_2k_2x2",
+            "--target_name",
+            "V1298Tau",
+            "--data_dir",
+            "/tmp",
+            "--results_dir",
+            "/tmp/results",
+            "--mode",
+            "central_2k_2x2",
         ]
     )
     assert args_central.mode == "central_2k_2x2"
 
     args_full = rp.parse_args(
         [
-            "--target_name", "V1298Tau",
-            "--data_dir", "/tmp",
-            "--results_dir", "/tmp/results",
-            "--mode", "full_frame",
+            "--target_name",
+            "V1298Tau",
+            "--data_dir",
+            "/tmp",
+            "--results_dir",
+            "/tmp/results",
+            "--mode",
+            "full_frame",
         ]
     )
     assert args_full.mode == "full_frame"
@@ -1936,9 +2118,13 @@ def test_parse_args_accepts_both_sinistro_modes():
     with pytest.raises(SystemExit):
         rp.parse_args(
             [
-                "--target_name", "V1298Tau",
-                "--data_dir", "/tmp",
-                "--results_dir", "/tmp/results",
-                "--mode", "invalid_mode",
+                "--target_name",
+                "V1298Tau",
+                "--data_dir",
+                "/tmp",
+                "--results_dir",
+                "/tmp/results",
+                "--mode",
+                "invalid_mode",
             ]
         )
