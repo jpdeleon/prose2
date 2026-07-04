@@ -533,7 +533,7 @@ def aper_radii_pix(r: dict):
     if r.get("scale"):
         fwhm = float(r["ref"].fwhm)
         return radii * fwhm, rin * fwhm, rout * fwhm
-    return radii, rin, rout
+    return int(radii), int(rin), int(rout)
 
 
 def _format_pix_value(value: float) -> str:
@@ -613,6 +613,39 @@ class FilterPointSources(Block):
         image.sources = Sources(filtered, type="PointSource")
 
 
+class MaskBadPixels(Block):
+    """Mask bad pixels in image data using a bad pixel map.
+
+    Bad pixels (hot pixels, dead pixels, cosmic rays) are marked as NaN
+    so they don't contribute to aperture photometry. This allows the
+    photometry to be performed with the remaining valid pixels while
+    avoiding bias from detector defects.
+    """
+
+    def __init__(self, bad_pixel_map: np.ndarray | None = None, name=None):
+        super().__init__(name=name)
+        self.bad_pixel_map = bad_pixel_map
+
+    def run(self, image):
+        if self.bad_pixel_map is None:
+            return
+
+        # Ensure bad pixel map matches image dimensions
+        if self.bad_pixel_map.shape != image.data.shape:
+            logger.warning(
+                f"bad pixel map shape {self.bad_pixel_map.shape} does not match "
+                f"image shape {image.data.shape}; skipping bad pixel masking"
+            )
+            return
+
+        # Mark bad pixels as NaN
+        bad_mask = self.bad_pixel_map.astype(bool)
+        n_masked = int(np.sum(bad_mask))
+        if n_masked > 0:
+            image.data[bad_mask] = np.nan
+            logger.debug(f"masked {n_masked} bad pixels in {Path(image.path).name}")
+
+
 # --------------------------- reference building ---------------------------
 
 
@@ -622,12 +655,21 @@ def reference_sequence(
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
     min_area: int = MIN_STAR_AREA,
+    bad_pixel_map: np.ndarray | None = None,
 ) -> Sequence:
-    """Calibration sequence run on the per-band reference frame."""
+    """Calibration sequence run on the per-band reference frame.
+
+    Parameters
+    ----------
+    bad_pixel_map : np.ndarray, optional
+        Boolean array marking bad pixels (True = bad). Applied to reference
+        image to mask detector defects before source detection.
+    """
     n_detect = max(int(max_num_stars * DETECT_NUM_STARS_FACTOR), max_num_stars + 5)
     return Sequence(
         [
             blocks.Trim(ccd_trim_size_yx),
+            MaskBadPixels(bad_pixel_map),
             # blocks.AutoSourceDetection(
             blocks.PointSourceDetection(
                 n=n_detect,
@@ -1047,6 +1089,7 @@ def build_reference(
     edge_margin: int | None = EDGE_MARGIN_PIX,
     avoid_nearby_star: float | str | None = None,
     annulus_pix: tuple[float, float] | None = None,
+    bad_pixel_map: np.ndarray | None = None,
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -1064,6 +1107,12 @@ def build_reference(
     from cache) and returned under ``gaia_df`` so the aperture/stack zoom plots
     can overlay Gaia source positions, even when the Gaia contamination
     heuristic is bypassed by an explicit aperture grid.
+
+    Parameters
+    ----------
+    bad_pixel_map : np.ndarray, optional
+        Boolean array marking bad pixels (True = bad pixel). Applied to reference
+        image before source detection to mask detector defects.
     """
     ref = FITSImage(ref_file)
     instrument = get_instrument(ref.header)
@@ -1091,6 +1140,7 @@ def build_reference(
         min_star_separation=min_star_separation,
         cutout_size=cutout_size,
         min_area=min_area,
+        bad_pixel_map=bad_pixel_map,
     ).run(ref, show_progress=False)
 
     match_found = False
@@ -1254,12 +1304,21 @@ def photometry_sequence(
     n_stars_align: int | None = None,
     target_index: int = 0,
     min_area: int = MIN_STAR_AREA,
+    bad_pixel_map: np.ndarray | None = None,
 ) -> SequenceParallel:
-    """Parallel per-image photometry sequence (mirrors the notebook)."""
+    """Parallel per-image photometry sequence (mirrors the notebook).
+
+    Parameters
+    ----------
+    bad_pixel_map : np.ndarray, optional
+        Boolean array marking bad pixels (True = bad). Applied to all frames
+        to mask detector defects before photometry.
+    """
     if n_stars_align is None:
         n_stars_align = max_num_stars
     blocks_list = [
         blocks.Trim(ccd_trim_size_yx),
+        MaskBadPixels(bad_pixel_map),
         # blocks.AutoSourceDetection(
         blocks.PointSourceDetection(
             n=max_num_stars,
@@ -1338,6 +1397,7 @@ def run_band(
     avoid_nearby_star: float | str | None = None,
     annulus_pix: tuple[float, float] | None = None,
     nan_imputation_method: str = "linear",
+    bad_pixel_map: np.ndarray | None = None,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -1348,6 +1408,12 @@ def run_band(
     (pixel positions) to this band's sources via nearest-neighbor search.
     When ``ref_source_positions`` is ``None`` (the reference band itself),
     indices apply directly.
+
+    Parameters
+    ----------
+    bad_pixel_map : np.ndarray, optional
+        Boolean array marking bad pixels (True = bad pixel). Applied during
+        photometry to mask detector defects (hot pixels, dead pixels).
     """
     logger.info(f"[{band}] {len(files)} frames; building reference")
     reference = build_reference(
@@ -1367,6 +1433,7 @@ def run_band(
         edge_margin=edge_margin,
         avoid_nearby_star=avoid_nearby_star,
         annulus_pix=annulus_pix,
+        bad_pixel_map=bad_pixel_map,
     )
     ref = reference["ref"]
     target_index = reference["target_index"]
@@ -1572,6 +1639,7 @@ def run_band(
         n_stars_align=effective_n_stars_align,
         target_index=target_index,
         min_area=min_area,
+        bad_pixel_map=bad_pixel_map,
     )
     phot.run(files)
 
@@ -3007,6 +3075,89 @@ def _sinistro_modes_from_headers(
     return modes
 
 
+def load_bad_pixel_map(
+    source: str | None,
+    ref_image: FITSImage | None = None,
+) -> np.ndarray | None:
+    """Load a bad pixel map from a FITS file or image header.
+
+    Parameters
+    ----------
+    source : str, optional
+        Path to bad pixel map FITS file or "header" to read from reference
+        image header (requires ref_image to be provided).
+    ref_image : FITSImage, optional
+        Reference image to read bad pixel map from header (if source="header").
+
+    Returns
+    -------
+    np.ndarray or None
+        Boolean array marking bad pixels (True = bad), or None if not available.
+    """
+    if source is None:
+        return None
+
+    if source.lower() == "header":
+        if ref_image is None:
+            logger.warning("bad pixel map source='header' but no reference image provided")
+            return None
+        try:
+            header = ref_image.header
+            # Try common bad pixel map keywords
+            for key in ("BADPIXEL", "BADPIX", "BPM", "BAD_PIXEL"):
+                if key in header:
+                    logger.info(f"found bad pixel map in header keyword '{key}'")
+                    # Header typically stores as binary image data or checksum
+                    # This is a placeholder - actual implementation depends on
+                    # how your data stores bad pixels in the header
+                    logger.warning(
+                        f"bad pixel extraction from header keyword '{key}' "
+                        "not yet implemented; skipping bad pixel masking"
+                    )
+                    return None
+            logger.warning("no bad pixel map found in reference image header")
+            return None
+        except Exception as e:
+            logger.warning(f"failed to read bad pixel map from header: {e}")
+            return None
+
+    # Load from FITS file
+    try:
+        filepath = Path(source)
+        if not filepath.exists():
+            logger.warning(f"bad pixel map file not found: {filepath}")
+            return None
+
+        with fits.open(filepath) as hdul:
+            if len(hdul) == 0:
+                logger.warning(f"bad pixel map file is empty: {filepath}")
+                return None
+
+            # Try to find data in primary HDU or first extension
+            data = None
+            for i, hdu in enumerate(hdul):
+                if hdu.data is not None:
+                    data = hdu.data
+                    logger.info(f"loaded bad pixel map from {filepath} (HDU {i})")
+                    break
+
+            if data is None:
+                logger.warning(f"no data found in bad pixel map file: {filepath}")
+                return None
+
+            # Ensure it's boolean or convertible to boolean
+            bad_pixel_map = np.asarray(data, dtype=bool)
+            logger.info(
+                f"bad pixel map: shape={bad_pixel_map.shape}, "
+                f"n_bad_pixels={int(np.sum(bad_pixel_map))}"
+            )
+            return bad_pixel_map
+
+    except Exception as e:
+        logger.error(f"failed to load bad pixel map from {source}: {e}")
+        return None
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     mode_choices = ["central_2k_2x2", "full_frame"]
 
@@ -3336,6 +3487,16 @@ def parse_args(argv=None) -> argparse.Namespace:
         "'spline' (cubic spline), 'forward_fill' (last-observation-carried-forward). "
         "Default: %(default)s. The Broeg et al. 2005 algorithm requires no NaNs "
         "in the flux matrix.",
+    )
+    ap.add_argument(
+        "--bad_pixel_map",
+        "--bad-pixel-map",
+        dest="bad_pixel_map",
+        type=str,
+        default=None,
+        help="Path to bad pixel map FITS file, or 'header' to read from reference image "
+        "header keyword. Boolean array where True marks bad pixels (hot, dead, etc.) "
+        "that should be masked during photometry. Default: None (no masking).",
     )
     args = ap.parse_args(argv)
 
@@ -3858,6 +4019,21 @@ def main(argv=None) -> int:
     band_results = {}
     failed_bands = []
     ref_source_positions: np.ndarray | None = None
+
+    # Load bad pixel map if provided
+    bad_pixel_map = None
+    if args.bad_pixel_map:
+        # Load the reference image to get shape/metadata if needed
+        ref_image = None
+        if args.bad_pixel_map.lower() == "header" and sciences:
+            try:
+                first_band = ordered_bands[0]
+                first_file = sciences[first_band][0]
+                ref_image = FITSImage(first_file)
+            except Exception as e:
+                logger.warning(f"could not load reference image for header extraction: {e}")
+        bad_pixel_map = load_bad_pixel_map(args.bad_pixel_map, ref_image=ref_image)
+
     for band in ordered_bands:
         band_files = sciences[band]
         if self_reference:
@@ -3894,6 +4070,7 @@ def main(argv=None) -> int:
                 avoid_nearby_star=args.avoid_nearby_star,
                 annulus_pix=args.annulus_pix,
                 nan_imputation_method=args.nan_imputation_method,
+                bad_pixel_map=bad_pixel_map,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
