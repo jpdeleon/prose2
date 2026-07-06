@@ -41,6 +41,8 @@ def test_parse_args_defaults_match_documented_behaviour():
     assert isinstance(args.data_dir, Path) and isinstance(args.results_dir, Path)
     assert args.bands == rp.DEFAULT_BANDS
     assert args.ref_band is None and args.refid is None  # per-band self-reference
+    assert args.ref_select == "position"  # opt-in; unchanged legacy behavior by default
+    assert args.ref_select_top_k == rp.REF_SELECT_DEFAULT_TOP_K
     assert args.make_gif is False  # GIF is opt-in
     assert args.gif_stride == rp.DEFAULT_GIF_STRIDE
     assert args.aper_radii is None and args.annulus is None
@@ -155,6 +157,17 @@ def test_parse_args_ref_band_and_refid():
     args = rp.parse_args(_argv("--ref_band", "gp", "--refid", "3"))
     assert args.ref_band == "gp"
     assert args.refid == 3
+
+
+def test_parse_args_ref_select_quality_and_top_k():
+    args = rp.parse_args(_argv("--ref_select", "quality", "--ref_select_top_k", "3"))
+    assert args.ref_select == "quality"
+    assert args.ref_select_top_k == 3
+
+
+def test_parse_args_ref_select_rejects_invalid_choice():
+    with pytest.raises(SystemExit):
+        rp.parse_args(_argv("--ref_select", "best"))
 
 
 # --------------------------- test-run / detection knobs ---------------------------

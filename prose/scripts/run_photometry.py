@@ -62,6 +62,7 @@ import os
 import re
 import sys
 import time as time_module
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -151,6 +152,45 @@ GIF_MAX_PX = 512  # max GIF frame dimension [pix]; larger frames are downsampled
 MAX_NUM_STARS = 10  # nth brightest stars to keep
 DETECT_NUM_STARS_FACTOR = 1.5  # detect more stars initially to capture faint targets
 CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
+
+# reference-frame quality pre-check (--ref_select quality)
+# BANZAI-pipeline instruments whose headers already carry a per-frame FWHM
+# estimate and other quality keywords (verified against real archive FITS
+# headers). muscat/muscat2 are raw and never touched by BANZAI -- verified
+# absent on real /data/MuSCAT and /data/MuSCAT2 headers -- so they skip the
+# header-triage tier and go straight to pixel-based validation.
+BANZAI_QUALITY_INSTRUMENTS = frozenset({"muscat3", "muscat4", "sinistro"})
+
+# header key -> canonical name used throughout header_triage(). Hardcoded
+# here rather than sourced from the .telescope config's keyword_fwhm/
+# keyword_seeing fields: that config is never read anywhere else in this
+# file and its defaults ("FWHM"/"SEEING") don't match the real BANZAI names.
+REF_QUALITY_HEADER_KEYS: dict[str, str] = {
+    "fwhm": "L1FWHM",  # arcsec, BANZAI's own per-frame FWHM estimate
+    "airmass": "AIRMASS",
+    "focus": "FOCPOSN",  # focuser position; scored as deviation from the run's median
+    "humidity": "WMSHUMID",  # weather-station humidity %, cloud/transparency proxy
+    "background": "L1MEAN",  # BANZAI sky-level estimate [ADU]
+    "saturate": "SATURATE",  # ADU full well for this frame's readout mode
+}
+REF_SELECT_DEFAULT_TOP_K = 5
+
+# Hard-reject thresholds: generous absolute sanity bounds for physically
+# broken frames only. Ranking (not filtering) handles the rest via per-run
+# z-scores, so a legitimately hard night (e.g. high airmass throughout) never
+# empties the candidate pool -- see header_triage()'s fallback.
+REF_HARD_REJECT_MAX_AIRMASS = 3.5
+REF_HARD_REJECT_MAX_HUMIDITY = 95.0
+REF_HARD_REJECT_BKG_SATURATE_FRAC = 0.9
+
+# Composite header score weights (header_triage()); FWHM dominates.
+_HEADER_SCORE_WEIGHTS = {
+    "fwhm": 0.6,
+    "airmass": 0.15,
+    "focus": 0.1,
+    "humidity": 0.1,
+    "background": 0.05,
+}
 CCD_TRIM_SIZE_YX = (0, 0)  # trim image edges [pix]
 MIN_STAR_AREA = 10  # min detected-source area [pix]
 MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
@@ -703,6 +743,435 @@ def reference_sequence(
             blocks.AnnulusBackground(),
         ]
     )
+
+
+# ------------------- reference-frame quality pre-check ---------------------
+# Two-tier selection used by --ref_select quality: Tier 1 ranks candidates by
+# free header keywords (BANZAI instruments only); Tier 2 pixel-validates only
+# the shortlisted top-K by re-running the *same* reference_sequence() defined
+# above on each candidate, in parallel. See CLAUDE.md/plan: this must never
+# duplicate photometry logic, only reuse it on a handful of candidate frames
+# instead of the one frame chosen positionally today.
+
+
+@dataclass
+class FrameHeaderQuality:
+    """Tier-1 header-only quality record for one candidate reference frame."""
+
+    path: Path
+    values: dict[str, float | None]
+    hard_reject: str | None = None
+    score: float | None = None
+
+
+@dataclass
+class FramePixelQuality:
+    """Tier-2 pixel-based quality record for one candidate reference frame."""
+
+    path: Path
+    fwhm: float | None = None
+    n_sources: int = 0
+    target_matched: bool = False
+    target_saturated: bool = False
+    error: str | None = None
+
+
+def _read_quality_header(path) -> fits.Header:
+    """Header read tolerant of ``.fits.fz`` compression.
+
+    Mirrors ``check_header_time._read_header`` exactly; duplicated locally
+    (a few lines) rather than imported, since that module already imports
+    from this one and importing back would create a circular dependency.
+    """
+    h = fits.getheader(path, 0)
+    if h.get("NAXIS", 0) == 0:
+        try:
+            h = fits.getheader(path, 1)
+        except IndexError:
+            pass
+    return h
+
+
+def _frame_header_values(header) -> dict[str, float | None]:
+    values: dict[str, float | None] = {}
+    for name, key in REF_QUALITY_HEADER_KEYS.items():
+        raw = header.get(key)
+        try:
+            values[name] = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            values[name] = None
+    return values
+
+
+def _hard_reject_reason(values: dict[str, float | None]) -> str | None:
+    """Reject only physically-broken frames; ranking handles the rest."""
+    airmass = values.get("airmass")
+    if airmass is not None and airmass > REF_HARD_REJECT_MAX_AIRMASS:
+        return f"airmass {airmass:.2f} > {REF_HARD_REJECT_MAX_AIRMASS}"
+    humidity = values.get("humidity")
+    if humidity is not None and humidity > REF_HARD_REJECT_MAX_HUMIDITY:
+        return f"humidity {humidity:.1f} > {REF_HARD_REJECT_MAX_HUMIDITY}"
+    bkg, sat = values.get("background"), values.get("saturate")
+    if bkg is not None and sat is not None and sat > 0:
+        if bkg >= REF_HARD_REJECT_BKG_SATURATE_FRAC * sat:
+            return (
+                f"background {bkg:.0f} >= "
+                f"{REF_HARD_REJECT_BKG_SATURATE_FRAC:.0%} of saturation ({sat:.0f})"
+            )
+    return None
+
+
+def _zscore(values: list[float | None]) -> list[float | None]:
+    """Per-run z-score; ``None`` stays ``None`` (a missing field is excluded
+    from that frame's score, not a disqualifier -- see plan correctness
+    note 1c)."""
+    finite = [v for v in values if v is not None and np.isfinite(v)]
+    if len(finite) < 2:
+        return [0.0 if v is not None else None for v in values]
+    mean, std = float(np.mean(finite)), float(np.std(finite))
+    if std == 0:
+        return [0.0 if v is not None else None for v in values]
+    return [((v - mean) / std) if v is not None else None for v in values]
+
+
+def header_triage(
+    band_files: list, top_k: int = REF_SELECT_DEFAULT_TOP_K
+) -> tuple[list[int], list[FrameHeaderQuality]]:
+    """Tier 1: rank candidate reference frames via header-only quality
+    keywords (BANZAI instruments only -- see :data:`BANZAI_QUALITY_INSTRUMENTS`).
+
+    One ``fits.getheader()`` per frame -- sub-second even for hundreds of
+    frames, no pixel decode.
+
+    Returns
+    -------
+    (candidate_indices, records) : the indices (into ``band_files``) of the
+        top-``top_k`` survivors in rank order, and per-frame diagnostics for
+        every frame (for the audit sidecar).
+    """
+    records: list[FrameHeaderQuality] = []
+    for f in band_files:
+        try:
+            values = _frame_header_values(_read_quality_header(f))
+        except Exception as e:
+            logger.warning(f"header triage: could not read {Path(f).name}: {e}")
+            values = {name: None for name in REF_QUALITY_HEADER_KEYS}
+        records.append(FrameHeaderQuality(path=Path(f), values=values))
+
+    focus_values = [r.values.get("focus") for r in records]
+    finite_focus = [v for v in focus_values if v is not None]
+    focus_median = float(np.median(finite_focus)) if finite_focus else None
+
+    for r in records:
+        r.hard_reject = _hard_reject_reason(r.values)
+
+    z_fwhm = _zscore([r.values.get("fwhm") for r in records])
+    z_airmass = _zscore([r.values.get("airmass") for r in records])
+    z_focus_dev = _zscore(
+        [
+            (abs(v - focus_median) if v is not None and focus_median is not None else None)
+            for v in focus_values
+        ]
+    )
+    z_humidity = _zscore([r.values.get("humidity") for r in records])
+    bkg_frac = [
+        (
+            r.values["background"] / r.values["saturate"]
+            if r.values.get("background") is not None and r.values.get("saturate")
+            else None
+        )
+        for r in records
+    ]
+    z_bkg = _zscore(bkg_frac)
+
+    for i, r in enumerate(records):
+        terms = []
+        for z, w in (
+            (z_fwhm[i], _HEADER_SCORE_WEIGHTS["fwhm"]),
+            (z_airmass[i], _HEADER_SCORE_WEIGHTS["airmass"]),
+            (z_focus_dev[i], _HEADER_SCORE_WEIGHTS["focus"]),
+            (z_humidity[i], _HEADER_SCORE_WEIGHTS["humidity"]),
+            (z_bkg[i], _HEADER_SCORE_WEIGHTS["background"]),
+        ):
+            if z is not None:
+                terms.append(z * w)
+        # the dominant term (FWHM) must be present to rank this frame at all
+        r.score = float(sum(terms)) if z_fwhm[i] is not None else None
+
+    survivor_idx = [
+        i for i, r in enumerate(records) if r.hard_reject is None and r.score is not None
+    ]
+    if not survivor_idx:
+        logger.warning(
+            "header triage: all frames hard-rejected or unrankable (dominant "
+            f"L1FWHM missing?); falling back to ranking the full unfiltered "
+            f"set of {len(records)} frame(s)"
+        )
+        survivor_idx = [i for i, r in enumerate(records) if r.score is not None] or list(
+            range(len(records))
+        )
+
+    survivor_idx.sort(key=lambda i: records[i].score if records[i].score is not None else float("inf"))
+    k = max(1, min(top_k, len(survivor_idx)))
+    return survivor_idx[:k], records
+
+
+def _quality_select_eligible(instrument: str) -> bool:
+    return instrument in BANZAI_QUALITY_INSTRUMENTS or instrument in ("muscat", "muscat2")
+
+
+def _candidate_frames_for_tier2(
+    band_files: list, instrument: str, top_k: int
+) -> tuple[list[int], list[FrameHeaderQuality] | None]:
+    """Select candidate-frame indices to pixel-validate in Tier 2.
+
+    BANZAI instruments use header triage to shortlist the top-K
+    sharpest/cleanest frames. muscat/muscat2 (raw, confirmed to lack every
+    :data:`REF_QUALITY_HEADER_KEYS` entry on real archive data) instead
+    sample ``top_k`` frames evenly spaced across the whole sequence, since
+    early frames are disproportionately likely to reflect initial
+    focus/guiding settling and conditions can drift across a full night.
+    """
+    if instrument in BANZAI_QUALITY_INSTRUMENTS:
+        return header_triage(band_files, top_k=top_k)
+    n = max(1, min(top_k, len(band_files)))
+    idxs = sorted(set(int(i) for i in np.linspace(0, len(band_files) - 1, n)))
+    return idxs, None
+
+
+def _target_wcs_match_found(ref, target_coord) -> bool:
+    """Same WCS cross-match (5 arcsec threshold) as build_reference()'s
+    ``match_found`` logic, returning a plain bool rather than also handling
+    the "default to brightest" fallback -- Tier 2 wants to know whether a
+    candidate's match is genuinely confident, not what to do if it isn't."""
+    if target_coord is None or getattr(ref, "wcs", None) is None:
+        return False
+    try:
+        coords = np.array([s.coords for s in ref.sources])
+        if len(coords) == 0:
+            return False
+        stars_radec = ref.wcs.pixel_to_world(*coords.T)
+        if not _skycoord_has_finite_data(stars_radec):
+            return False
+        _, d2d, _ = target_coord.match_to_catalog_sky(stars_radec)
+        return float(np.atleast_1d(d2d.arcsec)[0]) < 5.0
+    except Exception:
+        return False
+
+
+def _target_index_or_none(ref, target_coord) -> int | None:
+    if not _target_wcs_match_found(ref, target_coord):
+        return None
+    coords = np.array([s.coords for s in ref.sources])
+    stars_radec = ref.wcs.pixel_to_world(*coords.T)
+    idx, _, _ = target_coord.match_to_catalog_sky(stars_radec)
+    return int(np.atleast_1d(idx)[0])
+
+
+def _target_is_saturated(ref, target_index: int | None, saturation: float | None) -> bool:
+    if target_index is None or saturation is None or saturation <= 0:
+        return False
+    if not (0 <= target_index < len(ref.sources)):
+        return False
+    return float(ref.sources[target_index].peak) >= saturation
+
+
+def pixel_validate_candidates(
+    band_files: list,
+    candidate_indices: list[int],
+    target_coord,
+    ref_seq_kwargs: dict,
+) -> list[FramePixelQuality]:
+    """Tier 2: run the unchanged :func:`reference_sequence` block chain on
+    just the shortlisted candidates, in parallel via the same
+    ``SequenceParallel``/``multiprocess`` machinery used for the main
+    per-band reduction (``run_band``'s sequence, ~line 1445), harvesting
+    per-frame FWHM/star-count/target-match via a ``blocks.Get`` data
+    collector -- the same pattern already used there for FWHM/airmass/dx/dy.
+
+    Returns one :class:`FramePixelQuality` per entry of ``candidate_indices``,
+    in the same order (``results[p]`` corresponds to
+    ``band_files[candidate_indices[p]]``).
+    """
+    candidate_paths = [band_files[i] for i in candidate_indices]
+
+    def _target_matched_getter(im):
+        return _target_wcs_match_found(im, target_coord)
+
+    def _target_saturated_getter(im):
+        try:
+            sat_all = get_saturation_from_header(im.header)
+            saturation = (
+                sat_all.get(im.header.get("FILTER", "")) if isinstance(sat_all, dict) else None
+            )
+        except Exception:
+            saturation = None
+        return _target_is_saturated(im, _target_index_or_none(im, target_coord), saturation)
+
+    get_block = blocks.Get(
+        idx=lambda im: int(im.i),
+        fwhm=lambda im: float(im.fwhm),
+        n_sources=lambda im: len(im.sources),
+        target_matched=_target_matched_getter,
+        target_saturated=_target_saturated_getter,
+        arrays=False,
+    )
+    seq = SequenceParallel(
+        blocks=reference_sequence(**ref_seq_kwargs).blocks,
+        data_blocks=[get_block],
+        name="ref-quality-tier2",
+    )
+    seq.run(list(candidate_paths), show_progress=False)
+
+    by_pos = {
+        pos: (fwhm, n_sources, matched, saturated)
+        for pos, fwhm, n_sources, matched, saturated in zip(
+            get_block.values["idx"],
+            get_block.values["fwhm"],
+            get_block.values["n_sources"],
+            get_block.values["target_matched"],
+            get_block.values["target_saturated"],
+        )
+    }
+    results = []
+    for pos, path in enumerate(candidate_paths):
+        if pos in by_pos:
+            fwhm, n_sources, matched, saturated = by_pos[pos]
+            results.append(
+                FramePixelQuality(
+                    path=Path(path),
+                    fwhm=fwhm,
+                    n_sources=n_sources,
+                    target_matched=matched,
+                    target_saturated=saturated,
+                )
+            )
+        else:
+            results.append(
+                FramePixelQuality(path=Path(path), error="discarded during Tier 2 processing")
+            )
+    return results
+
+
+def _tier2_sort_key(fpq: FramePixelQuality, median_n_sources: float) -> tuple:
+    if fpq.error is not None:
+        return (2, 0, 0, float("inf"))
+    is_outlier = median_n_sources > 0 and fpq.n_sources < 0.5 * median_n_sources
+    return (
+        0 if fpq.target_matched else 1,  # matched candidates first
+        1 if is_outlier else 0,  # non-outliers first
+        1 if fpq.target_saturated else 0,  # unsaturated first
+        fpq.fwhm if fpq.fwhm is not None else float("inf"),  # lower FWHM better
+    )
+
+
+def select_reference_frame(
+    band_files: list,
+    *,
+    instrument: str,
+    target_coord,
+    top_k: int = REF_SELECT_DEFAULT_TOP_K,
+    ref_seq_kwargs: dict | None = None,
+) -> tuple[int, dict]:
+    """Two-tier quality-based reference-frame selection (``--ref_select
+    quality``).
+
+    Returns ``(refid, diagnostics)`` where ``refid`` is an index into
+    ``band_files`` (a drop-in replacement for today's positional
+    ``default_refid``) and ``diagnostics`` is a dict consumed by the log
+    lines and the ``*_ref_selection.txt`` audit sidecar.
+    """
+    ref_seq_kwargs = ref_seq_kwargs or {}
+    candidate_indices, tier1_records = _candidate_frames_for_tier2(band_files, instrument, top_k)
+    tier2 = pixel_validate_candidates(band_files, candidate_indices, target_coord, ref_seq_kwargs)
+
+    valid_n = [t.n_sources for t in tier2 if t.error is None]
+    median_n = float(np.median(valid_n)) if valid_n else 0.0
+    ranked_positions = sorted(
+        range(len(tier2)), key=lambda p: _tier2_sort_key(tier2[p], median_n)
+    )
+    best_pos = ranked_positions[0]
+    refid = candidate_indices[best_pos]
+
+    diagnostics = {
+        "method": "quality",
+        "instrument": instrument,
+        "top_k": top_k,
+        "tier1": tier1_records,
+        "tier2": tier2,
+        "chosen_index": refid,
+        "chosen_path": Path(band_files[refid]),
+    }
+    return refid, diagnostics
+
+
+def format_ref_selection_report(band: str, diagnostics: dict) -> str:
+    """Render the ``*_ref_selection.txt`` audit sidecar content for one band."""
+    lines = ["reference selection report", "===========================", f"band: {band}"]
+    method = diagnostics.get("method", "position")
+    lines.append(f"method: {method}")
+    chosen_path = diagnostics.get("chosen_path")
+    if method != "quality":
+        lines.append(f"chosen frame: {Path(chosen_path).name if chosen_path else '?'}")
+        return "\n".join(lines) + "\n"
+
+    top_k = diagnostics.get("top_k", REF_SELECT_DEFAULT_TOP_K)
+    lines.append(f"top_k: {top_k}")
+    lines.append(
+        f"chosen frame: {Path(chosen_path).name}  (index {diagnostics.get('chosen_index')})"
+    )
+    lines.append("")
+
+    tier1 = diagnostics.get("tier1")
+    tier2 = diagnostics.get("tier2") or []
+    if tier1 is not None:
+        n_survivors = sum(1 for r in tier1 if r.hard_reject is None and r.score is not None)
+        n_rejected = sum(1 for r in tier1 if r.hard_reject is not None)
+        lines.append(f"Tier 1 (header triage, {len(tier1)} frames scanned):")
+        lines.append(f"  survivors kept: {n_survivors}")
+        lines.append(f"  hard-rejected: {n_rejected}")
+        lines.append(
+            f"  {'frame':<26}{'L1FWHM':>8}{'AIRMASS':>9}{'FOCPOSN':>9}"
+            f"{'WMSHUMID':>10}{'L1MEAN':>9}{'score':>9}"
+        )
+        ranked = sorted((r for r in tier1 if r.score is not None), key=lambda r: r.score)
+
+        def _fmt(x):
+            return f"{x:.2f}" if x is not None else "n/a"
+
+        for r in ranked[:top_k]:
+            v = r.values
+            lines.append(
+                f"  {Path(r.path).name:<26}{_fmt(v.get('fwhm')):>8}{_fmt(v.get('airmass')):>9}"
+                f"{_fmt(v.get('focus')):>9}{_fmt(v.get('humidity')):>10}"
+                f"{_fmt(v.get('background')):>9}{r.score:>9.2f}"
+            )
+        lines.append("")
+    else:
+        lines.append(
+            f"Tier 1: skipped (no header quality proxy for instrument "
+            f"'{diagnostics.get('instrument')}'); {len(tier2)} evenly spaced "
+            "candidate(s) sampled across the sequence"
+        )
+        lines.append("")
+
+    lines.append(f"Tier 2 (pixel validation of {len(tier2)} candidate(s)):")
+    lines.append(
+        f"  {'frame':<26}{'measured_fwhm_px':>18}{'n_sources':>11}"
+        f"{'target_matched':>16}{'target_saturated':>18}"
+    )
+    for t in tier2:
+        fwhm_s = f"{t.fwhm:.2f}" if t.fwhm is not None else "n/a"
+        lines.append(
+            f"  {Path(t.path).name:<26}{fwhm_s:>18}{t.n_sources:>11}"
+            f"{str(t.target_matched):>16}{str(t.target_saturated):>18}"
+        )
+    lines.append("")
+    lines.append(
+        f"decision: {Path(chosen_path).name} chosen -- lowest Tier-2 FWHM "
+        "among target-matched, non-outlier candidates"
+    )
+    return "\n".join(lines) + "\n"
 
 
 def find_target_index(ref: FITSImage, target_coord: SkyCoord) -> int:
@@ -3451,6 +3920,26 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(default: 0 for self-reference, middle frame when --ref_band is set).",
     )
     ap.add_argument(
+        "--ref_select",
+        "--ref-select",
+        choices=["position", "quality"],
+        default="position",
+        help="Reference-frame selection strategy: 'position' (default, "
+        "unchanged legacy behavior -- first frame for self-reference, "
+        "middle frame for --ref_band) or 'quality' (fast header + pixel "
+        "quality pre-check picks the sharpest, cleanest available frame). "
+        "Ignored when --refid is set (explicit override always wins).",
+    )
+    ap.add_argument(
+        "--ref_select_top_k",
+        "--ref-select-top-k",
+        type=int,
+        default=REF_SELECT_DEFAULT_TOP_K,
+        help="Number of header-triage survivors (BANZAI instruments) or "
+        "evenly spaced candidate frames (muscat/muscat2) to pixel-validate "
+        "in Tier 2 when --ref_select quality is used. Default: %(default)s.",
+    )
+    ap.add_argument(
         "--aper_radii",
         "--aper-radii",
         dest="aper_radii",
@@ -4241,18 +4730,65 @@ def main(argv=None) -> int:
         bad_pixel_map = load_bad_pixel_map(args.bad_pixel_map, ref_image=ref_image)
 
     selected_ref_files = {}
+    ref_selection_diagnostics: dict[str, dict] = {}
+    # Memoized by file-list identity (not per output band): with --ref_band,
+    # every band shares the same ref_files, and quality selection runs a real
+    # SequenceParallel reduction on top-K candidates -- re-running it once per
+    # band (e.g. 4x for a 4-band MuSCAT3 run) would multiply that cost for no
+    # benefit. Positional selection is cheap arithmetic and doesn't care, but
+    # this cache keeps the two code paths uniform.
+    _quality_selection_cache: dict[tuple, tuple[int, dict]] = {}
     for band in ordered_bands:
         band_files = sciences[band]
         if self_reference:
             ref_files, default_refid = band_files, 0
         else:
             ref_files, default_refid = sciences[ref_band], len(sciences[ref_band]) // 2
+
         if args.refid is not None:
             refid = _find_frame_by_number(ref_files, args.refid)
+            diag = {"method": "explicit --refid"}
+        elif args.ref_select == "quality" and _quality_select_eligible(instrument):
+            cache_key = tuple(str(f) for f in ref_files)
+            if cache_key not in _quality_selection_cache:
+                try:
+                    _quality_selection_cache[cache_key] = select_reference_frame(
+                        ref_files,
+                        instrument=instrument,
+                        target_coord=target_coord,
+                        top_k=args.ref_select_top_k,
+                        ref_seq_kwargs=dict(
+                            ccd_trim_size_yx=args.ccd_trim_size_yx,
+                            max_num_stars=args.max_num_stars,
+                            min_star_separation=args.min_star_separation,
+                            cutout_size=args.cutout_size,
+                            min_area=args.min_star_area,
+                            bad_pixel_map=bad_pixel_map,
+                        ),
+                    )
+                    chosen_refid, chosen_diag = _quality_selection_cache[cache_key]
+                    logger.info(
+                        f"[{band}] ref_select=quality: chose "
+                        f"{Path(ref_files[chosen_refid]).name} "
+                        f"(index {chosen_refid}, top_k={args.ref_select_top_k})"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[{band}] quality reference selection failed ({e}); "
+                        "falling back to positional default"
+                    )
+                    _quality_selection_cache[cache_key] = (
+                        default_refid,
+                        {"method": "position (quality selection failed)"},
+                    )
+            refid, diag = _quality_selection_cache[cache_key]
         else:
             refid = default_refid
+            diag = {"method": "position"}
+
         refid = min(refid, len(ref_files) - 1)
         selected_ref_files[band] = ref_files[refid]
+        ref_selection_diagnostics[band] = diag
 
     ref_wcs_ok_by_band: dict[str, bool] = {}
     if self_reference and args.tID is None and target_coord is not None:
@@ -4664,23 +5200,13 @@ def main(argv=None) -> int:
 
     # Dump the reference frame's full FITS header to a sidecar text file so it
     # can be inspected from the web GUI without downloading the data archive.
-    # The saved .txt should be the actual header from the specified band and frame ID.
+    # Reuses the already-computed selected_ref_files/ref_selection_diagnostics
+    # (from the selection loop above) instead of recomputing refid from
+    # scratch -- recomputing independently here previously risked silently
+    # disagreeing with the frame actually used for photometry.
     try:
         target_ref_band = ref_band if ref_band is not None else active_bands[0]
-        if self_reference:
-            ref_files, default_refid = sciences[target_ref_band], 0
-        else:
-            ref_files, default_refid = (
-                sciences[target_ref_band],
-                len(sciences[target_ref_band]) // 2,
-            )
-
-        if args.refid is not None:
-            refid = _find_frame_by_number(ref_files, args.refid)
-        else:
-            refid = default_refid
-        refid = min(refid, len(ref_files) - 1)
-        actual_ref_file = ref_files[refid]
+        actual_ref_file = selected_ref_files[target_ref_band]
 
         ref_header = fits.getheader(actual_ref_file)
         header_path = args.results_dir / f"{stem_multi}_ref_header.txt"
@@ -4690,6 +5216,21 @@ def main(argv=None) -> int:
         logger.info(f"wrote {header_path} from {actual_ref_file}")
     except Exception as e:
         logger.warning(f"could not write reference header: {e}")
+
+    # Reference-selection audit sidecar: records what --ref_select chose and
+    # why (Tier 1 header ranking + Tier 2 pixel validation), so the automatic
+    # choice can be inspected without re-running anything.
+    try:
+        target_ref_band = ref_band if ref_band is not None else active_bands[0]
+        selection_path = args.results_dir / f"{stem_multi}_ref_selection.txt"
+        selection_path.write_text(
+            format_ref_selection_report(
+                target_ref_band, ref_selection_diagnostics.get(target_ref_band, {"method": "position"})
+            )
+        )
+        logger.info(f"wrote {selection_path}")
+    except Exception as e:
+        logger.warning(f"could not write reference selection report: {e}")
 
     n_fail = len(failed_bands)
     if n_fail:

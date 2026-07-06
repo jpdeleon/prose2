@@ -5,6 +5,7 @@ these tests focus on the deterministic, side-effect-free helpers (naming,
 header parsing, z-scaling, CSV column mapping).
 """
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -2253,3 +2254,228 @@ def test_parse_args_accepts_both_sinistro_modes():
                 "invalid_mode",
             ]
         )
+
+
+# --------------------------- reference-frame quality pre-check ---------------------------
+
+
+def _write_quality_header_fits(tmp_path, name, **hdr):
+    """Minimal FITS file carrying only the header keywords header_triage()
+    reads -- no WCS/pixel data needed since header_triage never opens data."""
+    hdu = fits.PrimaryHDU(data=None)
+    hdu.header["NAXIS"] = 2
+    for k, v in hdr.items():
+        hdu.header[k] = v
+    fpath = tmp_path / name
+    hdu.writeto(fpath, overwrite=True)
+    return fpath
+
+
+def test_header_triage_ranks_by_composite_score_dominated_by_fwhm(tmp_path):
+    sharp = _write_quality_header_fits(
+        tmp_path, "sharp.fits", L1FWHM=1.8, AIRMASS=1.1, FOCPOSN=0.0, WMSHUMID=20, L1MEAN=30, SATURATE=80000
+    )
+    blurry = _write_quality_header_fits(
+        tmp_path, "blurry.fits", L1FWHM=4.5, AIRMASS=1.1, FOCPOSN=0.0, WMSHUMID=20, L1MEAN=30, SATURATE=80000
+    )
+    mid = _write_quality_header_fits(
+        tmp_path, "mid.fits", L1FWHM=2.5, AIRMASS=1.1, FOCPOSN=0.0, WMSHUMID=20, L1MEAN=30, SATURATE=80000
+    )
+    files = [str(blurry), str(sharp), str(mid)]
+
+    idxs, records = rp.header_triage(files, top_k=3)
+
+    assert [files[i] for i in idxs] == [str(sharp), str(mid), str(blurry)]
+    assert all(r.hard_reject is None for r in records)
+
+
+def test_header_triage_hard_rejects_extreme_airmass_and_humidity(tmp_path):
+    good = _write_quality_header_fits(tmp_path, "good.fits", L1FWHM=2.0, AIRMASS=1.2, WMSHUMID=30)
+    bad_airmass = _write_quality_header_fits(tmp_path, "bad_airmass.fits", L1FWHM=1.5, AIRMASS=4.0, WMSHUMID=30)
+    bad_humidity = _write_quality_header_fits(tmp_path, "bad_humidity.fits", L1FWHM=1.5, AIRMASS=1.2, WMSHUMID=99)
+    files = [str(good), str(bad_airmass), str(bad_humidity)]
+
+    idxs, records = rp.header_triage(files, top_k=5)
+
+    assert [files[i] for i in idxs] == [str(good)]
+    reject_reasons = {Path(r.path).name: r.hard_reject for r in records}
+    assert reject_reasons["bad_airmass.fits"] is not None
+    assert reject_reasons["bad_humidity.fits"] is not None
+    assert reject_reasons["good.fits"] is None
+
+
+def test_header_triage_falls_back_when_all_frames_hard_rejected(tmp_path, caplog):
+    files = [
+        str(_write_quality_header_fits(tmp_path, f"f{i}.fits", L1FWHM=2.0 + i, AIRMASS=4.0))
+        for i in range(3)
+    ]
+
+    with caplog.at_level("WARNING"):
+        idxs, records = rp.header_triage(files, top_k=5)
+
+    assert len(idxs) == 3  # never empties the pool
+    assert any("falling back" in msg for msg in caplog.messages)
+
+
+def test_header_triage_tolerates_missing_individual_keys(tmp_path):
+    """A single missing field (WMSHUMID) shouldn't exclude an otherwise-good frame."""
+    complete = _write_quality_header_fits(
+        tmp_path, "complete.fits", L1FWHM=2.0, AIRMASS=1.1, WMSHUMID=20, L1MEAN=30, SATURATE=80000
+    )
+    missing_humidity = _write_quality_header_fits(
+        tmp_path, "missing_humidity.fits", L1FWHM=2.0, AIRMASS=1.1, L1MEAN=30, SATURATE=80000
+    )
+    files = [str(complete), str(missing_humidity)]
+
+    idxs, records = rp.header_triage(files, top_k=5)
+
+    assert len(idxs) == 2  # both ranked, none excluded for one missing field
+    assert all(r.score is not None for r in records)
+
+
+def test_header_triage_clamps_top_k_to_available_frames(tmp_path):
+    files = [
+        str(_write_quality_header_fits(tmp_path, f"f{i}.fits", L1FWHM=1.0 + i * 0.1, AIRMASS=1.1))
+        for i in range(3)
+    ]
+
+    idxs, _ = rp.header_triage(files, top_k=100)
+
+    assert len(idxs) == 3
+
+
+def test_quality_select_eligible_true_for_banzai_instruments_and_muscat_family():
+    for inst in ("muscat3", "muscat4", "sinistro", "muscat", "muscat2"):
+        assert rp._quality_select_eligible(inst) is True
+    assert rp._quality_select_eligible("unknown") is False
+
+
+def test_candidate_frames_for_tier2_muscat_family_evenly_spaced(tmp_path):
+    files = [str(tmp_path / f"f{i}.fits") for i in range(10)]
+
+    idxs, tier1_diag = rp._candidate_frames_for_tier2(files, "muscat2", top_k=3)
+
+    assert tier1_diag is None  # header triage skipped -- no BANZAI header proxy
+    assert idxs == sorted(set(idxs))  # spread across the sequence, not frames[:3]
+    assert idxs[0] == 0
+    assert idxs[-1] == 9
+
+
+class _FakeGetDataSequenceParallel:
+    """Stand-in for SequenceParallel that populates the data_blocks' Get
+    block from a test-configured per-position metrics table, instead of
+    running the real (parallel, multi-process) detection/PSF pipeline --
+    mirrors this file's existing ``_FakeRefSeq`` convention of bypassing
+    the expensive pixel pipeline while exercising the real orchestration
+    logic (here: ranking/selection in select_reference_frame)."""
+
+    metrics_by_position: list[dict] = []
+    discard_positions: set = set()
+
+    def __init__(self, blocks=None, data_blocks=None, name=""):
+        self._get_block = (data_blocks or [None])[0]
+
+    def run(self, images, show_progress=True):
+        for pos in range(len(images)):
+            if pos in type(self).discard_positions:
+                continue
+            m = type(self).metrics_by_position[pos]
+            for key in ("idx", "fwhm", "n_sources", "target_matched", "target_saturated"):
+                self._get_block.values[key].append(m[key])
+
+
+def _patch_fake_sequence_parallel(monkeypatch, metrics_by_position, discard_positions=()):
+    _FakeGetDataSequenceParallel.metrics_by_position = metrics_by_position
+    _FakeGetDataSequenceParallel.discard_positions = set(discard_positions)
+    monkeypatch.setattr(rp, "SequenceParallel", _FakeGetDataSequenceParallel)
+
+
+def test_select_reference_frame_uses_tier2_to_pick_lowest_fwhm(tmp_path, monkeypatch):
+    files = [str(tmp_path / f"f{i}.fits") for i in range(3)]
+    # header_triage isn't exercised here (muscat2 -> evenly spaced candidates
+    # covering all 3 frames); Tier 2 metrics decide the winner.
+    _patch_fake_sequence_parallel(
+        monkeypatch,
+        metrics_by_position=[
+            {"idx": 0, "fwhm": 6.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
+            {"idx": 1, "fwhm": 3.2, "n_sources": 9, "target_matched": True, "target_saturated": False},
+            {"idx": 2, "fwhm": 9.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
+        ],
+    )
+
+    refid, diag = rp.select_reference_frame(
+        files, instrument="muscat2", target_coord=None, top_k=3, ref_seq_kwargs={}
+    )
+
+    assert refid == 1  # lowest measured FWHM among target-matched, non-outlier candidates
+    assert diag["method"] == "quality"
+    assert diag["chosen_index"] == 1
+
+
+def test_select_reference_frame_rejects_unmatched_target_candidate(tmp_path, monkeypatch):
+    files = [str(tmp_path / f"f{i}.fits") for i in range(3)]
+    _patch_fake_sequence_parallel(
+        monkeypatch,
+        metrics_by_position=[
+            # best FWHM but target not matched -- must not win
+            {"idx": 0, "fwhm": 2.0, "n_sources": 10, "target_matched": False, "target_saturated": False},
+            {"idx": 1, "fwhm": 5.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
+            {"idx": 2, "fwhm": 6.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
+        ],
+    )
+
+    refid, _ = rp.select_reference_frame(
+        files, instrument="muscat2", target_coord="dummy-non-none-coord", top_k=3, ref_seq_kwargs={}
+    )
+
+    assert refid == 1  # best FWHM among the target-matched candidates
+
+
+def test_select_reference_frame_deprioritizes_saturated_target(tmp_path, monkeypatch):
+    files = [str(tmp_path / f"f{i}.fits") for i in range(2)]
+    _patch_fake_sequence_parallel(
+        monkeypatch,
+        metrics_by_position=[
+            {"idx": 0, "fwhm": 2.0, "n_sources": 10, "target_matched": True, "target_saturated": True},
+            {"idx": 1, "fwhm": 3.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
+        ],
+    )
+
+    refid, _ = rp.select_reference_frame(
+        files, instrument="sinistro", target_coord=None, top_k=2, ref_seq_kwargs={}
+    )
+
+    assert refid == 1  # unsaturated target wins even with a slightly worse FWHM
+
+
+def test_format_ref_selection_report_position_mode_is_minimal():
+    report = rp.format_ref_selection_report(
+        "gp", {"method": "position", "chosen_path": Path("/x/MCT20_1234.fits")}
+    )
+    assert "method: position" in report
+    assert "MCT20_1234.fits" in report
+
+
+def test_format_ref_selection_report_quality_mode_includes_tiers(tmp_path):
+    diagnostics = {
+        "method": "quality",
+        "instrument": "sinistro",
+        "top_k": 2,
+        "tier1": [
+            rp.FrameHeaderQuality(
+                path=Path("f0.fits"),
+                values={"fwhm": 1.8, "airmass": 1.1, "focus": 0.0, "humidity": 20, "background": 30},
+                hard_reject=None,
+                score=-0.5,
+            ),
+        ],
+        "tier2": [
+            rp.FramePixelQuality(path=Path("f0.fits"), fwhm=6.8, n_sources=42, target_matched=True, target_saturated=False),
+        ],
+        "chosen_index": 0,
+        "chosen_path": Path("f0.fits"),
+    }
+    report = rp.format_ref_selection_report("gp", diagnostics)
+    assert "Tier 1" in report and "Tier 2" in report
+    assert "f0.fits" in report
+    assert "decision:" in report
