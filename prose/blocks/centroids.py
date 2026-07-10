@@ -23,6 +23,32 @@ __all__ = [
 TF_LOADED = False
 
 
+def _import_keras():
+    """Return the Keras symbols needed to build CNN centroid models.
+
+    Raises a clear :class:`ModuleNotFoundError` when TensorFlow is not
+    installed, instead of letting a later ``NameError`` obscure the cause.
+
+    Returns
+    -------
+    tuple
+        ``(Sequential, Conv2D, MaxPooling2D, Dense, Flatten)``
+    """
+    import os
+
+    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+    try:
+        from tensorflow.keras.layers import Conv2D, Dense, Flatten, MaxPooling2D
+        from tensorflow.keras.models import Sequential
+    except ModuleNotFoundError as error:
+        raise ModuleNotFoundError(
+            "TensorFlow is required for CNN-based centroiding (e.g. CentroidBallet). "
+            "Install it with `pip install tensorflow`."
+        ) from error
+
+    return Sequential, Conv2D, MaxPooling2D, Dense, Flatten
+
+
 class _PhotutilsCentroid(Block):
     def __init__(self, centroid_func, limit=None, cutout=21, name=None):
         """Photutils centroiding
@@ -224,14 +250,7 @@ class CentroidBallet(_CNNCentroid):
         self.import_and_check_model()
 
     def build_model(self):
-        try:
-            import os
-
-            os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-            from tensorflow.keras.layers import Conv2D, Dense, Flatten, MaxPooling2D
-            from tensorflow.keras.models import Sequential
-        except ModuleNotFoundError:
-            TF_LOADED = True
+        Sequential, Conv2D, MaxPooling2D, Dense, Flatten = _import_keras()
 
         self.model = Sequential(
             [
@@ -258,33 +277,26 @@ class CentroidBallet(_CNNCentroid):
 # For reference
 class _OldNNCentroid(_CNNCentroid):
     def __init__(self, **kwargs):
-        try:
-            import os
-
-            os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-            from tensorflow.keras.layers import Conv2D, Dense, Flatten, MaxPooling2D
-            from tensorflow.keras.models import Sequential
-        except ModuleNotFoundError:
-            TF_LOADED = True
-
         super().__init__(cutout=21, filename="oldcentroid.h5", **kwargs)
         self.import_and_check_model()
 
     def build_model(self):
-        self.model = self.tf_models.Sequential(
+        Sequential, Conv2D, MaxPooling2D, Dense, Flatten = _import_keras()
+
+        self.model = Sequential(
             [
-                self.tf_layers.Conv2D(
+                Conv2D(
                     self.cutout,
                     (3, 3),
                     activation="relu",
                     input_shape=(self.cutout, self.cutout, 1),
                 ),
-                self.tf_layers.MaxPooling2D((2, 2)),
-                self.tf_layers.Conv2D(64, (3, 3), activation="relu"),
-                self.tf_layers.MaxPooling2D((2, 2)),
-                self.tf_layers.Conv2D(124, (3, 3), activation="relu"),
-                self.tf_layers.Flatten(),
-                self.tf_layers.Dense(2048, activation="relu"),
-                self.tf_layers.Dense(2),
+                MaxPooling2D((2, 2)),
+                Conv2D(64, (3, 3), activation="relu"),
+                MaxPooling2D((2, 2)),
+                Conv2D(124, (3, 3), activation="relu"),
+                Flatten(),
+                Dense(2048, activation="relu"),
+                Dense(2),
             ]
         )

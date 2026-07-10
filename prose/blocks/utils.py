@@ -608,7 +608,8 @@ class GetFluxes(Get):
             args and kwargs of :py:class:`prose.blocks.Get`
         """
         self._time_key = time
-        get_fluxes = lambda im: im.aperture["fluxes"]
+        def get_fluxes(im):
+            return im.aperture["fluxes"]
 
         def get_bkg(im):
             if "annulus" in im.computed.keys():

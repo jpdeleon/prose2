@@ -280,7 +280,9 @@ def test_reference_sequence_detects_more_than_max_num_stars():
     """reference_sequence detects DETECT_NUM_STARS_FACTOR times max_num_stars
     so faint targets are captured before truncation back to max_num_stars."""
     seq = rp.reference_sequence(max_num_stars=10)
-    detect_block = seq.blocks[1]
+    detect_block = next(
+        b for b in seq.blocks if b.__class__.__name__ == "PointSourceDetection"
+    )
     expected_min = max(int(10 * rp.DETECT_NUM_STARS_FACTOR), 10 + 5)
     assert detect_block.n >= expected_min
     assert detect_block.n > 10

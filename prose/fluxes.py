@@ -134,7 +134,10 @@ def weights(
         # if both std and mad are 0, it is a constant/masked star, weight should be 0 (via inf)
         # otherwise if only mad is 0, fallback to std
         mad = np.where((mad == 0.0) & (std != 0.0), std, mad)
-        return 1 / mad
+        # mad == 0 (constant/masked star) yields inf here, which is converted to a
+        # zero weight downstream; errstate only silences the divide-by-zero warning.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return 1 / mad
 
     i = 0
     evolution = 1e25
@@ -201,17 +204,21 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
         weighted_fluxes = diff_fluxes * np.expand_dims(weights, -1)
         # see broeg 2005:
         # https://ui.adsabs.harvard.edu/abs/2005AN....326..134B/abstract
-        artificial_light_curve = (sub @ weighted_fluxes) / np.expand_dims(
-            weights @ sub[0], -1
-        )
-        diff_fluxes = diff_fluxes / artificial_light_curve
+        # errstate silences the divide-by-zero warning when a star has no valid
+        # comparison stars (all other weights zero); the result stays NaN as before.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            artificial_light_curve = (sub @ weighted_fluxes) / np.expand_dims(
+                weights @ sub[0], -1
+            )
+            diff_fluxes = diff_fluxes / artificial_light_curve
         if errors is not None:
             diff_errors = errors / np.expand_dims(np.nanmean(fluxes, -1), -1)
             weighted_errors = diff_errors**2 * np.expand_dims(weights, -1) ** 2
-            squarred_art_error = (sub @ weighted_errors) / np.expand_dims(
-                weights**2 @ sub[0], -1
-            )
-            diff_errors = np.sqrt(diff_errors**2 + squarred_art_error)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                squarred_art_error = (sub @ weighted_errors) / np.expand_dims(
+                    weights**2 @ sub[0], -1
+                )
+                diff_errors = np.sqrt(diff_errors**2 + squarred_art_error)
         else:
             diff_errors = None
 

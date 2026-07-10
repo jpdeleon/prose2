@@ -506,8 +506,8 @@ class SEDetection(_SimplePointSourceDetection):
         self.threshold = threshold
 
     def detect(self, image):
-        data = image.data.byteswap().newbyteorder()
-        sep_data = extract(image.data, self.threshold * np.median(data))
+        data = image.data.astype(image.data.dtype.newbyteorder("="))
+        sep_data = extract(data, self.threshold * np.median(data))
         coordinates = np.array([sep_data["x"], sep_data["y"]]).T
         fluxes = np.array(sep_data["flux"])
 

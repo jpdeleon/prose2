@@ -396,7 +396,7 @@ class Image:
 
                 for s in _sources:
                     _s = s.copy()
-                    _s.coords = _s.coords - [x0, y0]
+                    _s.coords = _s.coords - [x0, y0] + new_image.origin_cutout
                     new_sources.append(_s)
 
         image = Image(new_image.data, deepcopy(self.metadata), deepcopy(self.computed))
@@ -577,7 +577,10 @@ class Image:
         radii = (np.sqrt((X - x) ** 2 + (Y - y) ** 2)).flatten()
         d, values = self._profile(radii)
         idxs = utils.index_binning(d, binn)
-        mean = lambda x: np.array([np.mean(x[i]) for i in idxs])
+
+        def mean(x):
+            return np.array([np.mean(x[i]) for i in idxs])
+
         return mean(d), mean(values)
 
     def _profile(self, d):
@@ -661,11 +664,6 @@ class Image:
                 self.filter,
             ]
         )
-
-    @property
-    def fits_header(self):
-        """Same as :code:`header` (backward compatibility)"""
-        return self.header
 
 
 def str_to_astropy_unit(unit_string):

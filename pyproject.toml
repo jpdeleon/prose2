@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "black"]
+dev = ["pytest", "black", "mypy>=1.19.1"]
 jax = ["jax>=0.4.26", "jaxopt"]
 docs = [
     "sphinx",

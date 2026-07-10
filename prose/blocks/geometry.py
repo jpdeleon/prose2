@@ -129,7 +129,6 @@ class Cutouts(Block):
             image.cutout(coords, self.shape, wcs=self.wcs, sources=self.sources)
             for coords in image.sources.coords
         ]
-        f = 0
 
 
 # TODO: delete?
@@ -174,7 +173,6 @@ class Drizzle(Block):
         self.image = reference.copy()
 
     def run(self, image):
-        WCS = image.wcs
         self.drizzle.add_image(image.data, image.wcs)
 
     def terminate(self):
