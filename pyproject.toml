@@ -30,7 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "black", "mypy>=1.19.1"]
-jax = ["jax>=0.4.26", "jaxopt"]
+jax = ["jax>=0.4.26", "jaxopt", "flax", "huggingface_hub"]
 docs = [
     "sphinx",
     "docutils",
@@ -91,6 +91,8 @@ black = "*"
 [tool.poetry.group.jax.dependencies]
 jax = "^0.4.26"
 jaxopt = "*"
+flax = "*"
+huggingface-hub = "*"
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "*"

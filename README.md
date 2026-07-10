@@ -214,6 +214,13 @@ pip install 'prose @ git+https://github.com/lgrcia/prose'
 
 ## Attribution
 
+### Ballet centroiding
+
+The optional `blocks.CentroidBallet` block uses the current JAX/Flax Ballet
+model and Eloy-compatible `centroid_15x15.npz` weights. Install the `jax` extra
+and instantiate the block without arguments to download the pretrained weights,
+or pass `model_file` for offline use.
+
 `run_photometry` is built on prose. If you use it for research, please cite
 [Garcia et al. 2022](https://ui.adsabs.harvard.edu/abs/2022MNRAS.509.4817G):
 

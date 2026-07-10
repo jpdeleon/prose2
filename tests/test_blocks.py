@@ -36,10 +36,34 @@ def test_centroids_blocks(block):
 
 
 def test_centroid_ballet():
-    tf = pytest.importorskip("tensorflow")
     from prose.blocks.centroids import CentroidBallet
 
-    CentroidBallet().run(image_psf)
+    class ExactCenterModel:
+        def centroid(self, cutouts):
+            return np.tile([7.5, 7.5], (len(cutouts), 1))
+
+    original = image_psf.sources.coords.copy()
+    result = image_psf.copy()
+    CentroidBallet(model=ExactCenterModel()).run(result)
+
+    np.testing.assert_allclose(result.sources.coords, original)
+
+
+def test_centroid_ballet_rejects_non_finite_and_large_displacements():
+    from prose.blocks.centroids import CentroidBallet
+
+    class InvalidModel:
+        def centroid(self, cutouts):
+            result = np.tile([7.5, 7.5], (len(cutouts), 1))
+            result[0] = np.nan
+            result[1] += 20
+            return result
+
+    result = image_psf.copy()
+    original = result.sources.coords.copy()
+    CentroidBallet(model=InvalidModel()).run(result)
+
+    np.testing.assert_allclose(result.sources.coords[:2], original[:2])
 
 
 @pytest.mark.parametrize("block", classes("prose.blocks.psf", _PSFModelBase))

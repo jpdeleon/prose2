@@ -1,5 +1,4 @@
 import warnings
-from os import path
 
 import numpy as np
 from astropy.utils.exceptions import AstropyUserWarning
@@ -10,7 +9,7 @@ from photutils.centroids import (
     centroid_sources,
 )
 
-from prose import CONFIG, Block
+from prose import Block
 
 
 __all__ = [
@@ -19,34 +18,6 @@ __all__ = [
     "CentroidQuadratic",
     "CentroidBallet",
 ]
-
-TF_LOADED = False
-
-
-def _import_keras():
-    """Return the Keras symbols needed to build CNN centroid models.
-
-    Raises a clear :class:`ModuleNotFoundError` when TensorFlow is not
-    installed, instead of letting a later ``NameError`` obscure the cause.
-
-    Returns
-    -------
-    tuple
-        ``(Sequential, Conv2D, MaxPooling2D, Dense, Flatten)``
-    """
-    import os
-
-    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-    try:
-        from tensorflow.keras.layers import Conv2D, Dense, Flatten, MaxPooling2D
-        from tensorflow.keras.models import Sequential
-    except ModuleNotFoundError as error:
-        raise ModuleNotFoundError(
-            "TensorFlow is required for CNN-based centroiding (e.g. CentroidBallet). "
-            "Install it with `pip install tensorflow`."
-        ) from error
-
-    return Sequential, Conv2D, MaxPooling2D, Dense, Flatten
 
 
 class _PhotutilsCentroid(Block):
@@ -179,46 +150,44 @@ class CentroidQuadratic(_PhotutilsCentroid):
         super().__init__(centroid_func=centroid_quadratic, limit=limit, cutout=cutout)
 
 
-class _CNNCentroid(Block):
-    def __init__(self, cutout=15, filename=None, limit=None, **kwargs):
-        super().__init__(**kwargs)
-        self.filename = filename
-        self.model = None
-        self.cutout = cutout
-        self.x, self.y = np.indices((cutout, cutout))
-        if limit is None:
-            limit = cutout / 2
-        self.limit = limit
+class CentroidBallet(Block):
+    """Centroid sources with the pretrained JAX/Flax Ballet CNN.
 
-    def import_and_check_model(self):
-        model_file = path.join(CONFIG.folder_path, self.filename)
+    Parameters
+    ----------
+    model_file : path-like, optional
+        Eloy-compatible ``centroid_15x15.npz`` weights. When omitted, weights
+        are downloaded from ``lgrcia/ballet`` on Hugging Face Hub.
+    model : object, optional
+        An initialized object exposing ``centroid(cutouts)``. Primarily useful
+        for sharing a model between blocks or for testing.
+    limit : float, optional
+        Maximum accepted displacement in pixels, by default 7.5.
+    """
 
-        if path.exists(model_file):
-            self.build_model()
-            self.model.load_weights(model_file)
-        else:
-            raise AssertionError("Still on dev, contact lgrcia")
+    def __init__(self, model_file=None, model=None, limit=None, name=None):
+        super().__init__(name=name, read=["sources", "data"])
+        if model is not None and model_file is not None:
+            raise ValueError("pass either model or model_file, not both")
+        if model is None:
+            from prose.ballet import Ballet
 
-    def build_model(self):
-        raise NotImplementedError()
+            model = Ballet(model_file=model_file)
+        self.model = model
+        self.cutout = 15
+        self.limit = self.cutout / 2 if limit is None else limit
 
     def run(self, image):
-        n = 15
+        n = self.cutout
         in_image = np.all(image.sources.coords < image.shape[::-1] - (1, 1), axis=1)
         in_image = np.logical_and(
             in_image, np.all(image.sources.coords > (0, 0), axis=1)
         )
         in_image_coords = image.sources.coords[in_image].copy()
         cutouts = image.data_cutouts(in_image_coords, (n, n))
-        cutouts_reshaped = cutouts / np.mean(cutouts, (1, 2))[:, None, None]
-        cutouts_reshaped = cutouts_reshaped[..., None]
         cutouts_origins = in_image_coords - n / 2
 
-        # apply model
-        centroid_sources_coords = (
-            cutouts_origins
-            + self.model(cutouts_reshaped, training=False).numpy()[:, ::-1]
-        )
+        centroid_sources_coords = cutouts_origins + self.model.centroid(cutouts)
         # if coords is nan (any of x, y), keep old coord
         nan_mask = np.any(np.isnan(centroid_sources_coords), 1)
         centroid_sources_coords[nan_mask] = in_image_coords[nan_mask]
@@ -235,68 +204,4 @@ class _CNNCentroid(Block):
 
     @property
     def citations(self):
-        return super().citations + ["tensorflow", "keras"]
-
-
-class CentroidBallet(_CNNCentroid):
-    """Centroiding with  `ballet <https://github.com/lgrcia/ballet>`_.
-
-    |write| ``Image.stars_coords``
-
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__(cutout=15, filename="centroid.h5", **kwargs)
-        self.import_and_check_model()
-
-    def build_model(self):
-        Sequential, Conv2D, MaxPooling2D, Dense, Flatten = _import_keras()
-
-        self.model = Sequential(
-            [
-                Conv2D(
-                    64,
-                    (3, 3),
-                    activation="relu",
-                    input_shape=(self.cutout, self.cutout, 1),
-                    use_bias=True,
-                    padding="same",
-                ),
-                MaxPooling2D((2, 2), padding="same"),
-                Conv2D(128, (3, 3), activation="relu", use_bias=True, padding="same"),
-                MaxPooling2D((2, 2), padding="same"),
-                Conv2D(256, (3, 3), activation="relu", use_bias=True, padding="same"),
-                Flatten(),
-                Dense(2048, activation="sigmoid", use_bias=True),
-                Dense(512, activation="sigmoid", use_bias=True),
-                Dense(2),
-            ]
-        )
-
-
-# For reference
-class _OldNNCentroid(_CNNCentroid):
-    def __init__(self, **kwargs):
-        super().__init__(cutout=21, filename="oldcentroid.h5", **kwargs)
-        self.import_and_check_model()
-
-    def build_model(self):
-        Sequential, Conv2D, MaxPooling2D, Dense, Flatten = _import_keras()
-
-        self.model = Sequential(
-            [
-                Conv2D(
-                    self.cutout,
-                    (3, 3),
-                    activation="relu",
-                    input_shape=(self.cutout, self.cutout, 1),
-                ),
-                MaxPooling2D((2, 2)),
-                Conv2D(64, (3, 3), activation="relu"),
-                MaxPooling2D((2, 2)),
-                Conv2D(124, (3, 3), activation="relu"),
-                Flatten(),
-                Dense(2048, activation="relu"),
-                Dense(2),
-            ]
-        )
+        return super().citations + ["jax", "flax", "ballet"]
