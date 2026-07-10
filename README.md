@@ -53,6 +53,43 @@ flowchart TD
 > Tip: on GitHub the diagram pans/zooms, and the highlighted nodes are
 > clickable — they jump to the matching section below.
 
+#### Production block sequence
+
+The source detector in the production pipeline is prose's connected-region
+detector, not `DAOStarFinder`. The reference frame establishes the source list
+and PSF model; each science frame repeats detection and PSF measurement before
+alignment, centroid refinement, and photometry.
+
+```mermaid
+flowchart LR
+    subgraph REF["Per-band reference frame"]
+        direction LR
+        R1["Trim<br/>prose"] --> R2["Bad-pixel mask<br/>prose"]
+        R2 --> R3["PointSourceDetection<br/>scikit-image connected regions"]
+        R3 --> R4["Cutouts<br/>prose"]
+        R4 --> R5["Median ePSF<br/>prose"]
+        R5 --> R6["Gaussian2D PSF fit<br/>Astropy + SciPy"]
+        R6 --> R7["Quadratic centroid refinement<br/>Photutils"]
+        R7 --> R8["Aperture photometry<br/>Photutils"]
+        R8 --> R9["Annulus background<br/>Photutils apertures + Astropy statistics"]
+    end
+
+    subgraph SCI["Each science frame"]
+        direction LR
+        S1["Trim<br/>prose"] --> S2["Bad-pixel mask<br/>prose"]
+        S2 --> S3["PointSourceDetection<br/>scikit-image connected regions"]
+        S3 --> S4["Cutouts + median ePSF<br/>prose"]
+        S4 --> S5["Gaussian2D PSF fit<br/>Astropy + SciPy"]
+        S5 --> S6["Transform + reference alignment<br/>Twirl + prose"]
+        S6 --> S7["Quadratic centroid refinement<br/>Photutils"]
+        S7 --> S8["Aperture photometry<br/>Photutils"]
+        S8 --> S9["Annulus background<br/>Photutils apertures + Astropy statistics"]
+        S9 --> S10["Peak measurement + data cleanup<br/>prose2"]
+    end
+
+    R9 -. "reference model and source positions" .-> S5
+```
+
 ### What it does
 
 For each photometric band it:
