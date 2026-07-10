@@ -1,0 +1,78 @@
+{
+  "dataset": "/data/MuSCAT3/260119",
+  "camera": "ep02",
+  "frames": 10,
+  "centroid_attempts": 462,
+  "timing_seconds_per_frame": {
+    "quadratic": {
+      "median": 0.014869925973471254,
+      "p90": 0.016363270301371812,
+      "p95": 0.016429970657918604,
+      "max": 0.01649667101446539
+    },
+    "ballet": {
+      "median": 2.8754347530193627,
+      "p90": 3.4551853295764885,
+      "p95": 3.4559123162936887,
+      "max": 3.4566393030108884
+    },
+    "gaussian2d": {
+      "median": 0.70507859706413,
+      "p90": 0.8475520259002223,
+      "p95": 0.9085875459015368,
+      "max": 0.9696230659028515
+    }
+  },
+  "ballet_to_quadratic_time_ratio": 193.37249951003741,
+  "moved_fraction": {
+    "quadratic": 0.841991341991342,
+    "ballet": 1.0,
+    "gaussian2d": 0.9545454545454546
+  },
+  "shift_from_detection_px": {
+    "quadratic": {
+      "median": 6.5858518368749674,
+      "p90": 8.078184179532666,
+      "p95": 8.464491328948712,
+      "max": 10.462269992909011
+    },
+    "ballet": {
+      "median": 2.6034834255656856,
+      "p90": 3.8781123552093333,
+      "p95": 4.046385340845661,
+      "max": 4.321809298197239
+    },
+    "gaussian2d": {
+      "median": 0.8808653258071696,
+      "p90": 6.179955670609619,
+      "p95": 7.3692377933373505,
+      "max": 10.493030399958235
+    }
+  },
+  "pairwise_disagreement_px": {
+    "quadratic_ballet": {
+      "median": 4.863688140157107,
+      "p90": 8.41719215054278,
+      "p95": 9.419009477551096,
+      "max": 12.854549382828559
+    },
+    "quadratic_gaussian": {
+      "median": 6.27643915888742,
+      "p90": 7.941117557644772,
+      "p95": 9.034637373487431,
+      "max": 13.32537770755395
+    },
+    "ballet_gaussian": {
+      "median": 2.7095928037163235,
+      "p90": 4.773504510694411,
+      "p95": 5.9136290408970025,
+      "max": 8.982056786352183
+    }
+  },
+  "notes": [
+    "Gaussian2D is an accuracy proxy, not ground truth.",
+    "Timing excludes FITS loading and source detection.",
+    "Moved fraction is not a rejection rate: an exact zero correction also counts as unchanged.",
+    "Ballet timings include any JAX tracing/compilation caused by a new batch shape."
+  ]
+}

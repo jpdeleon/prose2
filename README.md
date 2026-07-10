@@ -221,6 +221,13 @@ model and Eloy-compatible `centroid_15x15.npz` weights. Install the `jax` extra
 and instantiate the block without arguments to download the pretrained weights,
 or pass `model_file` for offline use.
 
+Compare Ballet, quadratic Photutils, and Gaussian2D on real MuSCAT3 frames with:
+
+```bash
+uv run python scripts/compare_centroids_muscat3.py /data/MuSCAT3/260119 \
+    --camera ep02 --frames 20 --stars 50
+```
+
 `run_photometry` is built on prose. If you use it for research, please cite
 [Garcia et al. 2022](https://ui.adsabs.harvard.edu/abs/2022MNRAS.509.4817G):
 
