@@ -69,7 +69,7 @@ flowchart LR
         R3 --> R4["Cutouts<br/>prose"]
         R4 --> R5["Median ePSF<br/>prose"]
         R5 --> R6["Gaussian2D PSF fit<br/>Astropy + SciPy"]
-        R6 --> R7["Quadratic centroid refinement<br/>Photutils"]
+        R6 --> R7["Adaptive centroid refinement<br/>Photutils quadratic / COM"]
         R7 --> R8["Aperture photometry<br/>Photutils"]
         R8 --> R9["Annulus background<br/>Photutils apertures + Astropy statistics"]
     end
@@ -81,7 +81,7 @@ flowchart LR
         S3 --> S4["Cutouts + median ePSF<br/>prose"]
         S4 --> S5["Gaussian2D PSF fit<br/>Astropy + SciPy"]
         S5 --> S6["Transform + reference alignment<br/>Twirl + prose"]
-        S6 --> S7["Quadratic centroid refinement<br/>Photutils"]
+        S6 --> S7["Adaptive centroid refinement<br/>Photutils quadratic / COM"]
         S7 --> S8["Aperture photometry<br/>Photutils"]
         S8 --> S9["Annulus background<br/>Photutils apertures + Astropy statistics"]
         S9 --> S10["Peak measurement + data cleanup<br/>prose2"]
@@ -89,6 +89,15 @@ flowchart LR
 
     R9 -. "reference model and source positions" .-> S5
 ```
+
+Centroid refinement uses a quadratic peak fit for compact PSFs and switches to
+center-of-mass for broad or defocused PSFs. Its cutout and displacement limit
+scale with measured FWHM; invalid or excessive corrections fall back to the
+original connected-region centroid. Per-source method, shift, and validity
+diagnostics are retained on each image.
+Select `--centroid_method auto` (default), `quad`, or `com` to use the adaptive
+policy, reproduce the former quadratic-only reduction, or force
+center-of-mass, respectively.
 
 ### What it does
 
@@ -138,7 +147,7 @@ Everything is written to `--results_dir`:
 | Input / output | `--data_dir`, `--results_dir`, `--glob`, `--overwrite` |
 | Bands & reference | `--bands`, `--ref_band`, `--refid` |
 | Apertures | `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
-| Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--ccd_trim` |
+| Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--centroid_method`, `--ccd_trim` |
 | Time & plots | `--use_barycorrpy`, `--bin_size_minutes`, `--plot_gaia_sources`, `--gif`, `--gif_stride` |
 | MuSCAT raw calibration | `--muscat_calib_dir`, `--muscat2_calib_dir` |
 | Run control | `--test_run`, `--test_run_frames`, `--verbose` |

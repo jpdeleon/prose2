@@ -207,6 +207,7 @@ AVOID_NEARBY_STAR_MATCH_ARCSEC = 1.5
 # means auto: half the cutout size, so the PSF cutout box stays fully on-chip.
 # 0 disables edge exclusion.
 EDGE_MARGIN_PIX = None
+CENTROID_METHOD = "auto"
 
 # Color scheme for plots. These constants reflect the default ``Greys`` cmap
 # rendering, so downstream callers/tests can compare against the public values.
@@ -707,6 +708,21 @@ class MaskBadPixels(Block):
 # --------------------------- reference building ---------------------------
 
 
+def _centroid_block(method: str):
+    """Return the configured production centroid block."""
+    blocks_by_method = {
+        "auto": blocks.AdaptiveCentroid,
+        "quad": blocks.CentroidQuadratic,
+        "com": blocks.CentroidCOM,
+    }
+    try:
+        return blocks_by_method[method]()
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown centroid method {method!r}; choose auto, quad, or com"
+        ) from exc
+
+
 def reference_sequence(
     ccd_trim_size_yx: tuple[int, int] = CCD_TRIM_SIZE_YX,
     max_num_stars: int = MAX_NUM_STARS,
@@ -714,6 +730,7 @@ def reference_sequence(
     cutout_size: int = CUTOUT_SIZE,
     min_area: int = MIN_STAR_AREA,
     bad_pixel_map: np.ndarray | None = None,
+    centroid_method: str = CENTROID_METHOD,
 ) -> Sequence:
     """Calibration sequence run on the per-band reference frame.
 
@@ -738,7 +755,7 @@ def reference_sequence(
             blocks.Cutouts(shape=cutout_size, wcs=True),
             blocks.MedianEPSF(),
             blocks.psf.Gaussian2D(),
-            blocks.CentroidQuadratic(),
+            _centroid_block(centroid_method),
             blocks.AperturePhotometry(),
             blocks.AnnulusBackground(),
         ]
@@ -869,7 +886,11 @@ def header_triage(
     z_airmass = _zscore([r.values.get("airmass") for r in records])
     z_focus_dev = _zscore(
         [
-            (abs(v - focus_median) if v is not None and focus_median is not None else None)
+            (
+                abs(v - focus_median)
+                if v is not None and focus_median is not None
+                else None
+            )
             for v in focus_values
         ]
     )
@@ -899,7 +920,9 @@ def header_triage(
         r.score = float(sum(terms)) if z_fwhm[i] is not None else None
 
     survivor_idx = [
-        i for i, r in enumerate(records) if r.hard_reject is None and r.score is not None
+        i
+        for i, r in enumerate(records)
+        if r.hard_reject is None and r.score is not None
     ]
     if not survivor_idx:
         logger.warning(
@@ -907,17 +930,22 @@ def header_triage(
             f"L1FWHM missing?); falling back to ranking the full unfiltered "
             f"set of {len(records)} frame(s)"
         )
-        survivor_idx = [i for i, r in enumerate(records) if r.score is not None] or list(
-            range(len(records))
-        )
+        survivor_idx = [
+            i for i, r in enumerate(records) if r.score is not None
+        ] or list(range(len(records)))
 
-    survivor_idx.sort(key=lambda i: records[i].score if records[i].score is not None else float("inf"))
+    survivor_idx.sort(
+        key=lambda i: records[i].score if records[i].score is not None else float("inf")
+    )
     k = max(1, min(top_k, len(survivor_idx)))
     return survivor_idx[:k], records
 
 
 def _quality_select_eligible(instrument: str) -> bool:
-    return instrument in BANZAI_QUALITY_INSTRUMENTS or instrument in ("muscat", "muscat2")
+    return instrument in BANZAI_QUALITY_INSTRUMENTS or instrument in (
+        "muscat",
+        "muscat2",
+    )
 
 
 def _candidate_frames_for_tier2(
@@ -968,7 +996,9 @@ def _target_index_or_none(ref, target_coord) -> int | None:
     return int(np.atleast_1d(idx)[0])
 
 
-def _target_is_saturated(ref, target_index: int | None, saturation: float | None) -> bool:
+def _target_is_saturated(
+    ref, target_index: int | None, saturation: float | None
+) -> bool:
     if target_index is None or saturation is None or saturation <= 0:
         return False
     if not (0 <= target_index < len(ref.sources)):
@@ -1002,11 +1032,15 @@ def pixel_validate_candidates(
         try:
             sat_all = get_saturation_from_header(im.header)
             saturation = (
-                sat_all.get(im.header.get("FILTER", "")) if isinstance(sat_all, dict) else None
+                sat_all.get(im.header.get("FILTER", ""))
+                if isinstance(sat_all, dict)
+                else None
             )
         except Exception:
             saturation = None
-        return _target_is_saturated(im, _target_index_or_none(im, target_coord), saturation)
+        return _target_is_saturated(
+            im, _target_index_or_none(im, target_coord), saturation
+        )
 
     get_block = blocks.Get(
         idx=lambda im: int(im.i),
@@ -1048,7 +1082,9 @@ def pixel_validate_candidates(
             )
         else:
             results.append(
-                FramePixelQuality(path=Path(path), error="discarded during Tier 2 processing")
+                FramePixelQuality(
+                    path=Path(path), error="discarded during Tier 2 processing"
+                )
             )
     return results
 
@@ -1082,8 +1118,12 @@ def select_reference_frame(
     lines and the ``*_ref_selection.txt`` audit sidecar.
     """
     ref_seq_kwargs = ref_seq_kwargs or {}
-    candidate_indices, tier1_records = _candidate_frames_for_tier2(band_files, instrument, top_k)
-    tier2 = pixel_validate_candidates(band_files, candidate_indices, target_coord, ref_seq_kwargs)
+    candidate_indices, tier1_records = _candidate_frames_for_tier2(
+        band_files, instrument, top_k
+    )
+    tier2 = pixel_validate_candidates(
+        band_files, candidate_indices, target_coord, ref_seq_kwargs
+    )
 
     valid_n = [t.n_sources for t in tier2 if t.error is None]
     median_n = float(np.median(valid_n)) if valid_n else 0.0
@@ -1107,7 +1147,11 @@ def select_reference_frame(
 
 def format_ref_selection_report(band: str, diagnostics: dict) -> str:
     """Render the ``*_ref_selection.txt`` audit sidecar content for one band."""
-    lines = ["reference selection report", "===========================", f"band: {band}"]
+    lines = [
+        "reference selection report",
+        "===========================",
+        f"band: {band}",
+    ]
     method = diagnostics.get("method", "position")
     lines.append(f"method: {method}")
     chosen_path = diagnostics.get("chosen_path")
@@ -1125,7 +1169,9 @@ def format_ref_selection_report(band: str, diagnostics: dict) -> str:
     tier1 = diagnostics.get("tier1")
     tier2 = diagnostics.get("tier2") or []
     if tier1 is not None:
-        n_survivors = sum(1 for r in tier1 if r.hard_reject is None and r.score is not None)
+        n_survivors = sum(
+            1 for r in tier1 if r.hard_reject is None and r.score is not None
+        )
         n_rejected = sum(1 for r in tier1 if r.hard_reject is not None)
         lines.append(f"Tier 1 (header triage, {len(tier1)} frames scanned):")
         lines.append(f"  survivors kept: {n_survivors}")
@@ -1134,7 +1180,9 @@ def format_ref_selection_report(band: str, diagnostics: dict) -> str:
             f"  {'frame':<26}{'L1FWHM':>8}{'AIRMASS':>9}{'FOCPOSN':>9}"
             f"{'WMSHUMID':>10}{'L1MEAN':>9}{'score':>9}"
         )
-        ranked = sorted((r for r in tier1 if r.score is not None), key=lambda r: r.score)
+        ranked = sorted(
+            (r for r in tier1 if r.score is not None), key=lambda r: r.score
+        )
 
         def _fmt(x):
             return f"{x:.2f}" if x is not None else "n/a"
@@ -1636,6 +1684,7 @@ def build_reference(
     avoid_nearby_star: float | str | None = None,
     annulus_pix: tuple[float, float] | None = None,
     bad_pixel_map: np.ndarray | None = None,
+    centroid_method: str = CENTROID_METHOD,
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -1689,6 +1738,7 @@ def build_reference(
         cutout_size=cutout_size,
         min_area=min_area,
         bad_pixel_map=bad_pixel_map,
+        centroid_method=centroid_method,
     ).run(ref, show_progress=False)
 
     match_found = False
@@ -1862,6 +1912,7 @@ def photometry_sequence(
     target_index: int = 0,
     min_area: int = MIN_STAR_AREA,
     bad_pixel_map: np.ndarray | None = None,
+    centroid_method: str = CENTROID_METHOD,
 ) -> SequenceParallel:
     """Parallel per-image photometry sequence (mirrors the notebook).
 
@@ -1895,7 +1946,7 @@ def photometry_sequence(
         )
     blocks_list.extend(
         [
-            blocks.CentroidQuadratic(),
+            _centroid_block(centroid_method),
             blocks.AperturePhotometry(aper_radii, scale=scale),
             blocks.AnnulusBackground(rin=rin, rout=rout, scale=scale),
             MeasurePeaks(),
@@ -1964,6 +2015,7 @@ def run_band(
     annulus_pix: tuple[float, float] | None = None,
     nan_imputation_method: str = "linear",
     bad_pixel_map: np.ndarray | None = None,
+    centroid_method: str = CENTROID_METHOD,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -2001,6 +2053,7 @@ def run_band(
         avoid_nearby_star=avoid_nearby_star,
         annulus_pix=annulus_pix,
         bad_pixel_map=bad_pixel_map,
+        centroid_method=centroid_method,
     )
     ref = reference["ref"]
     target_index = reference["target_index"]
@@ -2208,6 +2261,7 @@ def run_band(
         target_index=target_index,
         min_area=min_area,
         bad_pixel_map=bad_pixel_map,
+        centroid_method=centroid_method,
     )
     phot.run(files)
 
@@ -3597,8 +3651,7 @@ def _inject_wcs_from_sidecars(
         wcs = load_wcs_fits(sidecars[band])
         if wcs is None:
             logger.warning(
-                f"  {calib_label}: sidecar {sidecars[band]} unreadable; "
-                f"re-calibrating"
+                f"  {calib_label}: sidecar {sidecars[band]} unreadable; re-calibrating"
             )
             return False
 
@@ -4079,6 +4132,15 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Side length in pixels of star cutouts (default: %(default)s).",
     )
     ap.add_argument(
+        "--centroid_method",
+        "--centroid-method",
+        choices=["auto", "quad", "com"],
+        default=CENTROID_METHOD,
+        help="Centroid refinement: adaptive quadratic/COM selection ('auto'), "
+        "quadratic only ('quad'), or center-of-mass only ('com'). "
+        "Default: %(default)s.",
+    )
+    ap.add_argument(
         "--ccd_trim",
         "--ccd-trim",
         type=parse_trim,
@@ -4512,13 +4574,15 @@ def main(argv=None) -> int:
                 need_calib = True
 
         if calibrated_files and not need_calib:
-            missing, unreadable, no_wcs, wrong_method = _calibrated_wcs_problems_by_band(
-                calib_label=calib_label,
-                calibrated_files=calibrated_files,
-                active_bands=active_bands,
-                requested_bands=args.bands,
-                target_name=args.target_name,
-                wcs_method=args.wcs_method,
+            missing, unreadable, no_wcs, wrong_method = (
+                _calibrated_wcs_problems_by_band(
+                    calib_label=calib_label,
+                    calibrated_files=calibrated_files,
+                    active_bands=active_bands,
+                    requested_bands=args.bands,
+                    target_name=args.target_name,
+                    wcs_method=args.wcs_method,
+                )
             )
             if missing or unreadable:
                 need_calib = True
@@ -4764,6 +4828,7 @@ def main(argv=None) -> int:
                             cutout_size=args.cutout_size,
                             min_area=args.min_star_area,
                             bad_pixel_map=bad_pixel_map,
+                            centroid_method=args.centroid_method,
                         ),
                     )
                     chosen_refid, chosen_diag = _quality_selection_cache[cache_key]
@@ -4847,6 +4912,7 @@ def main(argv=None) -> int:
                 annulus_pix=args.annulus_pix,
                 nan_imputation_method=args.nan_imputation_method,
                 bad_pixel_map=bad_pixel_map,
+                centroid_method=args.centroid_method,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
@@ -5225,7 +5291,8 @@ def main(argv=None) -> int:
         selection_path = args.results_dir / f"{stem_multi}_ref_selection.txt"
         selection_path.write_text(
             format_ref_selection_report(
-                target_ref_band, ref_selection_diagnostics.get(target_ref_band, {"method": "position"})
+                target_ref_band,
+                ref_selection_diagnostics.get(target_ref_band, {"method": "position"}),
             )
         )
         logger.info(f"wrote {selection_path}")

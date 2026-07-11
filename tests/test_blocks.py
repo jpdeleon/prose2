@@ -66,6 +66,64 @@ def test_centroid_ballet_rejects_non_finite_and_large_displacements():
     np.testing.assert_allclose(result.sources.coords[:2], original[:2])
 
 
+def _centroid_test_image(data, initial, fwhm):
+    from prose import Image
+    from prose.core.source import PointSource, Sources
+
+    result = Image(data=data)
+    result.sources = Sources([PointSource(coords=np.asarray(initial, dtype=float))])
+    result.fwhm = fwhm
+    return result
+
+
+def test_adaptive_centroid_uses_quadratic_for_compact_psf():
+    from prose.blocks.centroids import AdaptiveCentroid
+
+    yy, xx = np.mgrid[:81, :81]
+    truth = np.array([40.35, 39.65])
+    data = 1000 * np.exp(-((xx - truth[0]) ** 2 + (yy - truth[1]) ** 2) / (2 * 2**2))
+    result = _centroid_test_image(data, [39.5, 40.5], fwhm=4.7)
+
+    AdaptiveCentroid().run(result)
+
+    assert result.centroid_methods[0] == "quadratic"
+    assert result.centroid_valid[0]
+    assert result.centroid_cutout == 21
+    np.testing.assert_allclose(result.sources.coords[0], truth, atol=0.2)
+
+
+def test_adaptive_centroid_uses_com_for_defocused_donut():
+    from prose.blocks.centroids import AdaptiveCentroid
+
+    yy, xx = np.mgrid[:121, :121]
+    truth = np.array([60.4, 59.6])
+    radius = np.hypot(xx - truth[0], yy - truth[1])
+    data = 1000 * np.exp(-((radius - 13.0) ** 2) / (2 * 2.5**2))
+    result = _centroid_test_image(data, [59.5, 60.5], fwhm=26.0)
+
+    AdaptiveCentroid().run(result)
+
+    assert result.centroid_methods[0] == "com"
+    assert result.centroid_valid[0]
+    assert result.centroid_cutout == 65
+    np.testing.assert_allclose(result.sources.coords[0], truth, atol=0.2)
+
+
+def test_adaptive_centroid_rejects_excessive_com_shift():
+    from prose.blocks.centroids import AdaptiveCentroid
+
+    yy, xx = np.mgrid[:101, :101]
+    data = 1000 * np.exp(-((xx - 65) ** 2 + (yy - 50) ** 2) / (2 * 3**2))
+    original = np.array([50.0, 50.0])
+    result = _centroid_test_image(data, original, fwhm=20.0)
+
+    AdaptiveCentroid().run(result)
+
+    assert result.centroid_methods[0] == "region"
+    assert not result.centroid_valid[0]
+    np.testing.assert_array_equal(result.sources.coords[0], original)
+
+
 @pytest.mark.parametrize("block", classes("prose.blocks.psf", _PSFModelBase))
 def test_psf_blocks(block):
     if "JAX" in block.__name__:
@@ -177,7 +235,7 @@ def test_LimitSources():
     im = image.copy()
     im.sources = Sources([PointSource(0, 0) for _ in range(2)])
     blocks.LimitSources().run(im)
-    assert im.discard == True
+    assert im.discard
 
 
 def test_Del():

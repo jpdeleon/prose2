@@ -56,8 +56,10 @@ The largest optimization opportunity in both implementations is avoiding repeate
 
 ## Centroiding: Photutils versus Ballet
 
-The main prose2 photometry pipeline currently uses Photutils
-`centroid_quadratic`. Eloy offers Ballet, a JAX/Flax convolutional model, and
+The main prose2 photometry pipeline now uses `AdaptiveCentroid`: Photutils
+`centroid_quadratic` for compact PSFs and center-of-mass for broad/defocused
+PSFs. The benchmark below predates that change and measures the quadratic
+branch directly. Eloy offers Ballet, a JAX/Flax convolutional model, and
 prose2's `CentroidBallet` block has been updated to use the same newer model and
 `centroid_15x15.npz` weights.
 

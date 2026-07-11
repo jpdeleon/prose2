@@ -13,11 +13,137 @@ from prose import Block
 
 
 __all__ = [
+    "AdaptiveCentroid",
     "CentroidCOM",
     "CentroidGaussian2D",
     "CentroidQuadratic",
     "CentroidBallet",
 ]
+
+
+def _odd_ceil(value):
+    value = int(np.ceil(value))
+    return value if value % 2 else value + 1
+
+
+class AdaptiveCentroid(Block):
+    """Refine centroids using a PSF-shape-aware production policy.
+
+    Compact frames use Photutils' quadratic centroid with center-of-mass as a
+    fallback. Broad/defocused frames use center-of-mass directly because a
+    quadratic peak fit can lock onto one side of a donut-shaped PSF.
+
+    Parameters
+    ----------
+    compact_cutout : int, optional
+        Minimum centroid box size, by default 21 pixels.
+    defocus_fraction : float, optional
+        Use center-of-mass when FWHM reaches this fraction of
+        ``compact_cutout``, by default 0.75.
+    cutout_fwhm : float, optional
+        Adaptive box size in FWHM units, by default 2.5.
+    max_cutout : int, optional
+        Upper bound on the adaptive box size, by default 101 pixels.
+    shift_fwhm : float, optional
+        Maximum accepted displacement in FWHM units, by default 0.25.
+    min_shift : float, optional
+        Minimum maximum displacement, by default 3 pixels.
+    """
+
+    def __init__(
+        self,
+        compact_cutout=21,
+        defocus_fraction=0.75,
+        cutout_fwhm=2.5,
+        max_cutout=101,
+        shift_fwhm=0.25,
+        min_shift=3.0,
+        name=None,
+    ):
+        super().__init__(name=name, read=["sources", "data", "fwhm"])
+        self.compact_cutout = _odd_ceil(compact_cutout)
+        self.defocus_fraction = defocus_fraction
+        self.cutout_fwhm = cutout_fwhm
+        self.max_cutout = _odd_ceil(max_cutout)
+        self.shift_fwhm = shift_fwhm
+        self.min_shift = min_shift
+
+    @staticmethod
+    def _measure(data, coords, cutout, centroid_func):
+        if not len(coords):
+            return coords.copy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", AstropyUserWarning)
+            warnings.simplefilter("ignore", RuntimeWarning)
+            return np.asarray(
+                centroid_sources(
+                    data,
+                    coords[:, 0],
+                    coords[:, 1],
+                    box_size=cutout,
+                    centroid_func=centroid_func,
+                )
+            ).T
+
+    def run(self, image):
+        original = image.sources.coords.copy()
+        fwhm = float(image.fwhm)
+        if not np.isfinite(fwhm) or fwhm <= 0:
+            fwhm = self.compact_cutout / 3
+
+        cutout = min(
+            self.max_cutout,
+            _odd_ceil(max(self.compact_cutout, self.cutout_fwhm * fwhm)),
+        )
+        max_shift = max(self.min_shift, self.shift_fwhm * fwhm)
+        defocused = fwhm >= self.defocus_fraction * self.compact_cutout
+        primary_func = centroid_com if defocused else centroid_quadratic
+        primary_name = "com" if defocused else "quadratic"
+
+        in_image = np.all(original < image.shape[::-1] - (1, 1), axis=1)
+        in_image &= np.all(original > (0, 0), axis=1)
+        final = original.copy()
+        methods = np.full(len(original), "region", dtype="<U9")
+        valid = np.zeros(len(original), dtype=bool)
+
+        indices = np.flatnonzero(in_image)
+        candidates = self._measure(image.data, original[in_image], cutout, primary_func)
+        shifts = np.linalg.norm(candidates - original[in_image], axis=1)
+        accepted = np.all(np.isfinite(candidates), axis=1) & (shifts < max_shift)
+        final[indices[accepted]] = candidates[accepted]
+        methods[indices[accepted]] = primary_name
+        valid[indices[accepted]] = True
+
+        # On compact frames, COM is a robust fallback when a quadratic peak fit
+        # is invalid or jumps too far. Defocused frames already use COM.
+        fallback_local = (
+            np.flatnonzero(~accepted) if not defocused else np.empty(0, int)
+        )
+        if len(fallback_local):
+            fallback = self._measure(
+                image.data, original[indices[fallback_local]], cutout, centroid_com
+            )
+            fallback_shifts = np.linalg.norm(
+                fallback - original[indices[fallback_local]], axis=1
+            )
+            fallback_ok = np.all(np.isfinite(fallback), axis=1) & (
+                fallback_shifts < max_shift
+            )
+            accepted_indices = indices[fallback_local[fallback_ok]]
+            final[accepted_indices] = fallback[fallback_ok]
+            methods[accepted_indices] = "com"
+            valid[accepted_indices] = True
+
+        image.sources.coords = final
+        image.centroid_methods = methods
+        image.centroid_shifts = np.linalg.norm(final - original, axis=1)
+        image.centroid_valid = valid
+        image.centroid_cutout = cutout
+        image.centroid_max_shift = max_shift
+
+    @property
+    def citations(self) -> list:
+        return super().citations + ["photutils"]
 
 
 class _PhotutilsCentroid(Block):

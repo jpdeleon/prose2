@@ -78,22 +78,31 @@ def test_parse_args_custom_mode():
 
 def test_parse_args_choices_depend_on_sinistro_data(tmp_path):
     from tests.scripts.test_run_photometry import _write_sinistro_fits
+
     _write_sinistro_fits(tmp_path, "test1.fits", "lsc", confmode="central_2k_2x2")
-    
+
     argv = [
-        "--target_name", "TOI-6715",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--mode", "central_2k_2x2"
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--mode",
+        "central_2k_2x2",
     ]
     args = rp.parse_args(argv)
     assert args.mode == "central_2k_2x2"
-    
+
     argv_invalid = [
-        "--target_name", "TOI-6715",
-        "--data_dir", str(tmp_path),
-        "--results_dir", str(tmp_path / "results"),
-        "--mode", "full_frame"
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--mode",
+        "full_frame",
     ]
     with pytest.raises(SystemExit):
         rp.parse_args(argv_invalid)
@@ -190,12 +199,44 @@ def test_parse_args_detection_and_alignment_knobs():
             "6",
             "--cutout_size",
             "41",
+            "--centroid_method",
+            "com",
         )
     )
     assert args.max_num_stars == 15
     assert args.min_star_separation == pytest.approx(7.5)
     assert args.n_stars_align == 6
     assert args.cutout_size == 41
+    assert args.centroid_method == "com"
+
+
+@pytest.mark.parametrize(
+    "method, expected",
+    [
+        ("auto", "AdaptiveCentroid"),
+        ("quad", "CentroidQuadratic"),
+        ("com", "CentroidCOM"),
+    ],
+)
+def test_centroid_method_selects_reference_and_photometry_blocks(method, expected):
+    reference = rp.reference_sequence(centroid_method=method)
+    assert any(block.__class__.__name__ == expected for block in reference.blocks)
+
+    from prose.core.source import Sources
+
+    class FakeReference:
+        sources = Sources(np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0], [3.0, 1.0]]))
+        epsf = type("FakeEPSF", (), {"params": {}})()
+
+    photometry = rp.photometry_sequence(
+        ref=FakeReference(),
+        aper_radii=np.array([3.0]),
+        rin=6.0,
+        rout=9.0,
+        n_stars_align=4,
+        centroid_method=method,
+    )
+    assert any(block.__class__.__name__ == expected for block in photometry.blocks)
 
 
 def test_parse_args_bin_size_minutes_override():
@@ -292,9 +333,7 @@ def test_photometry_sequence_uses_cross_filter_alignment_tolerance():
     from prose.core.source import Sources
 
     class FakeReference:
-        sources = Sources(
-            np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0], [3.0, 1.0]])
-        )
+        sources = Sources(np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0], [3.0, 1.0]]))
         epsf = type("FakeEPSF", (), {"params": {}})()
 
     seq = rp.photometry_sequence(
@@ -305,7 +344,9 @@ def test_photometry_sequence_uses_cross_filter_alignment_tolerance():
         n_stars_align=4,
     )
     align_blocks = [
-        block for block in seq.blocks if block.__class__.__name__ == "AlignReferenceSources"
+        block
+        for block in seq.blocks
+        if block.__class__.__name__ == "AlignReferenceSources"
     ]
 
     assert len(align_blocks) == 1
