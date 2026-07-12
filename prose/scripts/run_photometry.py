@@ -236,10 +236,10 @@ _DARK_COLORS = {  # for light background
 _BRIGHT_COLORS = {  # for dark background
     "target": COLOR_TARGET,
     "aperture": "darkgreen",
-    "sky_annulus": "yellow",
+    "sky_annulus": "darkmagenta",
     "simbad_default": COLOR_SIMBAD_DEFAULT,
     "simbad_eclbin": COLOR_SIMBAD_ECLBIN,
-    "sources": "darkmagenta",
+    "sources": "yellow",
 }
 
 
@@ -443,6 +443,16 @@ def date_from_header(header) -> str:
     return _date_from_time_keys(header)
 
 
+def _telescope_stem_token(telescope: str) -> str:
+    """Compact filename token for a TELESCOP header value, e.g. '1m0-05' -> 'tel05'."""
+    raw = str(telescope).strip().lower()
+    if not raw:
+        return ""
+    tail = raw.rsplit("-", 1)[-1]
+    tail = re.sub(r"[^0-9a-z]", "", tail)
+    return f"tel{tail}" if tail else ""
+
+
 def build_stem(
     target: str,
     inst: str,
@@ -450,6 +460,7 @@ def build_stem(
     band: str | None = None,
     site: str | None = None,
     confmode: str | None = None,
+    telescope: str | None = None,
 ) -> str:
     target = target.replace(" ", "")
     inst_lower = inst.lower()
@@ -459,15 +470,20 @@ def build_stem(
         if "full" in confmode_str:
             suffix = "_full"
 
-    if inst_lower == "sinistro" and site:
-        site_str = site.lower()
-        if site_str in ("lsc", "cpt", "coj", "tfn", "elp"):
-            if band is None:
-                return f"{target}_{inst}_{site_str}_{date}{suffix}"
-            return f"{target}_{inst}_{site_str}_{band}_{date}{suffix}"
-    if band is None:
-        return f"{target}_{inst}_{date}{suffix}"
-    return f"{target}_{inst}_{band}_{date}{suffix}"
+    tokens = [target, inst]
+    if inst_lower == "sinistro":
+        if site:
+            site_str = site.lower()
+            if site_str in ("lsc", "cpt", "coj", "tfn", "elp"):
+                tokens.append(site_str)
+        if telescope:
+            tel_token = _telescope_stem_token(telescope)
+            if tel_token:
+                tokens.append(tel_token)
+    if band is not None:
+        tokens.append(band)
+    tokens.append(date)
+    return "_".join(tokens) + suffix
 
 
 def build_summary_stem(
@@ -477,12 +493,17 @@ def build_summary_stem(
     bands: Iterable[str],
     site: str | None = None,
     confmode: str | None = None,
+    telescope: str | None = None,
 ) -> str:
     """Build a summary-product stem scoped to the exact reduced band set."""
     band_token = "_".join(str(b).strip() for b in bands if str(b).strip())
     if not band_token:
-        return build_stem(target, inst, date, site=site, confmode=confmode)
-    return build_stem(target, inst, date, band_token, site=site, confmode=confmode)
+        return build_stem(
+            target, inst, date, site=site, confmode=confmode, telescope=telescope
+        )
+    return build_stem(
+        target, inst, date, band_token, site=site, confmode=confmode, telescope=telescope
+    )
 
 
 def _savefig(fig, path: Path) -> None:
@@ -4040,6 +4061,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Only reduce data in this mode (only applicable for sinistro instrument).",
     )
     ap.add_argument(
+        "--telescope",
+        default=None,
+        help="Only reduce data from this physical telescope, matched against the "
+        "TELESCOP header (e.g. '1m0-05'). Only applicable for sinistro instrument.",
+    )
+    ap.add_argument(
         "--gif_stride",
         "--gif-stride",
         type=int,
@@ -4402,6 +4429,12 @@ def main(argv=None) -> int:
         )
         return 1
 
+    if args.telescope is not None and instrument != "sinistro":
+        logger.error(
+            f"--telescope can only be specified when instrument is 'sinistro' (found '{instrument}')"
+        )
+        return 1
+
     if instrument == "sinistro" and args.site:
         site_to_match = args.site.lower()
         allowed_sites = ("lsc", "cpt", "coj", "tfn", "elp")
@@ -4444,6 +4477,42 @@ def main(argv=None) -> int:
             raise ValueError(
                 f"Multiple sites found in the dataset for sinistro: {sorted(unique_sites)}. "
                 "Please specify --site to select one."
+            )
+
+    if instrument == "sinistro" and args.telescope:
+        telescope_to_match = args.telescope.strip().lower()
+
+        filtered_sciences = {}
+        for b, fs in sciences.items():
+            matching = []
+            for f in fs:
+                try:
+                    hdr = fits.getheader(f)
+                    file_telescope = str(hdr.get("TELESCOP") or "").strip().lower()
+                    if file_telescope == telescope_to_match:
+                        matching.append(f)
+                except Exception as e:
+                    logger.warning(f"Could not read header of {f}: {e}")
+            if matching:
+                filtered_sciences[b] = matching
+        sciences = filtered_sciences
+
+    if instrument == "sinistro" and args.telescope is None:
+        unique_telescopes = set()
+        for b, fs in sciences.items():
+            for f in fs:
+                try:
+                    hdr = fits.getheader(f)
+                    file_telescope = str(hdr.get("TELESCOP") or "").strip().lower()
+                except Exception as e:
+                    logger.warning(f"Could not read header of {f}: {e}")
+                    file_telescope = ""
+                if file_telescope:
+                    unique_telescopes.add(file_telescope)
+        if len(unique_telescopes) > 1:
+            raise ValueError(
+                f"Multiple telescopes found in the dataset for sinistro: "
+                f"{sorted(unique_telescopes)}. Please specify --telescope to select one."
             )
 
     if instrument == "sinistro" and args.mode:
@@ -4521,6 +4590,8 @@ def main(argv=None) -> int:
             details = []
             if args.site:
                 details.append(f"site={args.site}")
+            if args.telescope:
+                details.append(f"telescope={args.telescope}")
             if args.mode:
                 details.append(f"mode={args.mode}")
             details_str = " and ".join(details)
@@ -4971,11 +5042,13 @@ def main(argv=None) -> int:
         return 1
 
     site = None
+    resolved_telescope = None
     resolved_confmode = None
     if instrument == "sinistro" and probe is not None:
         site = probe.get("SITEID") or probe.get("SITE")
         if site:
             site = str(site).lower()
+        resolved_telescope = args.telescope or probe.get("TELESCOP")
         if args.mode is not None:
             resolved_confmode = args.mode
         else:
@@ -5002,6 +5075,7 @@ def main(argv=None) -> int:
         active_bands,
         site=site,
         confmode=resolved_confmode,
+        telescope=resolved_telescope,
     )
     bjds = {}
     for band, r in band_results.items():
@@ -5012,6 +5086,7 @@ def main(argv=None) -> int:
             band,
             site=site,
             confmode=resolved_confmode,
+            telescope=resolved_telescope,
         )
         bjds[band] = compute_bjd_tdb(
             r["diff"], r["ref"].header, target_coord, args.use_barycorrpy, instrument

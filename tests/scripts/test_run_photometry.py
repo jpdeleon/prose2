@@ -256,6 +256,51 @@ def test_build_stem_strips_spaces_and_handles_band():
     )
 
 
+def test_build_stem_includes_telescope_token():
+    # Sinistro with site + telescope
+    assert (
+        rp.build_stem(
+            "TOI 6715", "sinistro", "250416", "gp", site="lsc", telescope="1m0-05"
+        )
+        == "TOI6715_sinistro_lsc_tel05_gp_250416"
+    )
+    # Sinistro with telescope only (no site)
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", "gp", telescope="1m0-09")
+        == "TOI6715_sinistro_tel09_gp_250416"
+    )
+    # Sinistro with telescope + confmode full
+    assert (
+        rp.build_stem(
+            "TOI 6715",
+            "sinistro",
+            "250416",
+            "gp",
+            site="lsc",
+            confmode="full_frame",
+            telescope="1m0-05",
+        )
+        == "TOI6715_sinistro_lsc_tel05_gp_250416_full"
+    )
+    # Telescope ignored for non-sinistro instruments
+    assert (
+        rp.build_stem("TOI 6715", "muscat4", "250416", "gp", telescope="1m0-05")
+        == "TOI6715_muscat4_gp_250416"
+    )
+    # Empty/blank telescope contributes no token
+    assert (
+        rp.build_stem("TOI 6715", "sinistro", "250416", "gp", site="lsc", telescope="")
+        == "TOI6715_sinistro_lsc_gp_250416"
+    )
+
+
+def test_telescope_stem_token_extracts_trailing_digits():
+    assert rp._telescope_stem_token("1m0-05") == "tel05"
+    assert rp._telescope_stem_token("1m0-09") == "tel09"
+    assert rp._telescope_stem_token("  1M0-05  ") == "tel05"
+    assert rp._telescope_stem_token("") == ""
+
+
 def test_build_summary_stem_includes_reduced_band_set():
     assert (
         rp.build_summary_stem("TOI 6715", "muscat4", "250416", ["gp", "zs"])
@@ -270,6 +315,17 @@ def test_build_summary_stem_includes_reduced_band_set():
             "TOI 6715", "sinistro", "250416", ["gp", "zs"], site="lsc", confmode="full"
         )
         == "TOI6715_sinistro_lsc_gp_zs_250416_full"
+    )
+    assert (
+        rp.build_summary_stem(
+            "TOI 6715",
+            "sinistro",
+            "250416",
+            ["gp", "zs"],
+            site="lsc",
+            telescope="1m0-05",
+        )
+        == "TOI6715_sinistro_lsc_tel05_gp_zs_250416"
     )
 
 
