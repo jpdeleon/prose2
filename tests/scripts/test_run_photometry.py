@@ -700,15 +700,13 @@ def test_differential_photometry_avoid_cids_out_of_range_ignored_in_auto(caplog)
     assert result is not None
 
 
-def test_differential_photometry_avoid_cids_target_itself_warns(caplog):
-    """avoid_cids containing the target star triggers a warning."""
+def test_differential_photometry_avoid_cids_target_itself_raises():
+    """The target cannot be excluded from its comparison-star mask."""
     rng = np.random.default_rng(42)
     fluxes = _make_fluxes(4, 10, rng)
 
-    with caplog.at_level("WARNING", logger="prose_run_photometry"):
-        result = rp.differential_photometry(fluxes, target_index=0, avoid_cids=[0])
-
-    assert result is not None
+    with pytest.raises(ValueError, match="target_index=0 must not be in avoid_cids"):
+        rp.differential_photometry(fluxes, target_index=0, avoid_cids=[0])
 
 
 # --------------------------- build_reference target_index_override ---------------------------

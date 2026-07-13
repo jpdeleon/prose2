@@ -2258,6 +2258,16 @@ def run_band(
                     )
                     cids = None
 
+    # ``target_index`` may be inferred from WCS, so parser-time validation of
+    # an explicit --tID cannot protect this case.  Never mask the target as an
+    # avoided comparison source: preserving its index with a sentinel value
+    # would otherwise yield a plausible-looking but invalid normalized curve.
+    if target_index in (mapped_avoid or []):
+        raise ValueError(
+            f"target_index={target_index} must not be in avoid_cids={mapped_avoid}; "
+            "avoid_cids may contain comparison stars only"
+        )
+
     requested_n_stars_align = n_stars_align if n_stars_align else len(ref.sources)
     effective_n_stars_align = min(
         requested_n_stars_align, len(ref.sources), max_num_stars
@@ -2373,6 +2383,12 @@ def differential_photometry(
     nan_imputation_method : str, optional
         Method to impute NaN values in flux matrix. Default: "linear".
     """
+    if target_index in (avoid_cids or []):
+        raise ValueError(
+            f"target_index={target_index} must not be in avoid_cids={avoid_cids}; "
+            "avoid_cids may contain comparison stars only"
+        )
+
     fluxes = fluxes.copy()
     fluxes.target = target_index
 
