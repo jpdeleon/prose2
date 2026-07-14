@@ -129,6 +129,23 @@ Multi-camera MuSCAT bands each self-reference their own first frame, which is
 correct when every band is a separate camera. Pass `--ref_band gp` to instead
 align all bands to one band's frame.
 
+#### Reference selection and transient rejection
+
+`--ref_select position` is the default and preserves the fast, deterministic
+single-frame behavior. `--ref_select quality --ref_select_top_k 5` uses the
+existing header and pixel-quality ranking to choose a local top-K candidate
+window, registers the candidate source catalogs to the selected frame, and
+keeps sources detected in at least 60% of the registered candidates. This
+prevents transient cosmic-ray events from entering the reference star catalog
+while allowing normal telescope drift. The WCS-matched target and an explicit
+`--tID` are always retained; explicit target indices are remapped after the
+catalog is filtered.
+
+The `*_ref_selection.txt` product records every candidate, registration
+success, the persistence threshold, and the number of retained sources. If
+fewer than two catalogs register successfully, persistence filtering is
+disabled and the selected frame's original detections are used.
+
 ### Output products
 
 Everything is written to `--results_dir`:
@@ -145,7 +162,7 @@ Everything is written to `--results_dir`:
 |---|---|
 | Target | `--target_name` (required), `--target_coord`, `--tID`, `--cID`, `--avoid_cids` |
 | Input / output | `--data_dir`, `--results_dir`, `--glob`, `--overwrite` |
-| Bands & reference | `--bands`, `--ref_band`, `--refid` |
+| Bands & reference | `--bands`, `--ref_band`, `--refid`, `--ref_select`, `--ref_select_top_k` |
 | Apertures | `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
 | Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--centroid_method`, `--ccd_trim` |
 | Time & plots | `--use_barycorrpy`, `--bin_size_minutes`, `--plot_gaia_sources`, `--gif`, `--gif_stride` |

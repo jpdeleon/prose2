@@ -2327,13 +2327,34 @@ def _write_quality_header_fits(tmp_path, name, **hdr):
 
 def test_header_triage_ranks_by_composite_score_dominated_by_fwhm(tmp_path):
     sharp = _write_quality_header_fits(
-        tmp_path, "sharp.fits", L1FWHM=1.8, AIRMASS=1.1, FOCPOSN=0.0, WMSHUMID=20, L1MEAN=30, SATURATE=80000
+        tmp_path,
+        "sharp.fits",
+        L1FWHM=1.8,
+        AIRMASS=1.1,
+        FOCPOSN=0.0,
+        WMSHUMID=20,
+        L1MEAN=30,
+        SATURATE=80000,
     )
     blurry = _write_quality_header_fits(
-        tmp_path, "blurry.fits", L1FWHM=4.5, AIRMASS=1.1, FOCPOSN=0.0, WMSHUMID=20, L1MEAN=30, SATURATE=80000
+        tmp_path,
+        "blurry.fits",
+        L1FWHM=4.5,
+        AIRMASS=1.1,
+        FOCPOSN=0.0,
+        WMSHUMID=20,
+        L1MEAN=30,
+        SATURATE=80000,
     )
     mid = _write_quality_header_fits(
-        tmp_path, "mid.fits", L1FWHM=2.5, AIRMASS=1.1, FOCPOSN=0.0, WMSHUMID=20, L1MEAN=30, SATURATE=80000
+        tmp_path,
+        "mid.fits",
+        L1FWHM=2.5,
+        AIRMASS=1.1,
+        FOCPOSN=0.0,
+        WMSHUMID=20,
+        L1MEAN=30,
+        SATURATE=80000,
     )
     files = [str(blurry), str(sharp), str(mid)]
 
@@ -2344,9 +2365,15 @@ def test_header_triage_ranks_by_composite_score_dominated_by_fwhm(tmp_path):
 
 
 def test_header_triage_hard_rejects_extreme_airmass_and_humidity(tmp_path):
-    good = _write_quality_header_fits(tmp_path, "good.fits", L1FWHM=2.0, AIRMASS=1.2, WMSHUMID=30)
-    bad_airmass = _write_quality_header_fits(tmp_path, "bad_airmass.fits", L1FWHM=1.5, AIRMASS=4.0, WMSHUMID=30)
-    bad_humidity = _write_quality_header_fits(tmp_path, "bad_humidity.fits", L1FWHM=1.5, AIRMASS=1.2, WMSHUMID=99)
+    good = _write_quality_header_fits(
+        tmp_path, "good.fits", L1FWHM=2.0, AIRMASS=1.2, WMSHUMID=30
+    )
+    bad_airmass = _write_quality_header_fits(
+        tmp_path, "bad_airmass.fits", L1FWHM=1.5, AIRMASS=4.0, WMSHUMID=30
+    )
+    bad_humidity = _write_quality_header_fits(
+        tmp_path, "bad_humidity.fits", L1FWHM=1.5, AIRMASS=1.2, WMSHUMID=99
+    )
     files = [str(good), str(bad_airmass), str(bad_humidity)]
 
     idxs, records = rp.header_triage(files, top_k=5)
@@ -2360,7 +2387,11 @@ def test_header_triage_hard_rejects_extreme_airmass_and_humidity(tmp_path):
 
 def test_header_triage_falls_back_when_all_frames_hard_rejected(tmp_path, caplog):
     files = [
-        str(_write_quality_header_fits(tmp_path, f"f{i}.fits", L1FWHM=2.0 + i, AIRMASS=4.0))
+        str(
+            _write_quality_header_fits(
+                tmp_path, f"f{i}.fits", L1FWHM=2.0 + i, AIRMASS=4.0
+            )
+        )
         for i in range(3)
     ]
 
@@ -2374,10 +2405,21 @@ def test_header_triage_falls_back_when_all_frames_hard_rejected(tmp_path, caplog
 def test_header_triage_tolerates_missing_individual_keys(tmp_path):
     """A single missing field (WMSHUMID) shouldn't exclude an otherwise-good frame."""
     complete = _write_quality_header_fits(
-        tmp_path, "complete.fits", L1FWHM=2.0, AIRMASS=1.1, WMSHUMID=20, L1MEAN=30, SATURATE=80000
+        tmp_path,
+        "complete.fits",
+        L1FWHM=2.0,
+        AIRMASS=1.1,
+        WMSHUMID=20,
+        L1MEAN=30,
+        SATURATE=80000,
     )
     missing_humidity = _write_quality_header_fits(
-        tmp_path, "missing_humidity.fits", L1FWHM=2.0, AIRMASS=1.1, L1MEAN=30, SATURATE=80000
+        tmp_path,
+        "missing_humidity.fits",
+        L1FWHM=2.0,
+        AIRMASS=1.1,
+        L1MEAN=30,
+        SATURATE=80000,
     )
     files = [str(complete), str(missing_humidity)]
 
@@ -2389,7 +2431,11 @@ def test_header_triage_tolerates_missing_individual_keys(tmp_path):
 
 def test_header_triage_clamps_top_k_to_available_frames(tmp_path):
     files = [
-        str(_write_quality_header_fits(tmp_path, f"f{i}.fits", L1FWHM=1.0 + i * 0.1, AIRMASS=1.1))
+        str(
+            _write_quality_header_fits(
+                tmp_path, f"f{i}.fits", L1FWHM=1.0 + i * 0.1, AIRMASS=1.1
+            )
+        )
         for i in range(3)
     ]
 
@@ -2404,15 +2450,13 @@ def test_quality_select_eligible_true_for_banzai_instruments_and_muscat_family()
     assert rp._quality_select_eligible("unknown") is False
 
 
-def test_candidate_frames_for_tier2_muscat_family_evenly_spaced(tmp_path):
+def test_candidate_frames_for_tier2_muscat_family_uses_local_midpoint_window(tmp_path):
     files = [str(tmp_path / f"f{i}.fits") for i in range(10)]
 
     idxs, tier1_diag = rp._candidate_frames_for_tier2(files, "muscat2", top_k=3)
 
     assert tier1_diag is None  # header triage skipped -- no BANZAI header proxy
-    assert idxs == sorted(set(idxs))  # spread across the sequence, not frames[:3]
-    assert idxs[0] == 0
-    assert idxs[-1] == 9
+    assert idxs == [4, 5, 6]
 
 
 class _FakeGetDataSequenceParallel:
@@ -2434,11 +2478,21 @@ class _FakeGetDataSequenceParallel:
             if pos in type(self).discard_positions:
                 continue
             m = type(self).metrics_by_position[pos]
-            for key in ("idx", "fwhm", "n_sources", "target_matched", "target_saturated"):
-                self._get_block.values[key].append(m[key])
+            for key in self._get_block.values:
+                if key == "path":
+                    value = str(images[pos])
+                elif key == "source_coords":
+                    value = m.get(key, np.empty((0, 2)))
+                elif key == "target_index":
+                    value = m.get(key)
+                else:
+                    value = m[key]
+                self._get_block.values[key].append(value)
 
 
-def _patch_fake_sequence_parallel(monkeypatch, metrics_by_position, discard_positions=()):
+def _patch_fake_sequence_parallel(
+    monkeypatch, metrics_by_position, discard_positions=()
+):
     _FakeGetDataSequenceParallel.metrics_by_position = metrics_by_position
     _FakeGetDataSequenceParallel.discard_positions = set(discard_positions)
     monkeypatch.setattr(rp, "SequenceParallel", _FakeGetDataSequenceParallel)
@@ -2451,9 +2505,27 @@ def test_select_reference_frame_uses_tier2_to_pick_lowest_fwhm(tmp_path, monkeyp
     _patch_fake_sequence_parallel(
         monkeypatch,
         metrics_by_position=[
-            {"idx": 0, "fwhm": 6.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
-            {"idx": 1, "fwhm": 3.2, "n_sources": 9, "target_matched": True, "target_saturated": False},
-            {"idx": 2, "fwhm": 9.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
+            {
+                "idx": 0,
+                "fwhm": 6.0,
+                "n_sources": 10,
+                "target_matched": True,
+                "target_saturated": False,
+            },
+            {
+                "idx": 1,
+                "fwhm": 3.2,
+                "n_sources": 9,
+                "target_matched": True,
+                "target_saturated": False,
+            },
+            {
+                "idx": 2,
+                "fwhm": 9.0,
+                "n_sources": 10,
+                "target_matched": True,
+                "target_saturated": False,
+            },
         ],
     )
 
@@ -2461,25 +2533,57 @@ def test_select_reference_frame_uses_tier2_to_pick_lowest_fwhm(tmp_path, monkeyp
         files, instrument="muscat2", target_coord=None, top_k=3, ref_seq_kwargs={}
     )
 
-    assert refid == 1  # lowest measured FWHM among target-matched, non-outlier candidates
+    assert (
+        refid == 1
+    )  # lowest measured FWHM among target-matched, non-outlier candidates
     assert diag["method"] == "quality"
     assert diag["chosen_index"] == 1
+    assert [candidate.path.name for candidate in diag["tier2"]] == [
+        "f0.fits",
+        "f1.fits",
+        "f2.fits",
+    ]
+    assert all(candidate.error is None for candidate in diag["tier2"])
 
 
-def test_select_reference_frame_rejects_unmatched_target_candidate(tmp_path, monkeypatch):
+def test_select_reference_frame_rejects_unmatched_target_candidate(
+    tmp_path, monkeypatch
+):
     files = [str(tmp_path / f"f{i}.fits") for i in range(3)]
     _patch_fake_sequence_parallel(
         monkeypatch,
         metrics_by_position=[
             # best FWHM but target not matched -- must not win
-            {"idx": 0, "fwhm": 2.0, "n_sources": 10, "target_matched": False, "target_saturated": False},
-            {"idx": 1, "fwhm": 5.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
-            {"idx": 2, "fwhm": 6.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
+            {
+                "idx": 0,
+                "fwhm": 2.0,
+                "n_sources": 10,
+                "target_matched": False,
+                "target_saturated": False,
+            },
+            {
+                "idx": 1,
+                "fwhm": 5.0,
+                "n_sources": 10,
+                "target_matched": True,
+                "target_saturated": False,
+            },
+            {
+                "idx": 2,
+                "fwhm": 6.0,
+                "n_sources": 10,
+                "target_matched": True,
+                "target_saturated": False,
+            },
         ],
     )
 
     refid, _ = rp.select_reference_frame(
-        files, instrument="muscat2", target_coord="dummy-non-none-coord", top_k=3, ref_seq_kwargs={}
+        files,
+        instrument="muscat2",
+        target_coord="dummy-non-none-coord",
+        top_k=3,
+        ref_seq_kwargs={},
     )
 
     assert refid == 1  # best FWHM among the target-matched candidates
@@ -2490,8 +2594,20 @@ def test_select_reference_frame_deprioritizes_saturated_target(tmp_path, monkeyp
     _patch_fake_sequence_parallel(
         monkeypatch,
         metrics_by_position=[
-            {"idx": 0, "fwhm": 2.0, "n_sources": 10, "target_matched": True, "target_saturated": True},
-            {"idx": 1, "fwhm": 3.0, "n_sources": 10, "target_matched": True, "target_saturated": False},
+            {
+                "idx": 0,
+                "fwhm": 2.0,
+                "n_sources": 10,
+                "target_matched": True,
+                "target_saturated": True,
+            },
+            {
+                "idx": 1,
+                "fwhm": 3.0,
+                "n_sources": 10,
+                "target_matched": True,
+                "target_saturated": False,
+            },
         ],
     )
 
@@ -2500,6 +2616,69 @@ def test_select_reference_frame_deprioritizes_saturated_target(tmp_path, monkeyp
     )
 
     assert refid == 1  # unsaturated target wins even with a slightly worse FWHM
+
+
+def test_persistent_reference_sources_rejects_transient_with_telescope_drift():
+    stars = np.array(
+        [[10.0, 10.0], [30.0, 12.0], [15.0, 35.0], [42.0, 38.0], [55.0, 20.0]]
+    )
+    catalogs = [
+        np.vstack([stars, [100.0, 100.0]]),
+        np.vstack([stars + [2.0, -1.0], [80.0, 105.0]]),
+        np.vstack([stars + [-3.0, 2.0], [110.0, 75.0]]),
+        np.vstack([stars + [1.5, 3.0], [90.0, 115.0]]),
+        np.vstack([stars + [-2.0, -2.5], [120.0, 95.0]]),
+    ]
+    tier2 = [
+        rp.FramePixelQuality(
+            path=Path(f"f{i}.fits"),
+            n_sources=len(coords),
+            source_coords=coords,
+        )
+        for i, coords in enumerate(catalogs)
+    ]
+
+    keep, diagnostics = rp.persistent_reference_sources(tier2, 0)
+
+    assert keep == [0, 1, 2, 3, 4]
+    assert diagnostics["enabled"] is True
+    assert diagnostics["threshold"] == 3
+    assert diagnostics["kept"] == 5
+
+
+def test_persistent_reference_sources_protects_explicit_target_index():
+    stars = np.array(
+        [[10.0, 10.0], [30.0, 12.0], [15.0, 35.0], [42.0, 38.0], [55.0, 20.0]]
+    )
+    tier2 = [
+        rp.FramePixelQuality(
+            path=Path("anchor.fits"),
+            source_coords=np.vstack([stars, [100.0, 100.0]]),
+        ),
+        rp.FramePixelQuality(path=Path("f1.fits"), source_coords=stars + [2.0, 1.0]),
+        rp.FramePixelQuality(path=Path("f2.fits"), source_coords=stars + [-1.0, 2.0]),
+    ]
+
+    keep, _ = rp.persistent_reference_sources(tier2, 0, protected_source_index=5)
+
+    assert keep == [0, 1, 2, 3, 4, 5]
+
+
+def test_select_source_indices_filters_and_renumbers_sources():
+    image = SimpleNamespace(
+        sources=rp.Sources(
+            [
+                rp.PointSource(coords=np.array([float(i), float(i)]), i=i)
+                for i in range(4)
+            ],
+            type="PointSource",
+        )
+    )
+
+    rp.SelectSourceIndices([0, 2, 99]).run(image)
+
+    assert np.array_equal(image.sources.coords, [[0.0, 0.0], [2.0, 2.0]])
+    assert [source.i for source in image.sources] == [0, 1]
 
 
 def test_format_ref_selection_report_position_mode_is_minimal():
@@ -2518,13 +2697,25 @@ def test_format_ref_selection_report_quality_mode_includes_tiers(tmp_path):
         "tier1": [
             rp.FrameHeaderQuality(
                 path=Path("f0.fits"),
-                values={"fwhm": 1.8, "airmass": 1.1, "focus": 0.0, "humidity": 20, "background": 30},
+                values={
+                    "fwhm": 1.8,
+                    "airmass": 1.1,
+                    "focus": 0.0,
+                    "humidity": 20,
+                    "background": 30,
+                },
                 hard_reject=None,
                 score=-0.5,
             ),
         ],
         "tier2": [
-            rp.FramePixelQuality(path=Path("f0.fits"), fwhm=6.8, n_sources=42, target_matched=True, target_saturated=False),
+            rp.FramePixelQuality(
+                path=Path("f0.fits"),
+                fwhm=6.8,
+                n_sources=42,
+                target_matched=True,
+                target_saturated=False,
+            ),
         ],
         "chosen_index": 0,
         "chosen_path": Path("f0.fits"),

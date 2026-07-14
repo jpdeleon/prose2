@@ -83,7 +83,7 @@ from astroquery.mast import Mast
 from astroquery.simbad import Simbad
 from rich.progress import track
 
-from prose import FITSImage, Fluxes, Sequence, blocks
+from prose import FITSImage, Fluxes, Image, Sequence, blocks
 from prose import __version__ as _PROSE_VERSION
 from prose.blocks import catalogs
 from prose.core.block import Block
@@ -174,6 +174,8 @@ REF_QUALITY_HEADER_KEYS: dict[str, str] = {
     "saturate": "SATURATE",  # ADU full well for this frame's readout mode
 }
 REF_SELECT_DEFAULT_TOP_K = 5
+REF_PERSISTENCE_FRACTION = 0.6
+REF_PERSISTENCE_MATCH_TOLERANCE_PIX = 5.0
 
 # Hard-reject thresholds: generous absolute sanity bounds for physically
 # broken frames only. Ranking (not filtering) handles the rest via per-run
@@ -502,7 +504,13 @@ def build_summary_stem(
             target, inst, date, site=site, confmode=confmode, telescope=telescope
         )
     return build_stem(
-        target, inst, date, band_token, site=site, confmode=confmode, telescope=telescope
+        target,
+        inst,
+        date,
+        band_token,
+        site=site,
+        confmode=confmode,
+        telescope=telescope,
     )
 
 
@@ -726,6 +734,36 @@ class MaskBadPixels(Block):
             logger.debug(f"masked {n_masked} bad pixels in {Path(image.path).name}")
 
 
+class SelectSourceIndices(Block):
+    """Keep a stable subset of detected reference sources.
+
+    ``ref_select=quality`` derives these indices by registering the top-K
+    candidate catalogs and retaining detections that recur in a majority of
+    candidates.  Filtering immediately after detection ensures the ePSF,
+    centroiding, aperture geometry, and downstream alignment all use the same
+    cosmic-ray-resistant catalog.
+    """
+
+    def __init__(self, indices: list[int] | None = None, name=None):
+        super().__init__(name=name)
+        self.indices = None if indices is None else [int(i) for i in indices]
+
+    def run(self, image):
+        if self.indices is None:
+            return
+        valid = [i for i in self.indices if 0 <= i < len(image.sources)]
+        if not valid:
+            logger.warning(
+                "persistent reference catalog has no valid source indices; "
+                "keeping the unfiltered detections"
+            )
+            return
+        selected = [image.sources[i] for i in valid]
+        for i, source in enumerate(selected):
+            source.i = i
+        image.sources = Sources(selected, type="PointSource")
+
+
 # --------------------------- reference building ---------------------------
 
 
@@ -752,6 +790,7 @@ def reference_sequence(
     min_area: int = MIN_STAR_AREA,
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
+    source_indices: list[int] | None = None,
 ) -> Sequence:
     """Calibration sequence run on the per-band reference frame.
 
@@ -772,6 +811,7 @@ def reference_sequence(
                 min_area=min_area,
                 min_separation=min_star_separation,
             ),
+            SelectSourceIndices(source_indices),
             # FilterPointSources(),
             blocks.Cutouts(shape=cutout_size, wcs=True),
             blocks.MedianEPSF(),
@@ -811,6 +851,8 @@ class FramePixelQuality:
     n_sources: int = 0
     target_matched: bool = False
     target_saturated: bool = False
+    target_index: int | None = None
+    source_coords: np.ndarray | None = None
     error: str | None = None
 
 
@@ -974,18 +1016,21 @@ def _candidate_frames_for_tier2(
 ) -> tuple[list[int], list[FrameHeaderQuality] | None]:
     """Select candidate-frame indices to pixel-validate in Tier 2.
 
-    BANZAI instruments use header triage to shortlist the top-K
-    sharpest/cleanest frames. muscat/muscat2 (raw, confirmed to lack every
-    :data:`REF_QUALITY_HEADER_KEYS` entry on real archive data) instead
-    sample ``top_k`` frames evenly spaced across the whole sequence, since
-    early frames are disproportionately likely to reflect initial
-    focus/guiding settling and conditions can drift across a full night.
+    BANZAI instruments use header triage to choose the best-quality anchor,
+    then take its nearest viable neighbours.  Keeping the candidates local
+    bounds telescope drift while preserving the header-based quality choice.
+    muscat/muscat2 lack the BANZAI quality keywords, so they use a local
+    window centred on the sequence midpoint.
     """
-    if instrument in BANZAI_QUALITY_INSTRUMENTS:
-        return header_triage(band_files, top_k=top_k)
     n = max(1, min(top_k, len(band_files)))
-    idxs = sorted(set(int(i) for i in np.linspace(0, len(band_files) - 1, n)))
-    return idxs, None
+    if instrument in BANZAI_QUALITY_INSTRUMENTS:
+        ranked, records = header_triage(band_files, top_k=len(band_files))
+        anchor = ranked[0]
+        local = sorted(ranked, key=lambda i: (abs(i - anchor), i))[:n]
+        return sorted(local), records
+    anchor = len(band_files) // 2
+    idxs = sorted(range(len(band_files)), key=lambda i: (abs(i - anchor), i))[:n]
+    return sorted(idxs), None
 
 
 def _target_wcs_match_found(ref, target_coord) -> bool:
@@ -1046,8 +1091,8 @@ def pixel_validate_candidates(
     """
     candidate_paths = [band_files[i] for i in candidate_indices]
 
-    def _target_matched_getter(im):
-        return _target_wcs_match_found(im, target_coord)
+    def _target_index_getter(im):
+        return _target_index_or_none(im, target_coord)
 
     def _target_saturated_getter(im):
         try:
@@ -1064,11 +1109,13 @@ def pixel_validate_candidates(
         )
 
     get_block = blocks.Get(
-        idx=lambda im: int(im.i),
+        path=lambda im: str(im.metadata["path"]),
         fwhm=lambda im: float(im.fwhm),
         n_sources=lambda im: len(im.sources),
-        target_matched=_target_matched_getter,
+        target_matched=lambda im: _target_wcs_match_found(im, target_coord),
         target_saturated=_target_saturated_getter,
+        target_index=_target_index_getter,
+        source_coords=lambda im: np.asarray(im.sources.coords, dtype=float).copy(),
         arrays=False,
     )
     seq = SequenceParallel(
@@ -1078,20 +1125,26 @@ def pixel_validate_candidates(
     )
     seq.run(list(candidate_paths), show_progress=False)
 
-    by_pos = {
-        pos: (fwhm, n_sources, matched, saturated)
-        for pos, fwhm, n_sources, matched, saturated in zip(
-            get_block.values["idx"],
+    # SequenceParallel runs data blocks through a one-image Sequence, which
+    # resets ``image.i`` to zero.  Keying by path retains every candidate;
+    # the former index-keyed collector silently collapsed top-K to one row.
+    by_path = {
+        str(Path(path)): (fwhm, n_sources, matched, saturated, target_idx, coords)
+        for path, fwhm, n_sources, matched, saturated, target_idx, coords in zip(
+            get_block.values["path"],
             get_block.values["fwhm"],
             get_block.values["n_sources"],
             get_block.values["target_matched"],
             get_block.values["target_saturated"],
+            get_block.values["target_index"],
+            get_block.values["source_coords"],
         )
     }
     results = []
-    for pos, path in enumerate(candidate_paths):
-        if pos in by_pos:
-            fwhm, n_sources, matched, saturated = by_pos[pos]
+    for path in candidate_paths:
+        key = str(Path(path))
+        if key in by_path:
+            fwhm, n_sources, matched, saturated, target_idx, coords = by_path[key]
             results.append(
                 FramePixelQuality(
                     path=Path(path),
@@ -1099,6 +1152,8 @@ def pixel_validate_candidates(
                     n_sources=n_sources,
                     target_matched=matched,
                     target_saturated=saturated,
+                    target_index=target_idx,
+                    source_coords=np.asarray(coords, dtype=float),
                 )
             )
         else:
@@ -1108,6 +1163,133 @@ def pixel_validate_candidates(
                 )
             )
     return results
+
+
+def _translation_align_catalog(
+    reference_coords: np.ndarray,
+    candidate_coords: np.ndarray,
+    tolerance: float,
+) -> np.ndarray | None:
+    """Fallback catalog registration for sparse fields.
+
+    Twirl needs at least five detections.  For a local candidate window the
+    remaining motion is normally translation-dominated, so test pairwise
+    shifts and retain the one producing the most reference matches.
+    """
+    from scipy.spatial import cKDTree
+
+    best_coords = None
+    best_matches = -1
+    for ref_coord in reference_coords[:10]:
+        for candidate_coord in candidate_coords[:10]:
+            aligned = candidate_coords + (ref_coord - candidate_coord)
+            distances, _ = cKDTree(aligned).query(reference_coords)
+            matches = int(np.sum(distances <= tolerance))
+            if matches > best_matches:
+                best_matches = matches
+                best_coords = aligned
+    required = min(3, len(reference_coords), len(candidate_coords))
+    return best_coords if best_matches >= required else None
+
+
+def _align_candidate_catalog(
+    reference_coords: np.ndarray,
+    candidate_coords: np.ndarray,
+    tolerance: float = REF_PERSISTENCE_MATCH_TOLERANCE_PIX,
+) -> np.ndarray | None:
+    """Map candidate detections into reference-frame pixel coordinates."""
+    if len(reference_coords) == 0 or len(candidate_coords) == 0:
+        return None
+
+    if len(reference_coords) >= 5 and len(candidate_coords) >= 5:
+        reference = Image(data=np.empty((1, 1)), _sources=Sources(reference_coords))
+        candidate = Image(data=np.empty((1, 1)), _sources=Sources(candidate_coords))
+        blocks.ComputeTransformTwirl(reference, n=10).run(candidate)
+        if not candidate.discard and hasattr(candidate, "transform"):
+            aligned = candidate.transform(candidate_coords)
+            from scipy.spatial import cKDTree
+
+            distances, _ = cKDTree(aligned).query(reference_coords)
+            required = min(3, len(reference_coords), len(candidate_coords))
+            if int(np.sum(distances <= tolerance)) >= required:
+                return aligned
+
+    return _translation_align_catalog(reference_coords, candidate_coords, tolerance)
+
+
+def persistent_reference_sources(
+    tier2: list[FramePixelQuality],
+    anchor_position: int,
+    *,
+    protected_source_index: int | None = None,
+    fraction: float = REF_PERSISTENCE_FRACTION,
+    tolerance: float = REF_PERSISTENCE_MATCH_TOLERANCE_PIX,
+) -> tuple[list[int] | None, dict]:
+    """Return anchor indices detected in a majority of registered candidates."""
+    from scipy.spatial import cKDTree
+
+    anchor = tier2[anchor_position]
+    reference_coords = anchor.source_coords
+    if reference_coords is None or len(reference_coords) == 0:
+        return None, {"enabled": False, "reason": "anchor catalog unavailable"}
+
+    counts = np.ones(len(reference_coords), dtype=int)
+    accepted = [str(anchor.path)]
+    rejected = []
+    for position, candidate in enumerate(tier2):
+        if position == anchor_position:
+            continue
+        if candidate.error is not None or candidate.source_coords is None:
+            rejected.append(str(candidate.path))
+            continue
+        aligned = _align_candidate_catalog(
+            reference_coords, candidate.source_coords, tolerance=tolerance
+        )
+        if aligned is None:
+            rejected.append(str(candidate.path))
+            continue
+        accepted.append(str(candidate.path))
+        distances, _ = cKDTree(aligned).query(reference_coords)
+        counts += distances <= tolerance
+
+    if len(accepted) < 2:
+        return None, {
+            "enabled": False,
+            "reason": "fewer than two candidate catalogs registered",
+            "accepted": accepted,
+            "rejected": rejected,
+        }
+
+    threshold = max(2, int(np.ceil(fraction * len(accepted))))
+    keep = list(np.flatnonzero(counts >= threshold).astype(int))
+    protected = [anchor.target_index, protected_source_index]
+    for index in protected:
+        if (
+            index is not None
+            and 0 <= index < len(reference_coords)
+            and index not in keep
+        ):
+            keep.append(int(index))
+    keep.sort()
+    if not keep:
+        return None, {
+            "enabled": False,
+            "reason": "persistence filtering removed every anchor detection",
+            "accepted": accepted,
+            "rejected": rejected,
+        }
+
+    return keep, {
+        "enabled": True,
+        "accepted": accepted,
+        "rejected": rejected,
+        "threshold": threshold,
+        "fraction": fraction,
+        "match_tolerance_pix": tolerance,
+        "counts": counts.tolist(),
+        "kept": len(keep),
+        "detected": len(reference_coords),
+    }
 
 
 def _tier2_sort_key(fpq: FramePixelQuality, median_n_sources: float) -> tuple:
@@ -1129,6 +1311,7 @@ def select_reference_frame(
     target_coord,
     top_k: int = REF_SELECT_DEFAULT_TOP_K,
     ref_seq_kwargs: dict | None = None,
+    protected_source_index: int | None = None,
 ) -> tuple[int, dict]:
     """Two-tier quality-based reference-frame selection (``--ref_select
     quality``).
@@ -1146,13 +1329,31 @@ def select_reference_frame(
         band_files, candidate_indices, target_coord, ref_seq_kwargs
     )
 
-    valid_n = [t.n_sources for t in tier2 if t.error is None]
+    valid_positions = [
+        i for i, candidate in enumerate(tier2) if candidate.error is None
+    ]
+    if not valid_positions:
+        raise RuntimeError("all top-K candidates failed pixel validation")
+    valid_n = [tier2[i].n_sources for i in valid_positions]
     median_n = float(np.median(valid_n)) if valid_n else 0.0
     ranked_positions = sorted(
-        range(len(tier2)), key=lambda p: _tier2_sort_key(tier2[p], median_n)
+        valid_positions, key=lambda p: _tier2_sort_key(tier2[p], median_n)
     )
     best_pos = ranked_positions[0]
     refid = candidate_indices[best_pos]
+    source_indices, persistence = persistent_reference_sources(
+        tier2,
+        best_pos,
+        protected_source_index=protected_source_index,
+    )
+
+    protected_new_index = protected_source_index
+    if (
+        source_indices is not None
+        and protected_source_index is not None
+        and protected_source_index in source_indices
+    ):
+        protected_new_index = source_indices.index(protected_source_index)
 
     diagnostics = {
         "method": "quality",
@@ -1162,6 +1363,9 @@ def select_reference_frame(
         "tier2": tier2,
         "chosen_index": refid,
         "chosen_path": Path(band_files[refid]),
+        "persistent_source_indices": source_indices,
+        "persistence": persistence,
+        "protected_source_new_index": protected_new_index,
     }
     return refid, diagnostics
 
@@ -1236,9 +1440,30 @@ def format_ref_selection_report(band: str, diagnostics: dict) -> str:
             f"{str(t.target_matched):>16}{str(t.target_saturated):>18}"
         )
     lines.append("")
+    persistence = diagnostics.get("persistence") or {}
+    if persistence.get("enabled"):
+        lines.append("Persistence filtering:")
+        lines.append(
+            f"  registered candidates: {len(persistence.get('accepted', []))}/{len(tier2)}"
+        )
+        lines.append(
+            f"  requirement: {persistence.get('threshold')} detections "
+            f"({persistence.get('fraction', REF_PERSISTENCE_FRACTION):.0%}), "
+            f"match tolerance: {persistence.get('match_tolerance_pix'):.1f} px"
+        )
+        lines.append(
+            f"  persistent sources: {persistence.get('kept')}/"
+            f"{persistence.get('detected')} anchor detections"
+        )
+    else:
+        lines.append(
+            "Persistence filtering: disabled "
+            f"({persistence.get('reason', 'no diagnostics')})"
+        )
+    lines.append("")
     lines.append(
-        f"decision: {Path(chosen_path).name} chosen -- lowest Tier-2 FWHM "
-        "among target-matched, non-outlier candidates"
+        f"decision: {Path(chosen_path).name} chosen by Tier-2 target-match, "
+        "source-count, saturation, and FWHM ranking"
     )
     return "\n".join(lines) + "\n"
 
@@ -1706,6 +1931,7 @@ def build_reference(
     annulus_pix: tuple[float, float] | None = None,
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
+    source_indices: list[int] | None = None,
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -1760,6 +1986,7 @@ def build_reference(
         min_area=min_area,
         bad_pixel_map=bad_pixel_map,
         centroid_method=centroid_method,
+        source_indices=source_indices,
     ).run(ref, show_progress=False)
 
     match_found = False
@@ -2037,6 +2264,7 @@ def run_band(
     nan_imputation_method: str = "linear",
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
+    reference_source_indices: list[int] | None = None,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -2075,6 +2303,7 @@ def run_band(
         annulus_pix=annulus_pix,
         bad_pixel_map=bad_pixel_map,
         centroid_method=centroid_method,
+        source_indices=reference_source_indices,
     )
     ref = reference["ref"]
     target_index = reference["target_index"]
@@ -4908,6 +5137,7 @@ def main(argv=None) -> int:
                         instrument=instrument,
                         target_coord=target_coord,
                         top_k=args.ref_select_top_k,
+                        protected_source_index=args.tID,
                         ref_seq_kwargs=dict(
                             ccd_trim_size_yx=args.ccd_trim_size_yx,
                             max_num_stars=args.max_num_stars,
@@ -4924,6 +5154,20 @@ def main(argv=None) -> int:
                         f"{Path(ref_files[chosen_refid]).name} "
                         f"(index {chosen_refid}, top_k={args.ref_select_top_k})"
                     )
+                    persistence = chosen_diag.get("persistence") or {}
+                    if persistence.get("enabled"):
+                        logger.info(
+                            f"[{band}] reference persistence: registered "
+                            f"{len(persistence.get('accepted', []))}/"
+                            f"{len(chosen_diag.get('tier2', []))} candidates; kept "
+                            f"{persistence.get('kept')}/{persistence.get('detected')} "
+                            "anchor detections"
+                        )
+                    else:
+                        logger.warning(
+                            f"[{band}] reference persistence disabled: "
+                            f"{persistence.get('reason', 'no diagnostics')}"
+                        )
                 except Exception as e:
                     logger.warning(
                         f"[{band}] quality reference selection failed ({e}); "
@@ -4960,6 +5204,13 @@ def main(argv=None) -> int:
 
     for band in ordered_bands:
         band_files = sciences[band]
+        selection_diag = ref_selection_diagnostics.get(band, {})
+        reference_source_indices = selection_diag.get("persistent_source_indices")
+        target_index_override = args.tID
+        if args.tID is not None and reference_source_indices is not None:
+            target_index_override = selection_diag.get(
+                "protected_source_new_index", args.tID
+            )
         target_pixel_override = _target_pixel_override_for_band(
             args.tID,
             self_reference,
@@ -4987,7 +5238,7 @@ def main(argv=None) -> int:
                 min_star_separation=args.min_star_separation,
                 cutout_size=args.cutout_size,
                 n_stars_align=args.n_stars_align,
-                target_index_override=args.tID,
+                target_index_override=target_index_override,
                 target_pixel_override=target_pixel_override,
                 cids=args.cID,
                 avoid_cids=args.avoid_cids,
@@ -5000,6 +5251,7 @@ def main(argv=None) -> int:
                 nan_imputation_method=args.nan_imputation_method,
                 bad_pixel_map=bad_pixel_map,
                 centroid_method=args.centroid_method,
+                reference_source_indices=reference_source_indices,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
