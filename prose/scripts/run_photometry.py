@@ -1690,6 +1690,29 @@ def _order_bands_for_target_id_inference(
     ]
 
 
+def _shared_ref_plot_band(
+    self_reference: bool, ref_band: str | None, band_results_keys
+) -> str | None:
+    """Band whose stem carries the shared reference-frame plots.
+
+    With ``--ref_band`` every band is reduced against a frame drawn from the
+    reference band (``selected_ref_files[band]`` comes from
+    ``sciences[ref_band]``), so the ``_ref``/``_apertures``/``_cutouts`` plots
+    are byte-identical across bands and differ only by the band label. They are
+    emitted once, under this band, instead of as misleading per-band duplicates.
+    Returns the reference band when it was reduced, else the first reduced band
+    (so a failed reference band does not suppress the plots entirely), or
+    ``None`` in self-reference mode -- where every band has a genuinely distinct
+    reference frame and all reference-frame plots are kept.
+    """
+    if self_reference:
+        return None
+    keys = list(band_results_keys)
+    if ref_band in keys:
+        return ref_band
+    return keys[0] if keys else None
+
+
 def _nearest_source_index(
     ref,
     pixel_position: np.ndarray | tuple[float, float] | list[float],
@@ -5346,6 +5369,14 @@ def main(argv=None) -> int:
         telescope=resolved_telescope,
     )
     bjds = {}
+    # The reference-frame plots (_ref/_apertures/_cutouts) are byte-identical
+    # across bands when --ref_band is set (all share the reference band's frame),
+    # so emit them once instead of as misleading per-band duplicates. _alignment
+    # uses each band's own science frame and stays per-band. See
+    # _shared_ref_plot_band for the selection rule.
+    ref_frame_plot_band = _shared_ref_plot_band(
+        self_reference, ref_band, band_results.keys()
+    )
     for band, r in band_results.items():
         stem = build_stem(
             args.target_name,
@@ -5366,28 +5397,36 @@ def main(argv=None) -> int:
             photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
             logger.info(f"wrote {csv_path}")
 
-        plot_ref_image(
-            r,
-            target_coord,
-            instrument,
-            args.results_dir / f"{stem}_ref.png",
-            target_name=args.target_name,
-            date=date,
-            avoid_cids=r.get("avoid_cids"),
-            plot_gaia_sources=args.plot_gaia_sources,
-            simbad_df=simbad_df,
-            cmap=args.cmap,
-        )
-        plot_apertures(
-            r,
-            args.results_dir / f"{stem}_apertures.png",
-            target_name=args.target_name,
-            instrument=instrument,
-            date=date,
-            plot_gaia_sources=args.plot_gaia_sources,
-            target_coord=target_coord,
-            cmap=args.cmap,
-        )
+        emit_shared_ref_plots = self_reference or band == ref_frame_plot_band
+        if not emit_shared_ref_plots:
+            logger.info(
+                f"[{band}] skipping reference-frame plots (_ref/_apertures/_cutouts): "
+                f"byte-identical to the {ref_frame_plot_band}-band frame "
+                f"(all bands aligned to the {ref_band}-band reference)"
+            )
+        if emit_shared_ref_plots:
+            plot_ref_image(
+                r,
+                target_coord,
+                instrument,
+                args.results_dir / f"{stem}_ref.png",
+                target_name=args.target_name,
+                date=date,
+                avoid_cids=r.get("avoid_cids"),
+                plot_gaia_sources=args.plot_gaia_sources,
+                simbad_df=simbad_df,
+                cmap=args.cmap,
+            )
+            plot_apertures(
+                r,
+                args.results_dir / f"{stem}_apertures.png",
+                target_name=args.target_name,
+                instrument=instrument,
+                date=date,
+                plot_gaia_sources=args.plot_gaia_sources,
+                target_coord=target_coord,
+                cmap=args.cmap,
+            )
         plot_alignment(
             r,
             r["files"][-1],
@@ -5403,19 +5442,20 @@ def main(argv=None) -> int:
             min_area=args.min_star_area,
             cmap=args.cmap,
         )
-        plot_cutouts(
-            r,
-            args.results_dir / f"{stem}_cutouts.png",
-            args.target_name,
-            instrument,
-            band,
-            date,
-            max_num_stars=args.max_num_stars,
-            plot_gaia_sources=args.plot_gaia_sources,
-            target_coord=target_coord,
-            simbad_df=simbad_df,
-            cmap=args.cmap,
-        )
+        if emit_shared_ref_plots:
+            plot_cutouts(
+                r,
+                args.results_dir / f"{stem}_cutouts.png",
+                args.target_name,
+                instrument,
+                band,
+                date,
+                max_num_stars=args.max_num_stars,
+                plot_gaia_sources=args.plot_gaia_sources,
+                target_coord=target_coord,
+                simbad_df=simbad_df,
+                cmap=args.cmap,
+            )
         if args.make_gif:
             stride_step = (
                 1 if args.test_run else max(1, len(r["files"]) // args.gif_stride)

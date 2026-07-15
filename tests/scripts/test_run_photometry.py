@@ -1464,6 +1464,29 @@ def test_order_bands_for_target_id_inference_preserves_uniform_wcs_state():
     )
 
 
+def test_shared_ref_plot_band_self_reference_keeps_all_bands():
+    # In self-reference mode every band has its own reference frame, so no band
+    # is singled out to carry the shared plots (all are kept).
+    assert rp._shared_ref_plot_band(True, None, ["gp", "rp", "ip", "zs"]) is None
+
+
+def test_shared_ref_plot_band_uses_reference_band_when_reduced():
+    assert (
+        rp._shared_ref_plot_band(False, "rp", ["gp", "rp", "ip", "zs"]) == "rp"
+    )
+
+
+def test_shared_ref_plot_band_falls_back_to_first_when_reference_band_failed():
+    # Reference band failed reduction (absent from band_results); the shared
+    # plots still get emitted once, under the first reduced band, instead of
+    # being suppressed entirely.
+    assert rp._shared_ref_plot_band(False, "rp", ["gp", "ip", "zs"]) == "gp"
+
+
+def test_shared_ref_plot_band_handles_no_reduced_bands():
+    assert rp._shared_ref_plot_band(False, "rp", []) is None
+
+
 def test_target_pixel_override_for_band_uses_inferred_position_only_without_wcs():
     inferred = [np.array([10.0, 20.0]), np.array([12.0, 22.0])]
 
