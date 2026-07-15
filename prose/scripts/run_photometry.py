@@ -97,6 +97,7 @@ from prose.utils import (
     PIXSCALES,
     _FILTER_ALIASES,
     coord_cache_path,
+    easy_median,
     frames_from_obslog,
     get_saturation_from_header,
     get_simbad_data,
@@ -1707,29 +1708,6 @@ def _order_bands_for_target_id_inference(
     ]
 
 
-def _shared_ref_plot_band(
-    self_reference: bool, ref_band: str | None, band_results_keys
-) -> str | None:
-    """Band whose stem carries the shared reference-frame plots.
-
-    With ``--ref_band`` every band is reduced against a frame drawn from the
-    reference band (``selected_ref_files[band]`` comes from
-    ``sciences[ref_band]``), so the ``_ref``/``_apertures``/``_cutouts`` plots
-    are byte-identical across bands and differ only by the band label. They are
-    emitted once, under this band, instead of as misleading per-band duplicates.
-    Returns the reference band when it was reduced, else the first reduced band
-    (so a failed reference band does not suppress the plots entirely), or
-    ``None`` in self-reference mode -- where every band has a genuinely distinct
-    reference frame and all reference-frame plots are kept.
-    """
-    if self_reference:
-        return None
-    keys = list(band_results_keys)
-    if ref_band in keys:
-        return ref_band
-    return keys[0] if keys else None
-
-
 def _nearest_source_index(
     ref,
     pixel_position: np.ndarray | tuple[float, float] | list[float],
@@ -2277,6 +2255,125 @@ def photometry_sequence(
     )
 
 
+def _select_stack_frames(files, n: int) -> list:
+    """Pick ``n`` evenly-spaced frames to build a display stack (or a single
+    representative middle frame when ``n <= 1``)."""
+    if n <= 1 or len(files) <= 1:
+        return [files[len(files) // 2]]
+    if len(files) <= n:
+        return list(files)
+    idx = np.linspace(0, len(files) - 1, n).round().astype(int)
+    return [files[i] for i in sorted(dict.fromkeys(idx.tolist()))]
+
+
+def _warp_onto_reference(image, shared_ref):
+    """Warp ``image.data`` onto ``shared_ref``'s pixel grid via the twirl
+    transform (``image.sources`` must already be detected).
+
+    ``image.transform`` maps this frame's coordinates to the reference frame, so
+    its inverse maps reference-grid pixels back to this frame -- exactly the
+    ``inverse_map`` ``skimage.warp`` needs to resample the frame onto the
+    reference grid (mirrors ``plot_alignment``). Returns the warped 2-D array or
+    ``None`` if the transform cannot be solved.
+    """
+    from skimage.transform import warp
+
+    blocks.ComputeTransformTwirl(shared_ref).run(image)
+    transform = getattr(image, "transform", None)
+    if transform is None:
+        return None
+    data = np.asarray(image.data, dtype=float)
+    return warp(
+        data,
+        transform.inverse,
+        output_shape=shared_ref.data.shape,
+        cval=float(np.nanmedian(data)),
+        order=1,
+        preserve_range=True,
+    )
+
+
+def _build_display_reference(
+    files,
+    shared_ref,
+    *,
+    ccd_trim_size_yx,
+    max_num_stars,
+    min_star_separation,
+    cutout_size,
+    min_area,
+    bad_pixel_map,
+    centroid_method,
+    n_stack: int = 1,
+):
+    """Per-band display reference *on the shared reference grid*, built from THIS
+    band's own science frames.
+
+    Under ``--ref_band`` every band is reduced against a frame drawn from the
+    reference band, so ``band_results[band]["ref"]`` is identical across bands
+    and the reference-frame plots (``_ref``/``_apertures``/``_cutouts``/
+    ``_stacks``) collapse to the same image. Each selected own frame is aligned
+    (warped) onto ``shared_ref``'s grid via the twirl transform, and ``n_stack``
+    frames are median-combined (``n_stack == 1`` uses a single representative
+    frame). Because the result lives on the reference grid, the shared source
+    catalog, WCS and target index stay valid, so every existing overlay and
+    cross-band ID mapping carries over unchanged.
+
+    Returns a new ``Image`` (own data on the reference grid, shared-ref
+    sources/WCS, this band's header, own per-source cutouts) or ``None`` on
+    failure, in which case the caller falls back to ``shared_ref``.
+    """
+    if not files:
+        return None
+    warped = []
+    own_header = None
+    for f in _select_stack_frames(files, n_stack):
+        try:
+            img = FITSImage(f)
+            reference_sequence(
+                ccd_trim_size_yx=ccd_trim_size_yx,
+                max_num_stars=max_num_stars,
+                min_star_separation=min_star_separation,
+                cutout_size=cutout_size,
+                min_area=min_area,
+                bad_pixel_map=bad_pixel_map,
+                centroid_method=centroid_method,
+            ).run(img, show_progress=False)
+            w = _warp_onto_reference(img, shared_ref)
+        except Exception as exc:  # noqa: BLE001 - display-only; never break reduction
+            logger.warning(f"[{Path(f).name}] display-frame alignment failed ({exc})")
+            continue
+        if w is not None:
+            warped.append(w)
+            if own_header is None:
+                own_header = img.header
+    if not warped:
+        return None
+
+    data = warped[0] if len(warped) == 1 else easy_median(warped)
+    display = shared_ref.copy()
+    display.data = np.asarray(data, dtype=float)
+    if own_header is not None:
+        display.header = own_header
+        # Show this band's own saturation level on the radial-profile plots.
+        try:
+            band_key = own_header.get("FILTER", "")
+            sat_all = get_saturation_from_header(own_header)
+            sat = sat_all.get(band_key) if isinstance(sat_all, dict) else None
+            if sat is not None:
+                display.telescope.saturation = sat
+        except Exception:  # noqa: BLE001
+            pass
+    # Per-source cutout thumbnails must reflect the band's own data, not the
+    # shared reference frame carried over by ``copy()``.
+    display.computed.pop("cutouts", None)
+    try:
+        blocks.Cutouts(shape=cutout_size, wcs=True).run(display)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"display-reference cutout recompute failed ({exc})")
+    return display
+
+
 def run_band(
     band,
     files,
@@ -2305,6 +2402,7 @@ def run_band(
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
     reference_source_indices: list[int] | None = None,
+    display_stack_nframes: int = 1,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -2613,6 +2711,29 @@ def run_band(
     diff.time = normalize_time_to_jd(diff.time, ref.telescope.jd_scale)
 
     logger.info(f"[{band}] reduction complete: {len(diff.time)} points")
+
+    # Under --ref_band this band was reduced against another band's frame, so
+    # ``ref`` is not this band's own data and the reference-frame plots
+    # (_ref/_apertures/_cutouts/_stacks) would be identical across bands. Build a
+    # per-band display reference from this band's own frames, aligned onto the
+    # shared reference grid, so those plots show the actual science image.
+    # ``ref_source_positions is None`` for the reference band itself and in
+    # self-reference mode, where ``ref`` already is the band's own frame.
+    display_ref = None
+    if ref_source_positions is not None:
+        display_ref = _build_display_reference(
+            files,
+            ref,
+            ccd_trim_size_yx=ccd_trim_size_yx,
+            max_num_stars=max_num_stars,
+            min_star_separation=min_star_separation,
+            cutout_size=cutout_size,
+            min_area=min_area,
+            bad_pixel_map=bad_pixel_map,
+            centroid_method=centroid_method,
+            n_stack=display_stack_nframes,
+        )
+
     return dict(
         band=band,
         ref=ref,
@@ -2628,6 +2749,7 @@ def run_band(
         scale=reference["scale"],
         gaia_df=reference.get("gaia_df"),
         defaulted_to_brightest=reference.get("defaulted_to_brightest", False),
+        display_ref=display_ref,
     )
 
 
@@ -3011,7 +3133,9 @@ def plot_ref_image(
     simbad_df=None,
     cmap: str = "Greys",
 ) -> None:
-    ref = r["ref"]
+    # Show this band's own data when a display reference was built (non-reference
+    # bands under --ref_band); its sources/WCS live on the shared reference grid.
+    ref = r["display_ref"] if r.get("display_ref") is not None else r["ref"]
     if not target_name:
         target_name = ref.header.get("OBJECT", "")
     if not instrument:
@@ -3134,7 +3258,10 @@ def plot_apertures(
     target_coord=None,
     cmap: str = "Greys",
 ) -> None:
-    ref = r["ref"]
+    # Use this band's own display reference when available (non-reference bands
+    # under --ref_band); it lives on the shared reference grid, so the source
+    # catalog and target index carry over unchanged.
+    ref = r["display_ref"] if r.get("display_ref") is not None else r["ref"]
     if not target_name:
         target_name = ref.header.get("OBJECT", "")
     if not instrument:
@@ -3451,7 +3578,14 @@ def plot_stacks(
     target_coord=None,
     cmap: str = "Greys",
 ) -> None:
-    """Per-band target cutout (from the reference image) plus radial profile."""
+    """Per-band target cutout plus radial profile.
+
+    The cutout is taken from the band's own display reference when available
+    (``run_band`` fills ``display_ref`` for bands reduced against another band
+    under ``--ref_band``), so each row shows that band's actual data instead of
+    the shared reference frame. Otherwise it falls back to the reference image
+    (reference band and self-reference mode).
+    """
     bands = sort_bands_canonical(band_results.keys())
     fig, axes = plt.subplots(
         len(bands), 2, figsize=(7, 3 * len(bands)), constrained_layout=True
@@ -3460,7 +3594,7 @@ def plot_stacks(
     for row, band in enumerate(bands):
         bc = band_color(band)
         r = band_results[band]
-        ref = r["ref"]
+        ref = r["display_ref"] if r.get("display_ref") is not None else r["ref"]
         diff = r["diff"]
         c = ref.cutout(
             ref.sources[r["target_index"]].coords, GAIA_CUTOUT, reset_index=False
@@ -3543,7 +3677,9 @@ def plot_cutouts(
     simbad_df=None,
     cmap: str = "Greys",
 ) -> None:
-    ref = r["ref"]
+    # Per-source cutouts come from this band's own display reference when built
+    # (non-reference bands under --ref_band); it shares the reference grid.
+    ref = r["display_ref"] if r.get("display_ref") is not None else r["ref"]
     if not target_name:
         target_name = ref.header.get("OBJECT", "")
     if not instrument:
@@ -5386,14 +5522,12 @@ def main(argv=None) -> int:
         telescope=resolved_telescope,
     )
     bjds = {}
-    # The reference-frame plots (_ref/_apertures/_cutouts) are byte-identical
-    # across bands when --ref_band is set (all share the reference band's frame),
-    # so emit them once instead of as misleading per-band duplicates. _alignment
-    # uses each band's own science frame and stays per-band. See
-    # _shared_ref_plot_band for the selection rule.
-    ref_frame_plot_band = _shared_ref_plot_band(
-        self_reference, ref_band, band_results.keys()
-    )
+    # The reference-frame plots (_ref/_apertures/_cutouts) are emitted per band.
+    # Under --ref_band the photometry ``ref`` is shared, but non-reference bands
+    # carry a ``display_ref`` built from their own frames (aligned onto the
+    # shared reference grid), so each band's plots show its actual science data
+    # instead of an identical duplicate. If a ``display_ref`` could not be built
+    # the plot degrades to the shared frame. _alignment stays per-band.
     for band, r in band_results.items():
         stem = build_stem(
             args.target_name,
@@ -5414,36 +5548,28 @@ def main(argv=None) -> int:
             photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
             logger.info(f"wrote {csv_path}")
 
-        emit_shared_ref_plots = self_reference or band == ref_frame_plot_band
-        if not emit_shared_ref_plots:
-            logger.info(
-                f"[{band}] skipping reference-frame plots (_ref/_apertures/_cutouts): "
-                f"byte-identical to the {ref_frame_plot_band}-band frame "
-                f"(all bands aligned to the {ref_band}-band reference)"
-            )
-        if emit_shared_ref_plots:
-            plot_ref_image(
-                r,
-                target_coord,
-                instrument,
-                args.results_dir / f"{stem}_ref.png",
-                target_name=args.target_name,
-                date=date,
-                avoid_cids=r.get("avoid_cids"),
-                plot_gaia_sources=args.plot_gaia_sources,
-                simbad_df=simbad_df,
-                cmap=args.cmap,
-            )
-            plot_apertures(
-                r,
-                args.results_dir / f"{stem}_apertures.png",
-                target_name=args.target_name,
-                instrument=instrument,
-                date=date,
-                plot_gaia_sources=args.plot_gaia_sources,
-                target_coord=target_coord,
-                cmap=args.cmap,
-            )
+        plot_ref_image(
+            r,
+            target_coord,
+            instrument,
+            args.results_dir / f"{stem}_ref.png",
+            target_name=args.target_name,
+            date=date,
+            avoid_cids=r.get("avoid_cids"),
+            plot_gaia_sources=args.plot_gaia_sources,
+            simbad_df=simbad_df,
+            cmap=args.cmap,
+        )
+        plot_apertures(
+            r,
+            args.results_dir / f"{stem}_apertures.png",
+            target_name=args.target_name,
+            instrument=instrument,
+            date=date,
+            plot_gaia_sources=args.plot_gaia_sources,
+            target_coord=target_coord,
+            cmap=args.cmap,
+        )
         plot_alignment(
             r,
             r["files"][-1],
@@ -5459,20 +5585,19 @@ def main(argv=None) -> int:
             min_area=args.min_star_area,
             cmap=args.cmap,
         )
-        if emit_shared_ref_plots:
-            plot_cutouts(
-                r,
-                args.results_dir / f"{stem}_cutouts.png",
-                args.target_name,
-                instrument,
-                band,
-                date,
-                max_num_stars=args.max_num_stars,
-                plot_gaia_sources=args.plot_gaia_sources,
-                target_coord=target_coord,
-                simbad_df=simbad_df,
-                cmap=args.cmap,
-            )
+        plot_cutouts(
+            r,
+            args.results_dir / f"{stem}_cutouts.png",
+            args.target_name,
+            instrument,
+            band,
+            date,
+            max_num_stars=args.max_num_stars,
+            plot_gaia_sources=args.plot_gaia_sources,
+            target_coord=target_coord,
+            simbad_df=simbad_df,
+            cmap=args.cmap,
+        )
         if args.make_gif:
             stride_step = (
                 1 if args.test_run else max(1, len(r["files"]) // args.gif_stride)

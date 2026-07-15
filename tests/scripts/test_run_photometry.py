@@ -1498,29 +1498,6 @@ def test_sort_bands_canonical_unknown_bands_stable_after_known():
     ]
 
 
-def test_shared_ref_plot_band_self_reference_keeps_all_bands():
-    # In self-reference mode every band has its own reference frame, so no band
-    # is singled out to carry the shared plots (all are kept).
-    assert rp._shared_ref_plot_band(True, None, ["gp", "rp", "ip", "zs"]) is None
-
-
-def test_shared_ref_plot_band_uses_reference_band_when_reduced():
-    assert (
-        rp._shared_ref_plot_band(False, "rp", ["gp", "rp", "ip", "zs"]) == "rp"
-    )
-
-
-def test_shared_ref_plot_band_falls_back_to_first_when_reference_band_failed():
-    # Reference band failed reduction (absent from band_results); the shared
-    # plots still get emitted once, under the first reduced band, instead of
-    # being suppressed entirely.
-    assert rp._shared_ref_plot_band(False, "rp", ["gp", "ip", "zs"]) == "gp"
-
-
-def test_shared_ref_plot_band_handles_no_reduced_bands():
-    assert rp._shared_ref_plot_band(False, "rp", []) is None
-
-
 def test_target_pixel_override_for_band_uses_inferred_position_only_without_wcs():
     inferred = [np.array([10.0, 20.0]), np.array([12.0, 22.0])]
 
@@ -2781,3 +2758,240 @@ def test_format_ref_selection_report_quality_mode_includes_tiers(tmp_path):
     assert "Tier 1" in report and "Tier 2" in report
     assert "f0.fits" in report
     assert "decision:" in report
+
+
+# --------------------------------------------------------------------------
+# Per-band display reference on the shared reference grid: un-suppresses the
+# reference-frame plots (_ref/_apertures/_cutouts/_stacks) for non-reference
+# bands under --ref_band, showing each band's own (aligned) science data.
+# --------------------------------------------------------------------------
+
+
+def _fake_sources(positions):
+    from prose.core.source import Sources
+
+    return Sources(np.array(positions, dtype=float))
+
+
+def _detect_kwargs():
+    return dict(
+        ccd_trim_size_yx=(0, 0),
+        max_num_stars=10,
+        min_star_separation=5.0,
+        cutout_size=21,
+        min_area=3,
+        bad_pixel_map=None,
+        centroid_method=rp.CENTROID_METHOD,
+    )
+
+
+def test_select_stack_frames_single_returns_middle_frame():
+    assert rp._select_stack_frames(["a", "b", "c", "d", "e"], 1) == ["c"]
+    assert rp._select_stack_frames(["only"], 5) == ["only"]
+
+
+def test_select_stack_frames_evenly_spaced_and_deduped():
+    files = [f"f{i}" for i in range(10)]
+    picked = rp._select_stack_frames(files, 3)
+    assert picked == ["f0", "f4", "f9"]  # endpoints included, evenly spaced
+    # n >= len returns every frame (no duplicates)
+    assert rp._select_stack_frames(["a", "b"], 5) == ["a", "b"]
+
+
+def test_warp_onto_reference_resamples_onto_reference_grid(monkeypatch):
+    """The warped frame lands on the shared reference grid (its shape)."""
+    from skimage.transform import AffineTransform
+
+    shared_ref = SimpleNamespace(data=np.zeros((30, 25)))  # (ny, nx)
+    img = SimpleNamespace(data=np.arange(400, dtype=float).reshape(20, 20))
+
+    class FakeCTT:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def run(self, image):
+            image.transform = AffineTransform(translation=(2.0, -1.0))
+
+    monkeypatch.setattr(rp.blocks, "ComputeTransformTwirl", FakeCTT)
+    out = rp._warp_onto_reference(img, shared_ref)
+    assert out is not None
+    assert out.shape == (30, 25)  # reference-grid shape, not the frame's (20, 20)
+
+
+def test_warp_onto_reference_returns_none_when_transform_unsolved(monkeypatch):
+    class FakeCTT:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def run(self, image):
+            pass  # never sets image.transform
+
+    monkeypatch.setattr(rp.blocks, "ComputeTransformTwirl", FakeCTT)
+    img = SimpleNamespace(data=np.zeros((10, 10)))
+    assert rp._warp_onto_reference(img, SimpleNamespace(data=np.zeros((10, 10)))) is None
+
+
+def test_build_display_reference_returns_none_without_files():
+    assert (
+        rp._build_display_reference(
+            [], SimpleNamespace(), **_detect_kwargs(), n_stack=1
+        )
+        is None
+    )
+
+
+def test_build_display_reference_returns_none_when_all_frames_fail(monkeypatch):
+    monkeypatch.setattr(rp, "FITSImage", lambda *_a, **_k: SimpleNamespace())
+    monkeypatch.setattr(
+        rp, "reference_sequence",
+        lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
+    )
+    monkeypatch.setattr(rp, "_warp_onto_reference", lambda img, shared_ref: None)
+    out = rp._build_display_reference(
+        ["a.fits", "b.fits"], SimpleNamespace(),
+        **_detect_kwargs(), n_stack=1,
+    )
+    assert out is None
+
+
+def _example_shared_reference(seed=3):
+    """A real prose ``Image`` with data, a small celestial WCS and a couple of
+    on-grid sources, standing in for a shared reference frame."""
+    from astropy.wcs import WCS
+    from prose.simulations import example_image
+
+    shared = example_image(seed=seed)
+    ny, nx = shared.data.shape
+    shared._sources = _fake_sources([[nx / 2, ny / 2], [nx / 3, ny / 3]])
+    w = WCS(naxis=2)
+    w.wcs.crpix = [nx / 2, ny / 2]
+    w.wcs.cdelt = [-1e-4, 1e-4]
+    w.wcs.crval = [10.0, 20.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    shared.wcs = w
+    return shared
+
+
+def test_build_display_reference_single_frame_real_construction(monkeypatch):
+    """Exercises the real Image.copy + data swap + Cutouts recompute path with a
+    single representative frame (Task 1)."""
+    from astropy.io.fits import Header
+
+    shared = _example_shared_reference()
+    own_header = Header()
+    own_header["OBJECT"] = "TOI-1"
+    warped = np.full(shared.data.shape, 7.0)
+
+    class FakeImg:
+        def __init__(self, _path):
+            self.header = own_header
+            self.data = np.ones(shared.data.shape)
+
+    monkeypatch.setattr(rp, "FITSImage", FakeImg)
+    monkeypatch.setattr(
+        rp, "reference_sequence",
+        lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
+    )
+    monkeypatch.setattr(rp, "_warp_onto_reference", lambda img, shared_ref: warped)
+
+    disp = rp._build_display_reference(
+        ["a.fits", "b.fits", "c.fits"], shared,
+        **_detect_kwargs(), n_stack=1,
+    )
+
+    assert disp is not None
+    assert disp.data.shape == shared.data.shape
+    assert np.allclose(disp.data, 7.0)  # this band's own (warped) data
+    # Shared-ref source catalog / grid carries over (cross-band consistency).
+    assert np.allclose(disp.sources.coords, shared.sources.coords)
+    assert disp.header["OBJECT"] == "TOI-1"  # this band's own header for the title
+    # Per-source cutouts were recomputed on the display data.
+    assert "cutouts" in disp.computed
+    assert len(disp.computed["cutouts"]) == len(shared.sources.coords)
+
+
+def test_build_display_reference_median_stacks_aligned_frames(monkeypatch):
+    """Task 2: multiple aligned frames are median-combined."""
+    shared = _example_shared_reference()
+
+    class FakeImg:
+        def __init__(self, _path):
+            from astropy.io.fits import Header
+
+            self.header = Header()
+            self.data = np.ones(shared.data.shape)
+
+    warps = iter([
+        np.full(shared.data.shape, 2.0),
+        np.full(shared.data.shape, 4.0),
+    ])
+    monkeypatch.setattr(rp, "FITSImage", FakeImg)
+    monkeypatch.setattr(
+        rp, "reference_sequence",
+        lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
+    )
+    monkeypatch.setattr(rp, "_warp_onto_reference", lambda img, shared_ref: next(warps))
+
+    disp = rp._build_display_reference(
+        ["a.fits", "b.fits", "c.fits", "d.fits"], shared,
+        **_detect_kwargs(), n_stack=2,
+    )
+
+    assert disp is not None
+    # median([2, 4]) == 3 everywhere -> genuine aligned median stack
+    assert np.allclose(disp.data, 3.0)
+
+
+def test_plot_stacks_uses_display_reference_when_present(tmp_path):
+    """Non-reference bands plot from their display reference; the reference band
+    (display_ref is None) falls back to the shared reference frame."""
+    calls = {"display": 0, "ref": 0}
+
+    class FakeCutout:
+        def __init__(self):
+            self.data = np.linspace(1.0, 100.0, 200 * 200).reshape(200, 200)
+            self.wcs = None
+
+    class FakeImg:
+        def __init__(self, counter_key):
+            self._k = counter_key
+            self.header = {}
+            self.telescope = SimpleNamespace(saturation=None)
+            self.sources = _fake_sources([[100.0, 100.0], [50.0, 50.0]])
+
+        def cutout(self, coords, shape, reset_index=False):
+            calls[self._k] += 1
+            return FakeCutout()
+
+    def make_result(with_display):
+        return dict(
+            ref=FakeImg("ref"),
+            diff=SimpleNamespace(aperture=0),
+            target_index=0,
+            aper_radii=np.array([3.0]),
+            rin=8.0,
+            rout=12.0,
+            scale=False,
+            gaia_df=None,
+            display_ref=FakeImg("display") if with_display else None,
+        )
+
+    band_results = {
+        "gp": make_result(with_display=False),  # reference band
+        "rp": make_result(with_display=True),   # non-reference band
+    }
+
+    out_path = tmp_path / "stacks.png"
+    rp.plot_stacks(
+        band_results,
+        out_path,
+        target_name="TOI-1",
+        instrument="muscat3",
+        date="260101",
+        target_index=0,
+        plot_gaia_sources=False,
+    )
+
+    assert out_path.exists()
+    assert calls["display"] == 1  # rp used its display reference
+    assert calls["ref"] == 1  # gp used the shared reference
