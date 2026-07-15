@@ -1464,6 +1464,40 @@ def test_order_bands_for_target_id_inference_preserves_uniform_wcs_state():
     )
 
 
+def test_sort_bands_canonical_orders_broadband_by_wavelength():
+    assert rp.sort_bands_canonical(["ip", "zs", "gp", "rp"]) == ["gp", "rp", "ip", "zs"]
+
+
+def test_sort_bands_canonical_places_narrowbands_after_broadbands():
+    mixed = ["z_narrow", "rp", "Na_D", "gp", "i_narrow", "ip", "g_narrow", "zs"]
+    assert rp.sort_bands_canonical(mixed) == [
+        "gp",
+        "rp",
+        "ip",
+        "zs",
+        "g_narrow",
+        "Na_D",
+        "i_narrow",
+        "z_narrow",
+    ]
+
+
+def test_sort_bands_canonical_subset_and_dict_keys():
+    assert rp.sort_bands_canonical(["zs", "gp"]) == ["gp", "zs"]
+    # Accepts a dict_keys view (band_results.keys()) directly.
+    assert rp.sort_bands_canonical({"ip": 1, "gp": 2}.keys()) == ["gp", "ip"]
+
+
+def test_sort_bands_canonical_unknown_bands_stable_after_known():
+    # Unknown bands keep their input relative order, after all known bands.
+    assert rp.sort_bands_canonical(["foo", "zs", "bar", "gp"]) == [
+        "gp",
+        "zs",
+        "foo",
+        "bar",
+    ]
+
+
 def test_shared_ref_plot_band_self_reference_keeps_all_bands():
     # In self-reference mode every band has its own reference frame, so no band
     # is singled out to carry the shared plots (all are kept).

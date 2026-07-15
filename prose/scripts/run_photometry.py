@@ -143,6 +143,11 @@ INSTRUMENT_FILTER_ALIASES: dict[str, dict[str, str]] = {
 DEFAULT_BROAD_BANDS = ["gp", "rp", "ip", "zs"]
 DEFAULT_NARROW_BANDS = ["g_narrow", "Na_D", "i_narrow", "z_narrow"]
 DEFAULT_BANDS = DEFAULT_BROAD_BANDS
+# Canonical wavelength order for any multi-axis figure that loops over bands, so
+# every plot lays bands out consistently regardless of processing order
+# (band_results is keyed by reduction order: reference band first) or user
+# --bands order. Unknown bands sort stably after the known ones.
+BAND_PLOT_ORDER = DEFAULT_BROAD_BANDS + DEFAULT_NARROW_BANDS
 DEFAULT_GIF_STRIDE = 10
 TEST_RUN_FRAMES = 10  # frames per band used by --test_run
 FPS = 5
@@ -315,6 +320,18 @@ def band_color(band: str) -> str:
     if band in BAND_COLORS:
         return BAND_COLORS[band]
     return _BROADBAND_FALLBACK.get((band[:1] or "").lower(), "k")
+
+
+def sort_bands_canonical(bands) -> list[str]:
+    """Order bands by canonical wavelength (see ``BAND_PLOT_ORDER``).
+
+    Used by every multi-axis figure that loops over bands so axes are laid out
+    consistently (gp, rp, ip, zs, then g_narrow, Na_D, i_narrow, z_narrow)
+    regardless of reduction or ``--bands`` order. Bands not in the canonical
+    list keep their input relative order after the known ones (stable sort).
+    """
+    rank = {band: i for i, band in enumerate(BAND_PLOT_ORDER)}
+    return sorted(bands, key=lambda band: rank.get(band, len(rank)))
 
 
 logger = logging.getLogger("prose_run_photometry")
@@ -3266,7 +3283,7 @@ def plot_lightcurves(
     target_index: int,
     bin_size_days: float = BIN_SIZE_DAYS,
 ) -> None:
-    bands = list(band_results.keys())
+    bands = sort_bands_canonical(band_results.keys())
     fig, axes = plt.subplots(
         len(bands),
         1,
@@ -3312,7 +3329,7 @@ def plot_raw_flux(
     target_index: int,
 ) -> None:
     """Plot comparison stars raw flux for each band."""
-    bands = list(band_results.keys())
+    bands = sort_bands_canonical(band_results.keys())
     fig, axes = plt.subplots(
         1,
         len(bands),
@@ -3377,7 +3394,7 @@ def plot_covariates(
     date: str,
     target_index: int,
 ) -> None:
-    bands = list(band_results.keys())
+    bands = sort_bands_canonical(band_results.keys())
     fig, axes = plt.subplots(
         1, len(bands), figsize=(5 * len(bands), 8), sharey=True, constrained_layout=True
     )
@@ -3435,7 +3452,7 @@ def plot_stacks(
     cmap: str = "Greys",
 ) -> None:
     """Per-band target cutout (from the reference image) plus radial profile."""
-    bands = list(band_results.keys())
+    bands = sort_bands_canonical(band_results.keys())
     fig, axes = plt.subplots(
         len(bands), 2, figsize=(7, 3 * len(bands)), constrained_layout=True
     )
