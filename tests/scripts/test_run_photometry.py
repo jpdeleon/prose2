@@ -2781,7 +2781,6 @@ def _detect_kwargs():
         cutout_size=21,
         min_area=3,
         bad_pixel_map=None,
-        centroid_method=rp.CENTROID_METHOD,
     )
 
 
@@ -2843,7 +2842,7 @@ def test_build_display_reference_returns_none_without_files():
 def test_build_display_reference_returns_none_when_all_frames_fail(monkeypatch):
     monkeypatch.setattr(rp, "FITSImage", lambda *_a, **_k: SimpleNamespace())
     monkeypatch.setattr(
-        rp, "reference_sequence",
+        rp, "_frame_alignment_sequence",
         lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
     )
     monkeypatch.setattr(rp, "_warp_onto_reference", lambda img, shared_ref: None)
@@ -2889,7 +2888,7 @@ def test_build_display_reference_single_frame_real_construction(monkeypatch):
 
     monkeypatch.setattr(rp, "FITSImage", FakeImg)
     monkeypatch.setattr(
-        rp, "reference_sequence",
+        rp, "_frame_alignment_sequence",
         lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
     )
     monkeypatch.setattr(rp, "_warp_onto_reference", lambda img, shared_ref: warped)
@@ -2927,7 +2926,7 @@ def test_build_display_reference_median_stacks_aligned_frames(monkeypatch):
     ])
     monkeypatch.setattr(rp, "FITSImage", FakeImg)
     monkeypatch.setattr(
-        rp, "reference_sequence",
+        rp, "_frame_alignment_sequence",
         lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
     )
     monkeypatch.setattr(rp, "_warp_onto_reference", lambda img, shared_ref: next(warps))
@@ -2940,6 +2939,55 @@ def test_build_display_reference_median_stacks_aligned_frames(monkeypatch):
     assert disp is not None
     # median([2, 4]) == 3 everywhere -> genuine aligned median stack
     assert np.allclose(disp.data, 3.0)
+
+
+def test_build_display_reference_real_detection_and_warp(monkeypatch):
+    """End-to-end with real source detection, twirl transform and warp: a
+    simulated frame is aligned onto the shared reference grid (no mocks on the
+    detection/alignment path)."""
+    from astropy.wcs import WCS
+    from prose.simulations import example_image
+
+    def make_frame():
+        im = example_image(seed=7)
+        ny, nx = im.data.shape
+        w = WCS(naxis=2)
+        w.wcs.crpix = [nx / 2, ny / 2]
+        w.wcs.cdelt = [-1e-4, 1e-4]
+        w.wcs.crval = [10.0, 20.0]
+        w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        im.wcs = w
+        return im
+
+    shared = make_frame()
+    # Detect real sources on the shared reference so the twirl transform has a
+    # catalog to match against (same lightweight sequence the builder uses).
+    rp._frame_alignment_sequence(
+        ccd_trim_size_yx=(0, 0),
+        max_num_stars=12,
+        min_star_separation=5.0,
+        min_area=3,
+        bad_pixel_map=None,
+    ).run(shared, show_progress=False)
+    assert len(shared.sources.coords) >= 5
+
+    monkeypatch.setattr(rp, "FITSImage", lambda _f: make_frame())
+
+    disp = rp._build_display_reference(
+        ["frame.fits"],
+        shared,
+        ccd_trim_size_yx=(0, 0),
+        max_num_stars=12,
+        min_star_separation=5.0,
+        cutout_size=21,
+        min_area=3,
+        bad_pixel_map=None,
+        n_stack=1,
+    )
+
+    assert disp is not None
+    assert disp.data.shape == shared.data.shape
+    assert np.isfinite(disp.data).any()  # real warped data landed on the grid
 
 
 def test_plot_stacks_uses_display_reference_when_present(tmp_path):
@@ -2995,3 +3043,148 @@ def test_plot_stacks_uses_display_reference_when_present(tmp_path):
     assert out_path.exists()
     assert calls["display"] == 1  # rp used its display reference
     assert calls["ref"] == 1  # gp used the shared reference
+
+
+def test_run_band_forwards_display_stack_nframes(tmp_path, monkeypatch):
+    """run_band passes the requested stack depth to _build_display_reference for
+    non-reference bands (ref_source_positions set)."""
+    from prose import Fluxes
+    from prose.core.source import Sources
+    from astropy.coordinates import SkyCoord
+
+    class FakeImage:
+        def __init__(self):
+            self.sources = Sources(np.array([[9.2, 9.1], [1.1, 1.0]]))
+            self.shape = (20, 20)
+            self.telescope = self
+            self.jd_scale = "jd"
+            self.header = {}
+            self.fwhm = 4.0
+
+    reference = {
+        "ref": FakeImage(), "target_index": 0, "aper_radii": np.array([3.0]),
+        "rin": 8.0, "rout": 12.0, "scale": False, "edge_cids": [],
+        "gaia_df": None, "defaulted_to_brightest": False,
+    }
+    monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
+
+    def mock_photometry_sequence(ref, aper_radii, rin, rout, **kwargs):
+        class MockPhot:
+            def run(self, files):
+                return None
+
+            @property
+            def data(self):
+                class FakeData:
+                    @property
+                    def fluxes(self):
+                        return Fluxes(np.ones((2, 4)))
+
+                return [FakeData()]
+
+        return MockPhot()
+
+    def mock_diff(fluxes, target_index, cids=None, avoid_cids=None,
+                  nan_imputation_method="linear"):
+        class FakeDiff:
+            def __init__(self):
+                self.time = np.arange(4, dtype=float)
+                self.target = target_index
+
+        return FakeDiff()
+
+    monkeypatch.setattr(rp, "photometry_sequence", mock_photometry_sequence)
+    monkeypatch.setattr(rp, "differential_photometry", mock_diff)
+
+    captured = {}
+
+    def fake_build_display(files, shared_ref, *, n_stack, **kwargs):
+        captured["n_stack"] = n_stack
+        return "DISPLAY_SENTINEL"
+
+    monkeypatch.setattr(rp, "_build_display_reference", fake_build_display)
+
+    result = rp.run_band(
+        band="gp",
+        files=[str(_write_minimal_fits(tmp_path, "science.fits"))],
+        ref_file=str(_write_minimal_fits(tmp_path, "reference.fits")),
+        target_coord=SkyCoord(0, 0, unit="deg"),
+        ref_source_positions=np.array([[1.0, 1.0], [9.0, 9.0]]),
+        display_stack_nframes=7,
+    )
+
+    assert result is not None
+    assert captured["n_stack"] == 7
+    assert result["display_ref"] == "DISPLAY_SENTINEL"
+
+
+def test_run_band_skips_display_reference_for_reference_band(tmp_path, monkeypatch):
+    """The reference band (ref_source_positions is None) keeps display_ref=None
+    and never triggers a display-reference build."""
+    from prose import Fluxes
+    from prose.core.source import Sources
+    from astropy.coordinates import SkyCoord
+
+    class FakeImage:
+        def __init__(self):
+            self.sources = Sources(np.array([[9.2, 9.1], [1.1, 1.0]]))
+            self.shape = (20, 20)
+            self.telescope = self
+            self.jd_scale = "jd"
+            self.header = {}
+            self.fwhm = 4.0
+
+    reference = {
+        "ref": FakeImage(), "target_index": 0, "aper_radii": np.array([3.0]),
+        "rin": 8.0, "rout": 12.0, "scale": False, "edge_cids": [],
+        "gaia_df": None, "defaulted_to_brightest": False,
+    }
+    monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
+
+    def mock_photometry_sequence(ref, aper_radii, rin, rout, **kwargs):
+        class MockPhot:
+            def run(self, files):
+                return None
+
+            @property
+            def data(self):
+                class FakeData:
+                    @property
+                    def fluxes(self):
+                        return Fluxes(np.ones((2, 4)))
+
+                return [FakeData()]
+
+        return MockPhot()
+
+    def mock_diff(fluxes, target_index, cids=None, avoid_cids=None,
+                  nan_imputation_method="linear"):
+        return SimpleNamespace(time=np.arange(4, dtype=float), target=target_index)
+
+    monkeypatch.setattr(rp, "photometry_sequence", mock_photometry_sequence)
+    monkeypatch.setattr(rp, "differential_photometry", mock_diff)
+
+    def _fail_build(*_a, **_k):
+        raise AssertionError("display reference must not be built for reference band")
+
+    monkeypatch.setattr(rp, "_build_display_reference", _fail_build)
+
+    result = rp.run_band(
+        band="gp",
+        files=[str(_write_minimal_fits(tmp_path, "science.fits"))],
+        ref_file=str(_write_minimal_fits(tmp_path, "reference.fits")),
+        target_coord=SkyCoord(0, 0, unit="deg"),
+        ref_source_positions=None,  # reference band / self-reference
+        display_stack_nframes=15,
+    )
+
+    assert result is not None
+    assert result["display_ref"] is None
+
+
+def test_parse_args_display_stack_nframes_default_and_override():
+    base = ["--target_name", "X", "--data_dir", ".", "--results_dir", "."]
+    assert rp.parse_args(base).display_stack_nframes == rp.DISPLAY_STACK_NFRAMES
+    assert rp.parse_args(base + ["--display_stack_nframes", "4"]).display_stack_nframes == 4
+    # hyphenated alias resolves to the same destination
+    assert rp.parse_args(base + ["--display-stack-nframes", "9"]).display_stack_nframes == 9

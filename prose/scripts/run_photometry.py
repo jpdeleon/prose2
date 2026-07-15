@@ -159,6 +159,13 @@ MAX_NUM_STARS = 10  # nth brightest stars to keep
 DETECT_NUM_STARS_FACTOR = 1.5  # detect more stars initially to capture faint targets
 CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
 
+# Number of a non-reference band's own frames to align onto the shared
+# reference grid and median-combine into its display reference (the
+# _ref/_apertures/_cutouts/_stacks plots). More frames give a higher-SNR stack
+# at the cost of one extra source detection + warp per frame; 1 uses a single
+# representative frame. Env override for host tuning without a CLI change.
+DISPLAY_STACK_NFRAMES = int(os.environ.get("MUSCAT_DISPLAY_STACK_NFRAMES", "15"))
+
 # reference-frame quality pre-check (--ref_select quality)
 # BANZAI-pipeline instruments whose headers already carry a per-frame FWHM
 # estimate and other quality keywords (verified against real archive FITS
@@ -2293,6 +2300,25 @@ def _warp_onto_reference(image, shared_ref):
     )
 
 
+def _frame_alignment_sequence(
+    *, ccd_trim_size_yx, max_num_stars, min_star_separation, min_area, bad_pixel_map
+) -> Sequence:
+    """Lightweight detection sequence for solving a frame's alignment transform
+    (mirrors ``plot_alignment``): trim, mask bad pixels, detect sources. Only
+    source positions are needed to solve the twirl transform, so the PSF /
+    centroid / photometry blocks of ``reference_sequence`` are intentionally
+    omitted -- important when median-stacking many frames per band."""
+    return Sequence(
+        [
+            blocks.Trim(ccd_trim_size_yx),
+            MaskBadPixels(bad_pixel_map),
+            blocks.PointSourceDetection(
+                n=max_num_stars, min_area=min_area, min_separation=min_star_separation
+            ),
+        ]
+    )
+
+
 def _build_display_reference(
     files,
     shared_ref,
@@ -2303,7 +2329,6 @@ def _build_display_reference(
     cutout_size,
     min_area,
     bad_pixel_map,
-    centroid_method,
     n_stack: int = 1,
 ):
     """Per-band display reference *on the shared reference grid*, built from THIS
@@ -2327,18 +2352,17 @@ def _build_display_reference(
         return None
     warped = []
     own_header = None
+    detect = _frame_alignment_sequence(
+        ccd_trim_size_yx=ccd_trim_size_yx,
+        max_num_stars=max_num_stars,
+        min_star_separation=min_star_separation,
+        min_area=min_area,
+        bad_pixel_map=bad_pixel_map,
+    )
     for f in _select_stack_frames(files, n_stack):
         try:
             img = FITSImage(f)
-            reference_sequence(
-                ccd_trim_size_yx=ccd_trim_size_yx,
-                max_num_stars=max_num_stars,
-                min_star_separation=min_star_separation,
-                cutout_size=cutout_size,
-                min_area=min_area,
-                bad_pixel_map=bad_pixel_map,
-                centroid_method=centroid_method,
-            ).run(img, show_progress=False)
+            detect.run(img, show_progress=False)
             w = _warp_onto_reference(img, shared_ref)
         except Exception as exc:  # noqa: BLE001 - display-only; never break reduction
             logger.warning(f"[{Path(f).name}] display-frame alignment failed ({exc})")
@@ -2730,7 +2754,6 @@ def run_band(
             cutout_size=cutout_size,
             min_area=min_area,
             bad_pixel_map=bad_pixel_map,
-            centroid_method=centroid_method,
             n_stack=display_stack_nframes,
         )
 
@@ -4580,6 +4603,18 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Side length in pixels of star cutouts (default: %(default)s).",
     )
     ap.add_argument(
+        "--display_stack_nframes",
+        "--display-stack-nframes",
+        type=int,
+        default=DISPLAY_STACK_NFRAMES,
+        dest="display_stack_nframes",
+        help="For non-reference bands under --ref_band, number of the band's own "
+        "frames to align onto the shared reference grid and median-combine into "
+        "the display reference used by the _ref/_apertures/_cutouts/_stacks plots. "
+        "1 uses a single representative frame; larger values give a higher-SNR "
+        "aligned median stack. Default: %(default)s.",
+    )
+    ap.add_argument(
         "--centroid_method",
         "--centroid-method",
         choices=["auto", "quad", "com"],
@@ -5428,6 +5463,7 @@ def main(argv=None) -> int:
                 bad_pixel_map=bad_pixel_map,
                 centroid_method=args.centroid_method,
                 reference_source_indices=reference_source_indices,
+                display_stack_nframes=args.display_stack_nframes,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
