@@ -32,7 +32,9 @@ FOV_IN_ARCMIN = {
     'muscat': 6.1,
     'muscat2': 7.4,
     'muscat3': 9.1,
-    'muscat4': 9.1
+    'muscat4': 9.1,
+    'sbig': 29.2,     # LCO SBIG STL-6303 page, longer chip axis
+    'qhy600': 140.82, # LCO live configdb "science_fov" for 0M4-SCICAM-QHY600
 }
 
 PIXSCALES = {
@@ -42,6 +44,8 @@ PIXSCALES = {
     'muscat2': 0.44,
     'muscat3': 0.267,
     'muscat4': 0.267,
+    'sbig': 0.58,     # verified on real archive SBIGSTL6303 headers (PIXSCALE)
+    'qhy600': 0.734,  # LCO live configdb for 0M4-SCICAM-QHY600 (unverified vs a real header)
 }
 
 LCO_SITES = {
@@ -206,7 +210,35 @@ def get_saturation_from_header(h) -> dict:
             gain = 6.6 if h.get('CONFMODE') == 'central_2k_2x2' else 1.0
             base_limit = 340_000 / gain
         saturation_limits = {'gp': base_limit, 'rp': base_limit, 'ip': base_limit, 'zs': base_limit}
-    
+
+    # 0m4x telescopes (LCO 0.4m network: SBIG STL-6303 and QHY600+DeltaRho 350)
+    elif h['TELID'].startswith('0m4'):
+        network_04m_sites = ['lsc', 'cpt', 'coj', 'tfn', 'elp', 'ogg']
+        if h['SITEID'] not in network_04m_sites:
+            raise ValueError(f"Site ID must be one of {network_04m_sites} for 0m4 telescopes")
+
+        url = "https://lco.global/observatory/instruments/qhy600-delta-rho-350/"
+        if float(h.get('GAIN', 1.0)) == 1.0 and 'SATURATE' in h:
+            base_limit = h['SATURATE']
+            gain = 1.0
+        else:
+            # Verified on real archive SBIG headers: GAIN is always 1.0 (BANZAI
+            # normalizes to electrons). No raw ADU full-well constant is known
+            # for either 0.4m camera generation, so fail loudly rather than
+            # invent one (unlike the 1m0a/6.6-gain 2x2-binning fallback above).
+            raise ValueError(
+                "Unexpected non-unity GAIN for a 0m4 telescope; no raw full-well "
+                "constant is known for SBIG/QHY600 to compute saturation from ADU."
+            )
+        # Union of both camera generations' schedulable filters (LCO
+        # instrument pages + live configdb); base_limit is the same across
+        # bands since it comes straight from the per-frame SATURATE keyword.
+        filter_names = [
+            'up', 'gp', 'rp', 'ip', 'zs', 'B', 'V', 'w',
+            'OIII', "S[II]", 'Astrodon-Exo', 'H-Alpha',
+        ]
+        saturation_limits = {f: base_limit for f in filter_names}
+
     else:
         raise ValueError("This doesn't look like LCO data. Function only works with LCO telescopes.")
     

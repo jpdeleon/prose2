@@ -168,11 +168,40 @@ DISPLAY_STACK_NFRAMES = int(os.environ.get("MUSCAT_DISPLAY_STACK_NFRAMES", "15")
 
 # reference-frame quality pre-check (--ref_select quality)
 # BANZAI-pipeline instruments whose headers already carry a per-frame FWHM
-# estimate and other quality keywords (verified against real archive FITS
-# headers). muscat/muscat2 are raw and never touched by BANZAI -- verified
-# absent on real /data/MuSCAT and /data/MuSCAT2 headers -- so they skip the
-# header-triage tier and go straight to pixel-based validation.
-BANZAI_QUALITY_INSTRUMENTS = frozenset({"muscat3", "muscat4", "sinistro"})
+# estimate and other quality keywords. muscat/muscat2 are raw and never
+# touched by BANZAI -- verified absent on real /data/MuSCAT and
+# /data/MuSCAT2 headers -- so they skip the header-triage tier and go
+# straight to pixel-based validation.
+# Verified against real archive FITS headers: muscat3, muscat4, sinistro,
+# sbig. qhy600 is included on the assumption that LCO's BANZAI pipeline
+# treats the whole 0.4m network uniformly (same as sbig) -- unverified,
+# pending real archived QHY600CMOS frames; sanity-check the first real run.
+BANZAI_QUALITY_INSTRUMENTS = frozenset(
+    {"muscat3", "muscat4", "sinistro", "sbig", "qhy600"}
+)
+
+# LCO instruments deployed across multiple sites/telescope units, needing
+# --site/--telescope disambiguation (unlike the single-site muscat/muscat2/
+# muscat3/muscat4). sinistro: lsc/cpt/coj/tfn/elp (no unit at ogg). sbig/
+# qhy600 (0.4m network): all 6 LCO sites, confirmed via LCO's public site
+# list (https://lco.global/observatory/sites/) and, for qhy600, its live
+# configdb (https://observe.lco.global/api/instruments/0M4-SCICAM-QHY600/).
+MULTISITE_INSTRUMENTS = frozenset({"sinistro", "sbig", "qhy600"})
+MULTISITE_SITES: dict[str, tuple[str, ...]] = {
+    "sinistro": ("lsc", "cpt", "coj", "tfn", "elp"),
+    "sbig": ("lsc", "cpt", "coj", "tfn", "elp", "ogg"),
+    "qhy600": ("lsc", "cpt", "coj", "tfn", "elp", "ogg"),
+}
+
+# Instruments with multiple readout/config modes needing --mode
+# disambiguation. sbig is deliberately absent: real archive headers show a
+# single CONFMODE="default" value, no known multi-mode need. qhy600's codes
+# are sourced from LCO's live configdb (readout_modes), not a local file --
+# unverified against a real archived QHY600CMOS header.
+MULTISITE_MODES: dict[str, tuple[str, ...]] = {
+    "sinistro": ("central_2k_2x2", "full_frame"),
+    "qhy600": ("central30x30", "full_frame"),
+}
 
 # header key -> canonical name used throughout header_triage(). Hardcoded
 # here rather than sourced from the .telescope config's keyword_fwhm/
@@ -400,6 +429,18 @@ def get_instrument(header) -> str:
         return "muscat4" if site == "coj" else "muscat3"
     if telid == "1m0a":
         return "sinistro"
+    if telid.startswith("0m4"):
+        # LCO 0.4m network. Camera generation is disambiguated by the
+        # INSTRUME unit code, not TELID (both SBIG-STL6303 and the QHY600 +
+        # DeltaRho 350 upgrade share the "0m4x" telescope class). Verified
+        # against real archive headers: every SBIG unit reports an INSTRUME
+        # code prefixed "kb" (e.g. kb23, kb27, kb82, kb95, kb99).
+        if instrume.startswith("kb"):
+            return "sbig"
+        # TODO: add the QHY600 branch once real archived QHY600CMOS frames
+        # exist and their INSTRUME prefix can be confirmed -- do not guess
+        # it here. Until then, unrecognized 0m4 frames fall through to
+        # "unknown" (existing safe behavior) rather than being misrouted.
     return "unknown"
 
 
@@ -492,16 +533,16 @@ def build_stem(
     target = target.replace(" ", "")
     inst_lower = inst.lower()
     suffix = ""
-    if inst_lower == "sinistro" and confmode:
+    if inst_lower in MULTISITE_INSTRUMENTS and confmode:
         confmode_str = str(confmode).lower()
         if "full" in confmode_str:
             suffix = "_full"
 
     tokens = [target, inst]
-    if inst_lower == "sinistro":
+    if inst_lower in MULTISITE_INSTRUMENTS:
         if site:
             site_str = site.lower()
-            if site_str in ("lsc", "cpt", "coj", "tfn", "elp"):
+            if site_str in MULTISITE_SITES.get(inst_lower, ()):
                 tokens.append(site_str)
         if telescope:
             tel_token = _telescope_stem_token(telescope)
@@ -4246,13 +4287,14 @@ def _calibration_args(
     return calib_args
 
 
-def _sinistro_modes_from_headers(
+def _multisite_modes_from_headers(
     data_dir: Path,
     glob_pattern: str,
     target_name: str,
     bands: list[str] | None,
 ) -> set[str]:
-    """Return Sinistro CONFMODE values discoverable from FITS headers.
+    """Return CONFMODE values discoverable from FITS headers of any
+    mode-capable multi-site instrument (see :data:`MULTISITE_MODES`).
 
     This is intentionally header-only and best-effort so parser validation never
     triggers network work or full image reads. An empty set means "unknown",
@@ -4268,12 +4310,13 @@ def _sinistro_modes_from_headers(
             header = fits.getheader(file)
         except Exception:
             continue
-        if get_instrument(header) != "sinistro":
+        instrument = get_instrument(header)
+        if instrument not in MULTISITE_MODES:
             continue
         if str(header.get("OBJECT", "")).strip() != target_name:
             continue
         raw_filter = str(header.get("FILTER", "")).strip()
-        if bands and _resolve_band(raw_filter, "sinistro", bands) is None:
+        if bands and _resolve_band(raw_filter, instrument, bands) is None:
             continue
         confmode = str(header.get("CONFMODE", "")).strip().lower()
         if confmode:
@@ -4767,7 +4810,7 @@ def parse_args(argv=None) -> argparse.Namespace:
             f"inner sky annulus radius ({args.annulus[0]:g})"
         )
     if args.mode is not None and args.data_dir.exists():
-        modes = _sinistro_modes_from_headers(
+        modes = _multisite_modes_from_headers(
             args.data_dir, args.glob, args.target_name, args.bands
         )
         mode_to_match = args.mode.lower()
@@ -4775,7 +4818,7 @@ def parse_args(argv=None) -> argparse.Namespace:
             mode_to_match == mode or mode_to_match in mode for mode in modes
         ):
             ap.error(
-                f"--mode {args.mode!r} was not found in Sinistro data for "
+                f"--mode {args.mode!r} was not found in the data for "
                 f"target={args.target_name!r}; available modes: {sorted(modes)}"
             )
     return args
@@ -4873,30 +4916,33 @@ def main(argv=None) -> int:
     probe = FITSImage(sciences[active_bands[0]][0]).header
     instrument = get_instrument(probe)
 
-    if args.site is not None and instrument != "sinistro":
+    if args.site is not None and instrument not in MULTISITE_INSTRUMENTS:
         logger.error(
-            f"--site can only be specified when instrument is 'sinistro' (found '{instrument}')"
+            f"--site can only be specified when instrument is one of "
+            f"{sorted(MULTISITE_INSTRUMENTS)} (found '{instrument}')"
         )
         return 1
 
-    if args.mode is not None and instrument != "sinistro":
+    if args.mode is not None and instrument not in MULTISITE_MODES:
         logger.error(
-            f"--mode can only be specified when instrument is 'sinistro' (found '{instrument}')"
+            f"--mode can only be specified when instrument is one of "
+            f"{sorted(MULTISITE_MODES)} (found '{instrument}')"
         )
         return 1
 
-    if args.telescope is not None and instrument != "sinistro":
+    if args.telescope is not None and instrument not in MULTISITE_INSTRUMENTS:
         logger.error(
-            f"--telescope can only be specified when instrument is 'sinistro' (found '{instrument}')"
+            f"--telescope can only be specified when instrument is one of "
+            f"{sorted(MULTISITE_INSTRUMENTS)} (found '{instrument}')"
         )
         return 1
 
-    if instrument == "sinistro" and args.site:
+    if instrument in MULTISITE_INSTRUMENTS and args.site:
         site_to_match = args.site.lower()
-        allowed_sites = ("lsc", "cpt", "coj", "tfn", "elp")
+        allowed_sites = MULTISITE_SITES.get(instrument, ())
         if site_to_match not in allowed_sites:
             logger.error(
-                f"Invalid site '{args.site}' for sinistro. Must be one of {allowed_sites}"
+                f"Invalid site '{args.site}' for {instrument}. Must be one of {allowed_sites}"
             )
             return 1
 
@@ -4915,7 +4961,7 @@ def main(argv=None) -> int:
                 filtered_sciences[b] = matching
         sciences = filtered_sciences
 
-    if instrument == "sinistro" and args.site is None:
+    if instrument in MULTISITE_INSTRUMENTS and args.site is None:
         unique_sites = set()
         for b, fs in sciences.items():
             for f in fs:
@@ -4931,11 +4977,11 @@ def main(argv=None) -> int:
                     unique_sites.add(file_site)
         if len(unique_sites) > 1:
             raise ValueError(
-                f"Multiple sites found in the dataset for sinistro: {sorted(unique_sites)}. "
+                f"Multiple sites found in the dataset for {instrument}: {sorted(unique_sites)}. "
                 "Please specify --site to select one."
             )
 
-    if instrument == "sinistro" and args.telescope:
+    if instrument in MULTISITE_INSTRUMENTS and args.telescope:
         telescope_to_match = args.telescope.strip().lower()
 
         filtered_sciences = {}
@@ -4953,7 +4999,7 @@ def main(argv=None) -> int:
                 filtered_sciences[b] = matching
         sciences = filtered_sciences
 
-    if instrument == "sinistro" and args.telescope is None:
+    if instrument in MULTISITE_INSTRUMENTS and args.telescope is None:
         unique_telescopes = set()
         for b, fs in sciences.items():
             for f in fs:
@@ -4967,16 +5013,16 @@ def main(argv=None) -> int:
                     unique_telescopes.add(file_telescope)
         if len(unique_telescopes) > 1:
             raise ValueError(
-                f"Multiple telescopes found in the dataset for sinistro: "
+                f"Multiple telescopes found in the dataset for {instrument}: "
                 f"{sorted(unique_telescopes)}. Please specify --telescope to select one."
             )
 
-    if instrument == "sinistro" and args.mode:
+    if instrument in MULTISITE_MODES and args.mode:
         mode_to_match = args.mode.lower()
-        allowed_modes = ("central_2k_2x2", "full_frame")
+        allowed_modes = MULTISITE_MODES[instrument]
         if mode_to_match not in allowed_modes:
             logger.error(
-                f"Invalid mode '{args.mode}' for sinistro. Must be one of {allowed_modes}"
+                f"Invalid mode '{args.mode}' for {instrument}. Must be one of {allowed_modes}"
             )
             return 1
 
@@ -5004,7 +5050,7 @@ def main(argv=None) -> int:
                 filtered_sciences[b] = matching
         sciences = filtered_sciences
 
-    if instrument == "sinistro" and args.mode is None:
+    if instrument in MULTISITE_MODES and args.mode is None:
         unique_modes = set()
         for b, fs in sciences.items():
             for f in fs:
@@ -5024,7 +5070,7 @@ def main(argv=None) -> int:
                     unique_modes.add(str(confmode).strip().lower())
         if len(unique_modes) > 1:
             raise ValueError(
-                f"Multiple configuration modes found in the dataset for sinistro: {list(unique_modes)}. "
+                f"Multiple configuration modes found in the dataset for {instrument}: {list(unique_modes)}. "
                 "Please specify --mode to select one."
             )
 
@@ -5042,7 +5088,7 @@ def main(argv=None) -> int:
 
     active_bands = [b for b in args.bands if sciences.get(b)]
     if not active_bands:
-        if instrument == "sinistro":
+        if instrument in MULTISITE_INSTRUMENTS:
             details = []
             if args.site:
                 details.append(f"site={args.site}")
@@ -5524,7 +5570,7 @@ def main(argv=None) -> int:
     site = None
     resolved_telescope = None
     resolved_confmode = None
-    if instrument == "sinistro" and probe is not None:
+    if instrument in MULTISITE_INSTRUMENTS and probe is not None:
         site = probe.get("SITEID") or probe.get("SITE")
         if site:
             site = str(site).lower()

@@ -30,6 +30,8 @@ FOV_IN_ARCMIN = {
     "muscat2": 7.4,
     "muscat3": 9.1,
     "muscat4": 9.1,
+    "sbig": 29.2,  # LCO SBIG STL-6303 page, longer chip axis
+    "qhy600": 140.82,  # LCO live configdb "science_fov" for 0M4-SCICAM-QHY600
 }
 
 
