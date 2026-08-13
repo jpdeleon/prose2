@@ -173,9 +173,8 @@ DISPLAY_STACK_NFRAMES = int(os.environ.get("MUSCAT_DISPLAY_STACK_NFRAMES", "15")
 # /data/MuSCAT2 headers -- so they skip the header-triage tier and go
 # straight to pixel-based validation.
 # Verified against real archive FITS headers: muscat3, muscat4, sinistro,
-# sbig. qhy600 is included on the assumption that LCO's BANZAI pipeline
-# treats the whole 0.4m network uniformly (same as sbig) -- unverified,
-# pending real archived QHY600CMOS frames; sanity-check the first real run.
+# sbig, qhy600 (the last confirmed via a real coj0m416-sq36-20260804-0098-e91
+# archive frame -- L1FWHM present, RLEVEL 91).
 BANZAI_QUALITY_INSTRUMENTS = frozenset(
     {"muscat3", "muscat4", "sinistro", "sbig", "qhy600"}
 )
@@ -195,9 +194,11 @@ MULTISITE_SITES: dict[str, tuple[str, ...]] = {
 
 # Instruments with multiple readout/config modes needing --mode
 # disambiguation. sbig is deliberately absent: real archive headers show a
-# single CONFMODE="default" value, no known multi-mode need. qhy600's codes
-# are sourced from LCO's live configdb (readout_modes), not a local file --
-# unverified against a real archived QHY600CMOS header.
+# single CONFMODE="default" value, no known multi-mode need. qhy600's
+# "central30x30" is confirmed verbatim on a real archived header
+# (coj0m416-sq36-20260804-0098-e91, CONFMODE=central30x30, 2400x2400 px @
+# 0.74"/px); "full_frame" is not yet confirmed against a real frame in
+# that mode, but is the LCO configdb's own code for it.
 MULTISITE_MODES: dict[str, tuple[str, ...]] = {
     "sinistro": ("central_2k_2x2", "full_frame"),
     "qhy600": ("central30x30", "full_frame"),
@@ -434,13 +435,14 @@ def get_instrument(header) -> str:
         # INSTRUME unit code, not TELID (both SBIG-STL6303 and the QHY600 +
         # DeltaRho 350 upgrade share the "0m4x" telescope class). Verified
         # against real archive headers: every SBIG unit reports an INSTRUME
-        # code prefixed "kb" (e.g. kb23, kb27, kb82, kb95, kb99).
+        # code prefixed "kb" (e.g. kb23, kb27, kb82, kb95, kb99); every
+        # QHY600 unit reports one prefixed "sq" (e.g. sq30-33, sq36, sq38,
+        # sq40, sq41, sq46 -- confirmed across coj/elp/ogg/tfn archive
+        # frames from 2026-08).
         if instrume.startswith("kb"):
             return "sbig"
-        # TODO: add the QHY600 branch once real archived QHY600CMOS frames
-        # exist and their INSTRUME prefix can be confirmed -- do not guess
-        # it here. Until then, unrecognized 0m4 frames fall through to
-        # "unknown" (existing safe behavior) rather than being misrouted.
+        if instrume.startswith("sq"):
+            return "qhy600"
     return "unknown"
 
 

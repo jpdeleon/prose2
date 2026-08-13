@@ -28,11 +28,11 @@ jd_scale: utc
 bjd_scale: utc
 mjd: 0
 trimming: [0, 0]
-read_noise: 3.3
+read_noise: 3.08
 gain: 1
 altitude: 2000
 diameter: 35
-pixel_scale: 0.734
+pixel_scale: 0.74
 latlong: [null, null]
 saturation: null
 hdu: 0

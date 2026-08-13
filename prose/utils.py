@@ -45,7 +45,7 @@ PIXSCALES = {
     'muscat3': 0.267,
     'muscat4': 0.267,
     'sbig': 0.58,     # verified on real archive SBIGSTL6303 headers (PIXSCALE)
-    'qhy600': 0.734,  # LCO live configdb for 0M4-SCICAM-QHY600 (unverified vs a real header)
+    'qhy600': 0.74,   # verified on a real archive QHY600CMOS header (PIXSCALE), coj0m416-sq36-20260804-0098-e91
 }
 
 LCO_SITES = {

@@ -65,6 +65,19 @@ def test_resolve_simbad_target_uses_decimal_degree_columns(monkeypatch):
         ({"TELID": "1m0a", "SITEID": "lsc"}, "sinistro"),
         ({"TELID": "0m4a", "SITEID": "cpt"}, "unknown"),
         ({}, "unknown"),
+        # SBIG STL-6303, verified against real /data/SBIGSTL6303 archive
+        # headers (e.g. ogg0m406-kb27-20200724-0218-e91.fits).
+        ({"TELID": "0m4b", "SITEID": "ogg", "INSTRUME": "kb27"}, "sbig"),
+        # QHY600, verified against a real archived frame fetched from LCO's
+        # archive API (coj0m416-sq36-20260804-0098-e91.fits.fz): TELID=0m4a,
+        # INSTRUME=sq36, GAIN=1.0, SATURATE=47400.0, CONFMODE=central30x30.
+        # A network-wide archive scan confirmed 8 distinct QHY600 units
+        # (coj/elp/ogg/tfn) all share the "sq" INSTRUME prefix.
+        ({"TELID": "0m4a", "SITEID": "coj", "INSTRUME": "sq36"}, "qhy600"),
+        ({"TELID": "0m4b", "SITEID": "coj", "INSTRUME": "sq38"}, "qhy600"),
+        ({"TELID": "0m4a", "SITEID": "tfn", "INSTRUME": "sq32"}, "qhy600"),
+        # Unrecognized 0m4 INSTRUME prefix -- still falls through safely.
+        ({"TELID": "0m4a", "SITEID": "cpt", "INSTRUME": "zz99"}, "unknown"),
     ],
 )
 def test_get_instrument(header, expected):
