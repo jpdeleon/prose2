@@ -335,14 +335,15 @@ def test_Calibration_only_allocates_and_cleans_shared_storage():
     from prose.blocks import Calibration
 
     local = Calibration()
-    assert local._cal_dir is None
+    assert local._shared_dir is None
 
     shared = Calibration(shared=True)
-    cal_dir = Path(shared._cal_dir)
+    cal_dir = Path(shared._shared_dir)
     assert cal_dir.is_dir()
+    master_bias = shared.get_master("bias")
     Sequence([shared]).terminate()
     assert not cal_dir.exists()
-    np.testing.assert_array_equal(shared.master_bias, [0.0])
+    np.testing.assert_array_equal(master_bias, [0.0])
 
 
 def test_SequenceParallel_terminates_blocks():
@@ -350,7 +351,7 @@ def test_SequenceParallel_terminates_blocks():
     from prose.core.sequence import SequenceParallel
 
     shared = Calibration(shared=True)
-    cal_dir = Path(shared._cal_dir)
+    cal_dir = Path(shared._shared_dir)
     SequenceParallel([shared]).run([image.copy()], show_progress=False)
     assert not cal_dir.exists()
 

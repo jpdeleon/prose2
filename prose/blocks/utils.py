@@ -1,4 +1,3 @@
-import os
 import shutil
 import tempfile
 from functools import partial
@@ -15,6 +14,7 @@ from prose.utils import easy_median
 
 __all__ = [
     "MaskSaturatedPixels",
+    "RejectSaturatedSources",
     "LimitSources",
     "Apply",
     "SortSources",
@@ -67,6 +67,38 @@ class MaskSaturatedPixels(Block):
             median_value = np.nanmedian(image.data)
             image.data = image.data.copy()
             image.data[mask] = median_value
+
+
+class RejectSaturatedSources(Block):
+    def __init__(self, saturation_level=None, name=None):
+        """Filter out saturated sources from the detected sources.
+
+        Parameters
+        ----------
+        saturation_level : float, optional
+            The level above which a star is considered saturated.
+            If None, will use image.saturation_level if available.
+        name : str, optional
+            Name of the block, by default None
+        """
+        super().__init__(name=name)
+        self.saturation_level = saturation_level
+
+    def run(self, image):
+        if len(image.sources) == 0:
+            return
+
+        # Determine saturation level
+        sat_level = self.saturation_level
+        if sat_level is None and hasattr(image, "saturation_level"):
+            sat_level = image.saturation_level
+
+        if sat_level is None:
+            raise ValueError("No saturation level provided or found in image")
+
+        # Filter out sources with peak values above saturation level
+        non_saturated = [s for s in image.sources if s.peak < sat_level]
+        image.sources = Sources(non_saturated, type=image.sources.type)
 
 
 # TODO: document and test
@@ -285,20 +317,19 @@ class Calibration(Block):
         self.master_dark = self._produce_master(check_input(darks), "dark")
         self.master_flat = self._produce_master(check_input(flats), "flat")
 
+        self._shared_dir = None
+        self._shared_paths = {}
         if shared:
-            self._cal_dir = tempfile.mkdtemp(prefix="prose_cal_")
-            self._cal_paths = {
-                imtype: os.path.join(self._cal_dir, f"__{imtype}.array")
-                for imtype in ("bias", "dark", "flat")
+            self._shared_dir = Path(tempfile.mkdtemp(prefix="prose-calibration-"))
+            self._shared_paths = {
+                image_type: self._shared_dir / f"{image_type}.array"
+                for image_type in ("bias", "dark", "flat")
             }
             try:
                 self._share()
             except Exception:
-                shutil.rmtree(self._cal_dir, ignore_errors=True)
+                self.cleanup_shared()
                 raise
-        else:
-            self._cal_dir = None
-            self._cal_paths = {}
         self.verbose = verbose
 
         self.calibration = self._calibration_shared if shared else self._calibration
@@ -380,19 +411,19 @@ class Calibration(Block):
 
     def _calibration_shared(self, image, exp_time):
         bias = np.memmap(
-            self._cal_paths["bias"],
+            self._shared_paths["bias"],
             dtype="float32",
             mode="r",
             shape=self.shapes["bias"],
         )
         dark = np.memmap(
-            self._cal_paths["dark"],
+            self._shared_paths["dark"],
             dtype="float32",
             mode="r",
             shape=self.shapes["dark"],
         )
         flat = np.memmap(
-            self._cal_paths["flat"],
+            self._shared_paths["flat"],
             dtype="float32",
             mode="r",
             shape=self.shapes["flat"],
@@ -418,35 +449,41 @@ class Calibration(Block):
         for imtype in ["bias", "dark", "flat"]:
             data = self.__dict__[f"master_{imtype}"]
             m = np.memmap(
-                self._cal_paths[imtype], dtype="float32", mode="w+", shape=data.shape
+                self._shared_paths[imtype],
+                dtype="float32",
+                mode="w+",
+                shape=data.shape,
             )
             if data.ndim == 2:
                 m[:, :] = data[:, :]
             else:
                 m[:] = data[:]
+            m.flush()
 
             del self.__dict__[f"master_{imtype}"]
 
+    def get_master(self, image_type):
+        """Return a copy of a master calibration image, shared or in-memory."""
+        attribute = f"master_{image_type}"
+        if hasattr(self, attribute):
+            return np.array(getattr(self, attribute), copy=True)
+        return np.array(
+            np.memmap(
+                self._shared_paths[image_type],
+                dtype="float32",
+                mode="r",
+                shape=self.shapes[image_type],
+            )
+        )
+
+    def cleanup_shared(self):
+        """Remove this instance's shared calibration files."""
+        if self._shared_dir is not None:
+            shutil.rmtree(self._shared_dir, ignore_errors=True)
+            self._shared_dir = None
+
     def terminate(self):
-        if self._cal_dir is not None:
-            for imtype in ("bias", "dark", "flat"):
-                attr = f"master_{imtype}"
-                if not hasattr(self, attr):
-                    setattr(
-                        self,
-                        attr,
-                        np.array(
-                            np.memmap(
-                                self._cal_paths[imtype],
-                                dtype="float32",
-                                mode="r",
-                                shape=self.shapes[imtype],
-                            )
-                        ),
-                    )
-            shutil.rmtree(self._cal_dir, ignore_errors=True)
-            self._cal_dir = None
-            self._cal_paths = {}
+        self.cleanup_shared()
 
     @property
     def citations(self):
@@ -608,6 +645,7 @@ class GetFluxes(Get):
             args and kwargs of :py:class:`prose.blocks.Get`
         """
         self._time_key = time
+
         def get_fluxes(im):
             return im.aperture["fluxes"]
 

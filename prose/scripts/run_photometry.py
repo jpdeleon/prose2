@@ -1814,6 +1814,49 @@ def _target_pixel_or_center(
     return _image_center_xy(ref)
 
 
+def _append_target_source(
+    ref: FITSImage, target_coord: SkyCoord, cutout_size: int
+) -> tuple[FITSImage, int]:
+    """Append the coordinate-selected target and return its source index."""
+    tx, ty = _target_pixel_or_center(ref, target_coord)
+    target_index = len(ref.sources)
+    logger.info(
+        f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f}) "
+        f"as source {target_index}"
+    )
+    from prose.core.source import PointSource, Sources
+
+    new_source = PointSource(coords=np.array([tx, ty]), i=target_index)
+    ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
+
+    try:
+        ref = blocks.Cutouts(shape=cutout_size)(ref)
+        ref = blocks.CentroidQuadratic()(ref)
+    except Exception as e:
+        logger.warning(f"Failed to refine centroid of force-added target source: {e}")
+    return ref, target_index
+
+
+def _append_target_source(
+    ref: FITSImage, target_coord: SkyCoord, cutout_size: int, centroid_method: str
+) -> tuple[FITSImage, int]:
+    """Append the coordinate-selected target and return its source index."""
+    tx, ty = _target_pixel_or_center(ref, target_coord)
+    target_index = len(ref.sources)
+    logger.info(
+        f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f}) "
+        f"as source {target_index}"
+    )
+    new_source = PointSource(coords=np.array([tx, ty]), i=target_index)
+    ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
+    try:
+        ref = blocks.Cutouts(shape=cutout_size)(ref)
+        ref = _centroid_block(centroid_method)(ref)
+    except Exception as e:
+        logger.warning(f"Failed to refine centroid of force-added target source: {e}")
+    return ref, target_index
+
+
 def _skycoord_has_finite_data(coord) -> bool:
     if not isinstance(coord, SkyCoord):
         return False
@@ -2096,7 +2139,12 @@ def build_reference(
         defaulted_to_brightest = not match_found
 
     if target_index_override is not None:
-        target_index = target_index_override
+        if target_index_override == len(ref.sources) and target_coord is not None:
+            ref, target_index = _append_target_source(
+                ref, target_coord, cutout_size, centroid_method
+            )
+        else:
+            target_index = target_index_override
     elif target_pixel_override is not None:
         target_index, target_pixel_distance = _nearest_source_index(
             ref, target_pixel_override
@@ -2115,8 +2163,8 @@ def build_reference(
     if not (0 <= target_index < n_sources):
         raise ValueError(
             f"--tID {target_index} out of range: only {n_sources} sources kept "
-            f"(valid 0..{n_sources - 1}); increase --max_num_stars or pick a "
-            f"lower --tID"
+            f"(valid 0..{n_sources - 1}, or {n_sources} with --target_coord to "
+            f"force-add the target); increase --max_num_stars or pick a lower --tID"
         )
     aper_radii_was_custom = aper_radii is not None
     if aper_radii_was_custom:

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
+import prose.blocks.utils as block_utils
 from prose import utils
 from prose.scripts import calibrate_muscat as cm
 
@@ -213,6 +214,72 @@ class TestCalibrateBandExposure:
 
 
 class TestMain:
+    def test_multiband_calibration_isolates_and_cleans_shared_memmaps(
+        self, tmp_path, monkeypatch
+    ):
+        """Real multi-band calibration must not leave process-global memmaps."""
+        raw_dir = tmp_path / "raw"
+        output_dir = tmp_path / "calibrated"
+        work_dir = tmp_path / "work"
+        raw_dir.mkdir()
+        work_dir.mkdir()
+        monkeypatch.chdir(work_dir)
+        shared_dirs = []
+        real_mkdtemp = block_utils.tempfile.mkdtemp
+
+        def tracked_mkdtemp(*args, **kwargs):
+            path = real_mkdtemp(*args, **kwargs)
+            shared_dirs.append(Path(path))
+            return path
+
+        monkeypatch.setattr(block_utils.tempfile, "mkdtemp", tracked_mkdtemp)
+
+        darks = {}
+        flats = {}
+        sciences = {}
+        for ccd, band in ((1, "rp"), (2, "zs")):
+            darks[band] = []
+            flats[band] = []
+            sciences[band] = []
+            for image_type, destination in (
+                ("DARK", darks[band]),
+                ("FLAT", flats[band]),
+                ("EPIC29937", sciences[band]),
+            ):
+                for i in range(2):
+                    path = raw_dir / f"MSCT{ccd}_{image_type}_{i}.fits"
+                    _fake_fits(path, image_type, exptime=30.0)
+                    destination.append(str(path))
+
+        monkeypatch.setattr(
+            cm,
+            "find_frames",
+            lambda data_dir, target: (darks, flats, sciences),
+        )
+        monkeypatch.setattr(cm, "save_master_plots", lambda frames, output_dir: None)
+
+        assert (
+            cm.main(
+                [
+                    "--data_dir",
+                    str(raw_dir),
+                    "--target",
+                    "EPIC29937",
+                    "--output_dir",
+                    str(output_dir),
+                    "--bands",
+                    "rp",
+                    "zs",
+                ]
+            )
+            == 0
+        )
+        assert len(list(output_dir.glob("*_calibrated.fits"))) == 4
+        assert len(shared_dirs) == 2
+        assert len(set(shared_dirs)) == 2
+        assert all(not path.exists() for path in shared_dirs)
+        assert list(work_dir.glob("__*.array")) == []
+
     def test_bands_limits_calibrated_ccds(self, tmp_path, monkeypatch):
         (tmp_path / "MSCT0_0001.fits").touch()
         calls = []

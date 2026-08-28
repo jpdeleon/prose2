@@ -800,6 +800,47 @@ def test_build_reference_target_index_override_bypasses_gaia(tmp_path, monkeypat
     assert not called, "find_target_index should not have been called"
 
 
+def test_build_reference_target_override_appends_target_at_next_index(
+    tmp_path, monkeypatch
+):
+    """A manual ID immediately after detected sources denotes a forced target."""
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    result = rp.build_reference(
+        fpath,
+        SkyCoord(0, 0, unit="deg"),
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_index_override=2,
+    )
+
+    assert result["target_index"] == 2
+    assert len(result["ref"].sources) == 3
+
+
+def test_build_reference_target_override_rejects_larger_missing_index(
+    tmp_path, monkeypatch
+):
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    with pytest.raises(ValueError, match="--tID 4 out of range: only 2 sources"):
+        rp.build_reference(
+            fpath,
+            SkyCoord(0, 0, unit="deg"),
+            aper_radii=np.array([3.0, 4.0, 5.0]),
+            rin=8.0,
+            rout=12.0,
+            target_index_override=4,
+        )
+
+
 def test_build_reference_target_index_override_None_still_calls_find(
     tmp_path, monkeypatch
 ):
@@ -2840,7 +2881,9 @@ def test_warp_onto_reference_returns_none_when_transform_unsolved(monkeypatch):
 
     monkeypatch.setattr(rp.blocks, "ComputeTransformTwirl", FakeCTT)
     img = SimpleNamespace(data=np.zeros((10, 10)))
-    assert rp._warp_onto_reference(img, SimpleNamespace(data=np.zeros((10, 10)))) is None
+    assert (
+        rp._warp_onto_reference(img, SimpleNamespace(data=np.zeros((10, 10)))) is None
+    )
 
 
 def test_build_display_reference_returns_none_without_files():
@@ -2855,13 +2898,16 @@ def test_build_display_reference_returns_none_without_files():
 def test_build_display_reference_returns_none_when_all_frames_fail(monkeypatch):
     monkeypatch.setattr(rp, "FITSImage", lambda *_a, **_k: SimpleNamespace())
     monkeypatch.setattr(
-        rp, "_frame_alignment_sequence",
+        rp,
+        "_frame_alignment_sequence",
         lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
     )
     monkeypatch.setattr(rp, "_warp_onto_reference", lambda img, shared_ref: None)
     out = rp._build_display_reference(
-        ["a.fits", "b.fits"], SimpleNamespace(),
-        **_detect_kwargs(), n_stack=1,
+        ["a.fits", "b.fits"],
+        SimpleNamespace(),
+        **_detect_kwargs(),
+        n_stack=1,
     )
     assert out is None
 
@@ -2901,14 +2947,17 @@ def test_build_display_reference_single_frame_real_construction(monkeypatch):
 
     monkeypatch.setattr(rp, "FITSImage", FakeImg)
     monkeypatch.setattr(
-        rp, "_frame_alignment_sequence",
+        rp,
+        "_frame_alignment_sequence",
         lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
     )
     monkeypatch.setattr(rp, "_warp_onto_reference", lambda img, shared_ref: warped)
 
     disp = rp._build_display_reference(
-        ["a.fits", "b.fits", "c.fits"], shared,
-        **_detect_kwargs(), n_stack=1,
+        ["a.fits", "b.fits", "c.fits"],
+        shared,
+        **_detect_kwargs(),
+        n_stack=1,
     )
 
     assert disp is not None
@@ -2933,20 +2982,25 @@ def test_build_display_reference_median_stacks_aligned_frames(monkeypatch):
             self.header = Header()
             self.data = np.ones(shared.data.shape)
 
-    warps = iter([
-        np.full(shared.data.shape, 2.0),
-        np.full(shared.data.shape, 4.0),
-    ])
+    warps = iter(
+        [
+            np.full(shared.data.shape, 2.0),
+            np.full(shared.data.shape, 4.0),
+        ]
+    )
     monkeypatch.setattr(rp, "FITSImage", FakeImg)
     monkeypatch.setattr(
-        rp, "_frame_alignment_sequence",
+        rp,
+        "_frame_alignment_sequence",
         lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
     )
     monkeypatch.setattr(rp, "_warp_onto_reference", lambda img, shared_ref: next(warps))
 
     disp = rp._build_display_reference(
-        ["a.fits", "b.fits", "c.fits", "d.fits"], shared,
-        **_detect_kwargs(), n_stack=2,
+        ["a.fits", "b.fits", "c.fits", "d.fits"],
+        shared,
+        **_detect_kwargs(),
+        n_stack=2,
     )
 
     assert disp is not None
@@ -3039,7 +3093,7 @@ def test_plot_stacks_uses_display_reference_when_present(tmp_path):
 
     band_results = {
         "gp": make_result(with_display=False),  # reference band
-        "rp": make_result(with_display=True),   # non-reference band
+        "rp": make_result(with_display=True),  # non-reference band
     }
 
     out_path = tmp_path / "stacks.png"
@@ -3075,9 +3129,15 @@ def test_run_band_forwards_display_stack_nframes(tmp_path, monkeypatch):
             self.fwhm = 4.0
 
     reference = {
-        "ref": FakeImage(), "target_index": 0, "aper_radii": np.array([3.0]),
-        "rin": 8.0, "rout": 12.0, "scale": False, "edge_cids": [],
-        "gaia_df": None, "defaulted_to_brightest": False,
+        "ref": FakeImage(),
+        "target_index": 0,
+        "aper_radii": np.array([3.0]),
+        "rin": 8.0,
+        "rout": 12.0,
+        "scale": False,
+        "edge_cids": [],
+        "gaia_df": None,
+        "defaulted_to_brightest": False,
     }
     monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
 
@@ -3097,8 +3157,9 @@ def test_run_band_forwards_display_stack_nframes(tmp_path, monkeypatch):
 
         return MockPhot()
 
-    def mock_diff(fluxes, target_index, cids=None, avoid_cids=None,
-                  nan_imputation_method="linear"):
+    def mock_diff(
+        fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"
+    ):
         class FakeDiff:
             def __init__(self):
                 self.time = np.arange(4, dtype=float)
@@ -3148,9 +3209,15 @@ def test_run_band_skips_display_reference_for_reference_band(tmp_path, monkeypat
             self.fwhm = 4.0
 
     reference = {
-        "ref": FakeImage(), "target_index": 0, "aper_radii": np.array([3.0]),
-        "rin": 8.0, "rout": 12.0, "scale": False, "edge_cids": [],
-        "gaia_df": None, "defaulted_to_brightest": False,
+        "ref": FakeImage(),
+        "target_index": 0,
+        "aper_radii": np.array([3.0]),
+        "rin": 8.0,
+        "rout": 12.0,
+        "scale": False,
+        "edge_cids": [],
+        "gaia_df": None,
+        "defaulted_to_brightest": False,
     }
     monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
 
@@ -3170,8 +3237,9 @@ def test_run_band_skips_display_reference_for_reference_band(tmp_path, monkeypat
 
         return MockPhot()
 
-    def mock_diff(fluxes, target_index, cids=None, avoid_cids=None,
-                  nan_imputation_method="linear"):
+    def mock_diff(
+        fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"
+    ):
         return SimpleNamespace(time=np.arange(4, dtype=float), target=target_index)
 
     monkeypatch.setattr(rp, "photometry_sequence", mock_photometry_sequence)
@@ -3198,6 +3266,12 @@ def test_run_band_skips_display_reference_for_reference_band(tmp_path, monkeypat
 def test_parse_args_display_stack_nframes_default_and_override():
     base = ["--target_name", "X", "--data_dir", ".", "--results_dir", "."]
     assert rp.parse_args(base).display_stack_nframes == rp.DISPLAY_STACK_NFRAMES
-    assert rp.parse_args(base + ["--display_stack_nframes", "4"]).display_stack_nframes == 4
+    assert (
+        rp.parse_args(base + ["--display_stack_nframes", "4"]).display_stack_nframes
+        == 4
+    )
     # hyphenated alias resolves to the same destination
-    assert rp.parse_args(base + ["--display-stack-nframes", "9"]).display_stack_nframes == 9
+    assert (
+        rp.parse_args(base + ["--display-stack-nframes", "9"]).display_stack_nframes
+        == 9
+    )

@@ -503,104 +503,94 @@ def calibrate_band(
         shared=True,
         verbose=True,
     )
+    try:
+        md = calib.get_master("dark")
+        mf = calib.get_master("flat")
 
-    if solve_wcs == "twirl":
-        info(f"[{band}] solving WCS on first science frame via twirl+Gaia")
-        first = FITSImage(sciences[0])
-        calib.run(first)
-        wcs = _solve_wcs(first)
-        if wcs is not None:
-            info(f"[{band}] WCS solved successfully via twirl")
-            sp = _wcs_sidecar_path(output_dir, band, "twirl")
-            hdu = fits.PrimaryHDU()
-            hdu.header.update(wcs.to_header(relax=True))
-            hdu.writeto(str(sp), overwrite=True)
-        else:
-            info(
-                f"[{band}] WCS solving failed via twirl; continuing without astrometry"
-            )
-        seq = SequenceParallel(
-            [calib, SaveCalibratedFITS(output_dir, wcs=wcs, wcs_method="twirl", site=MUSCAT_SITE)],
-            name=f"[{band}] calibrating",
-        )
-        seq.run(sciences)
-
-    elif solve_wcs == "astrometry.net":
-        seq = SequenceParallel(
-            [calib, SaveCalibratedFITS(output_dir, wcs_method="astrometry.net", site=MUSCAT_SITE)],
-            name=f"[{band}] calibrating",
-        )
-        seq.run(sciences)
-        info(f"[{band}] solving WCS on first calibrated frame via astrometry.net")
-        from prose.scripts.solve_wcs_astrometry import (
-            _api_key,
-            inject_wcs_into_file,
-            upload_and_solve,
-            validate_wcs,
-        )
-
-        try:
-            api_key = _api_key()
-        except RuntimeError as e:
-            logger.warning(f"[{band}] {e}; skipping WCS")
-        else:
-            calibrated_files = [
-                output_dir / f"{Path(fp).stem}_calibrated.fits" for fp in sciences
-            ]
-            calibrated_files = [fp for fp in calibrated_files if fp.is_file()]
-            if calibrated_files:
-                wcs = upload_and_solve(calibrated_files[0], api_key)
-                if wcs is not None and validate_wcs(wcs, "muscat"):
-                    for fp in calibrated_files:
-                        inject_wcs_into_file(fp, wcs)
-                    sp = _wcs_sidecar_path(output_dir, band, "astrometry.net")
-                    hdu = fits.PrimaryHDU()
-                    hdu.header.update(wcs.to_header(relax=True))
-                    hdu.writeto(str(sp), overwrite=True)
-                    info(
-                        f"[{band}] WCS solved via astrometry.net and "
-                        f"injected into {len(calibrated_files)} files"
-                    )
-                else:
-                    info(
-                        f"[{band}] WCS solving failed via astrometry.net; continuing without astrometry"
-                    )
+        if solve_wcs == "twirl":
+            info(f"[{band}] solving WCS on first science frame via twirl+Gaia")
+            first = FITSImage(sciences[0])
+            calib.run(first)
+            wcs = _solve_wcs(first)
+            if wcs is not None:
+                info(f"[{band}] WCS solved successfully via twirl")
+                sp = _wcs_sidecar_path(output_dir, band, "twirl")
+                hdu = fits.PrimaryHDU()
+                hdu.header.update(wcs.to_header(relax=True))
+                hdu.writeto(str(sp), overwrite=True)
             else:
-                logger.warning(f"[{band}] no calibrated files found; skipping WCS")
+                info(
+                    f"[{band}] WCS solving failed via twirl; continuing without astrometry"
+                )
+            seq = SequenceParallel(
+                [
+                    calib,
+                    SaveCalibratedFITS(
+                        output_dir, wcs=wcs, wcs_method="twirl", site=MUSCAT_SITE
+                    ),
+                ],
+                name=f"[{band}] calibrating",
+            )
+            seq.run(sciences)
 
-    else:
-        seq = SequenceParallel(
-            [calib, SaveCalibratedFITS(output_dir, site=MUSCAT_SITE)],
-            name=f"[{band}] calibrating",
-        )
-        seq.run(sciences)
+        elif solve_wcs == "astrometry.net":
+            seq = SequenceParallel(
+                [
+                    calib,
+                    SaveCalibratedFITS(
+                        output_dir, wcs_method="astrometry.net", site=MUSCAT_SITE
+                    ),
+                ],
+                name=f"[{band}] calibrating",
+            )
+            seq.run(sciences)
+            info(f"[{band}] solving WCS on first calibrated frame via astrometry.net")
+            from prose.scripts.solve_wcs_astrometry import (
+                _api_key,
+                inject_wcs_into_file,
+                upload_and_solve,
+                validate_wcs,
+            )
+
+            try:
+                api_key = _api_key()
+            except RuntimeError as e:
+                logger.warning(f"[{band}] {e}; skipping WCS")
+            else:
+                calibrated_files = [
+                    output_dir / f"{Path(fp).stem}_calibrated.fits" for fp in sciences
+                ]
+                calibrated_files = [fp for fp in calibrated_files if fp.is_file()]
+                if calibrated_files:
+                    wcs = upload_and_solve(calibrated_files[0], api_key)
+                    if wcs is not None and validate_wcs(wcs, "muscat"):
+                        for fp in calibrated_files:
+                            inject_wcs_into_file(fp, wcs)
+                        sp = _wcs_sidecar_path(output_dir, band, "astrometry.net")
+                        hdu = fits.PrimaryHDU()
+                        hdu.header.update(wcs.to_header(relax=True))
+                        hdu.writeto(str(sp), overwrite=True)
+                        info(
+                            f"[{band}] WCS solved via astrometry.net and "
+                            f"injected into {len(calibrated_files)} files"
+                        )
+                    else:
+                        info(
+                            f"[{band}] WCS solving failed via astrometry.net; continuing without astrometry"
+                        )
+                else:
+                    logger.warning(f"[{band}] no calibrated files found; skipping WCS")
+
+        else:
+            seq = SequenceParallel(
+                [calib, SaveCalibratedFITS(output_dir, site=MUSCAT_SITE)],
+                name=f"[{band}] calibrating",
+            )
+            seq.run(sciences)
+    finally:
+        calib.cleanup_shared()
 
     info(f"[{band}] done  ({len(sciences)} frames -> {output_dir})")
-
-    md = (
-        calib.master_dark
-        if hasattr(calib, "master_dark")
-        else np.array(
-            np.memmap(
-                calib._cal_paths["dark"],
-                dtype="float32",
-                mode="r",
-                shape=calib.shapes["dark"],
-            )
-        )
-    )
-    mf = (
-        calib.master_flat
-        if hasattr(calib, "master_flat")
-        else np.array(
-            np.memmap(
-                calib._cal_paths["flat"],
-                dtype="float32",
-                mode="r",
-                shape=calib.shapes["flat"],
-            )
-        )
-    )
 
     return md, mf
 
