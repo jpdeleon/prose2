@@ -307,7 +307,7 @@ uv run python scripts/compare_centroids_muscat3.py /data/MuSCAT3/260119 \
 [Garcia et al. 2022](https://ui.adsabs.harvard.edu/abs/2022MNRAS.509.4817G):
 
 ```
-@ARTICLE{prose,
+@ARTICLE{Garcia2022,
        author = {{Garcia}, Lionel J. and {Timmermans}, Mathilde and {Pozuelos}, Francisco J. and {Ducrot}, Elsa and {Gillon}, Micha{\"e}l and {Delrez}, Laetitia and {Wells}, Robert D. and {Jehin}, Emmanu{\"e}l},
         title = "{PROSE: a PYTHON framework for modular astronomical images processing}",
       journal = {\mnras},
@@ -328,3 +328,69 @@ archivePrefix = {arXiv},
 
 See also how to cite the dependencies of your sequences
 [here](https://prose.readthedocs.io/en/latest/ipynb/acknowledgement.html).
+
+### Suggested methods-paragraph template
+
+If `run_photometry` produced the light curves in a paper, here is a template
+Methods paragraph — adapt the calibration clause and instrument/band/date
+details to your dataset, the rest matches the pipeline described above:
+
+> Light curves were extracted from \[BANZAI-calibrated / dark-and-flat
+> calibrated\] science frames using a `prose`-based pipeline
+> \citep{Garcia2022} (`prose/scripts/run_photometry.py`). For each band,
+> frames were grouped and a reference image was built from a quality-vetted
+> frame, on which sources were detected and modeled with a median ePSF plus
+> a 2D Gaussian fit. The target was located via a WCS/Gaia cross-match to the
+> target coordinate, and aperture radii were scaled to the reference-frame
+> FWHM and capped by a sky annulus sized to exclude Gaia neighbours
+> contributing $\geq10\%$ of the target flux ($\Delta G < 2.5$ mag). Aperture
+> photometry was measured frame-by-frame in parallel across the full time
+> series, and relative (differential) photometry was computed with the
+> automated ensemble comparison-star algorithm of \citet{Broeg2005}. Frame
+> timestamps were converted from UTC to BJD$_\mathrm{TDB}$ using the
+> observatory site location recorded in the header.
+
+Per-point flux uncertainties are propagated analytically from a simplified
+CCD noise model (`GetFluxes.get_error` in `prose/blocks/utils.py`): aperture
+Poisson noise, sky Poisson noise, read noise, and a digitization term, summed
+in quadrature over the aperture area, then combined with the Broeg (2005)
+artificial-comparison-curve error in quadrature during differential
+photometry. **No scintillation term is applied** — an optional one exists on
+`Telescope.error()` but is not wired into the production pipeline — so name
+that caveat explicitly if a paper states uncertainties are "analytically
+propagated."
+
+```bibtex
+@ARTICLE{Garcia2022,
+       author = {{Garcia}, Lionel J. and {Timmermans}, Mathilde and {Pozuelos}, Francisco J. and {Ducrot}, Elsa and {Gillon}, Micha{\"e}l and {Delrez}, Laetitia and {Wells}, Robert D. and {Jehin}, Emmanu{\"e}l},
+        title = "{PROSE: a PYTHON framework for modular astronomical images processing}",
+      journal = {\mnras},
+     keywords = {instrumentation: detectors, methods: data analysis, planetary systems, Astrophysics - Instrumentation and Methods for Astrophysics, Astrophysics - Earth and Planetary Astrophysics},
+         year = 2022,
+        month = feb,
+       volume = {509},
+       number = {4},
+        pages = {4817-4828},
+          doi = {10.1093/mnras/stab3113},
+archivePrefix = {arXiv},
+       eprint = {2111.02814},
+ primaryClass = {astro-ph.IM},
+       adsurl = {https://ui.adsabs.harvard.edu/abs/2022MNRAS.509.4817G},
+      adsnote = {Provided by the SAO/NASA Astrophysics Data System}
+}
+
+@ARTICLE{Broeg2005,
+       author = {{Broeg}, Ch. and {Fern{\'a}ndez}, M. and {Neuh{\"a}user}, R.},
+        title = "{A new algorithm for differential photometry: computing an optimum artificial comparison star}",
+      journal = {Astronomische Nachrichten},
+     keywords = {methods: observational, methods: statistical, techniques: photometric},
+         year = 2005,
+        month = feb,
+       volume = {326},
+       number = {2},
+        pages = {134-142},
+          doi = {10.1002/asna.200410350},
+       adsurl = {https://ui.adsabs.harvard.edu/abs/2005AN....326..134B},
+      adsnote = {Provided by the SAO/NASA Astrophysics Data System}
+}
+```
