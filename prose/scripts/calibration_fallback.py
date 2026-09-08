@@ -21,11 +21,27 @@ from prose.utils import frames_from_obslog
 EXPOSURE_RTOL = 1e-3
 EXPOSURE_ATOL = 1e-2
 
+NIGHT_DATE_FORMAT = "%y%m%d"
+
+
+def night_distance_days(night_a: str, night_b: str) -> int | None:
+    """Absolute calendar distance in days between two ``YYMMDD`` night names.
+
+    Returns ``None`` if either fails to parse, so callers (e.g. log
+    formatting) can degrade gracefully instead of raising.
+    """
+    try:
+        date_a = datetime.strptime(night_a, NIGHT_DATE_FORMAT)
+        date_b = datetime.strptime(night_b, NIGHT_DATE_FORMAT)
+    except ValueError:
+        return None
+    return abs((date_a - date_b).days)
+
 
 def _nearby_nights(data_dir: Path, max_days: int) -> list[str]:
     """Sibling night directories under *data_dir*'s parent, nearest first."""
     try:
-        target_date = datetime.strptime(data_dir.name, "%y%m%d")
+        target_date = datetime.strptime(data_dir.name, NIGHT_DATE_FORMAT)
     except ValueError:
         return []
 
@@ -34,7 +50,7 @@ def _nearby_nights(data_dir: Path, max_days: int) -> list[str]:
         if not night_dir.is_dir() or night_dir.name == data_dir.name:
             continue
         try:
-            night_date = datetime.strptime(night_dir.name, "%y%m%d")
+            night_date = datetime.strptime(night_dir.name, NIGHT_DATE_FORMAT)
         except ValueError:
             continue
         days = abs((night_date - target_date).days)

@@ -320,15 +320,27 @@ class TestCLI:
         )
         assert args.solve_wcs == "astrometry.net"
 
-    def test_fallback_calib_days_defaults_to_disabled(self):
+    def test_fallback_calib_days_defaults_to_30(self):
         args = cm.parse_args(["--data_dir", "/d", "--output_dir", "/o"])
-        assert args.fallback_calib_days == 0
+        assert args.fallback_calib_days == 30
 
     def test_fallback_calib_days_flag(self):
         args = cm.parse_args(
-            ["--data_dir", "/d", "--output_dir", "/o", "--fallback-calib-days", "30"]
+            ["--data_dir", "/d", "--output_dir", "/o", "--fallback-calib-days", "7"]
         )
-        assert args.fallback_calib_days == 30
+        assert args.fallback_calib_days == 7
+
+    def test_fallback_calib_days_can_be_disabled(self):
+        args = cm.parse_args(
+            ["--data_dir", "/d", "--output_dir", "/o", "--fallback-calib-days", "0"]
+        )
+        assert args.fallback_calib_days == 0
+
+    def test_fallback_calib_days_rejects_negative(self):
+        with pytest.raises(SystemExit):
+            cm.parse_args(
+                ["--data_dir", "/d", "--output_dir", "/o", "--fallback-calib-days", "-1"]
+            )
 
     def test_solve_wcs_main_flag(self, fake_data_dir, tmp_path):
         """End-to-end with --solve-wcs: WCS may fail on fake data but must not crash."""
@@ -496,7 +508,7 @@ class TestCalibrationFallback:
         assert md is not None and mf is not None
         assert len(list(out_dir.glob("*_calibrated.fits"))) == 1
 
-    def test_disabled_by_default_still_skips_band(self, tmp_path, monkeypatch):
+    def test_explicitly_disabled_still_skips_band(self, tmp_path, monkeypatch):
         obslog_root = tmp_path / "obslog"
         monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
         data_root = tmp_path / "data" / "muscat2"
@@ -517,10 +529,40 @@ class TestCalibrationFallback:
             out_dir,
             "rp",
             data_dir=target_dir,
-            # fallback_calib_days omitted -> default 0 (disabled)
+            fallback_calib_days=0,  # explicitly disabled
         )
         assert md is None and mf is None
         assert len(list(out_dir.glob("*_calibrated.fits"))) == 0
+
+    def test_enabled_by_default_borrows_missing_darks(self, tmp_path, monkeypatch):
+        """``fallback_calib_days`` now defaults to 30 (not 0): the borrow this
+        module exists for should fire without the caller opting in."""
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat2"
+        target_dir = data_root / "260804"
+        target_dir.mkdir(parents=True)
+        self._write_source_night(data_root, obslog_root, "260818", exptime=10.0)
+
+        flat = target_dir / "flat.fits"
+        sci = target_dir / "sci.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0, filter_value="r")
+        _fake_fits(sci, "KOI-3510", exptime=10.0, filter_value="r")
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        md, mf = cm.calibrate_band(
+            [],  # no local darks
+            [str(flat)],
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            # fallback_calib_days omitted -> now defaults to 30, so this
+            # should borrow from the 14-day-away night above without opt-in.
+        )
+        assert md is not None and mf is not None
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 1
 
     def test_prefers_borrowed_exposure_match_over_local_mismatch(
         self, tmp_path, monkeypatch

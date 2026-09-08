@@ -41,7 +41,10 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from prose import FITSImage, blocks, __version__ as PROSE_VERSION
 from prose.console_utils import info
 from prose.core.sequence import SequenceParallel
-from prose.scripts.calibration_fallback import find_frames_in_other_nights
+from prose.scripts.calibration_fallback import (
+    find_frames_in_other_nights,
+    night_distance_days,
+)
 from prose.utils import frames_from_obslog, scan_fits_headers
 
 logger = logging.getLogger("calibrate_muscat2")
@@ -460,6 +463,24 @@ def select_darks_for_exposure(
     return darks, "no-match"
 
 
+def _fallback_borrow_desc(
+    band: str,
+    exposure_desc: str,
+    source_night: str,
+    data_dir: Path,
+) -> str:
+    """One-line, table-style summary of a cross-night calibration borrow, for
+    log messages: band, the exposure that was searched for, which night
+    supplied it, and how far away that night is on the calendar.
+    """
+    days_away = night_distance_days(data_dir.name, source_night)
+    days_desc = "unknown" if days_away is None else str(days_away)
+    return (
+        f"band={band} │ needed exposure={exposure_desc} │ "
+        f"found on night={source_night} │ days away={days_desc}"
+    )
+
+
 def _select_darks_with_fallback(
     darks: list[str],
     exposure: float | None,
@@ -483,7 +504,8 @@ def _select_darks_with_fallback(
         exp_desc = "unknown" if exposure is None else f"{exposure:g}s"
         info(
             f"[{band}] local darks don't match exposure {exp_desc} ({status}); "
-            f"borrowed {len(borrowed)} exposure-matched darks from night {source_night}"
+            f"borrowed {len(borrowed)} exposure-matched darks "
+            f"({_fallback_borrow_desc(band, exp_desc, source_night, data_dir)})"
         )
         return borrowed, "borrowed"
     return matched, status
@@ -506,7 +528,7 @@ def _fill_missing_calibration(
     if borrowed:
         info(
             f"[{band}] no local {kind.lower()}s; borrowed {len(borrowed)} "
-            f"from night {source_night}"
+            f"({_fallback_borrow_desc(band, 'any', source_night, data_dir)})"
         )
     return borrowed
 
@@ -636,7 +658,7 @@ def calibrate_band(
     solve_wcs: str | bool | None = None,
     test_run: bool = False,
     data_dir: Path | None = None,
-    fallback_calib_days: int = 0,
+    fallback_calib_days: int = 30,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Build master dark + flat and calibrate all science frames for one band.
 
@@ -656,8 +678,13 @@ def calibrate_band(
         when local ones are missing or exposure-mismatched — see
         ``calibration_fallback.find_frames_in_other_nights``.
     fallback_calib_days:
-        Search window (in days) for cross-night calibration fallback. ``0``
-        (the default) disables it.
+        Search window (in days) for cross-night calibration fallback, nearest
+        night first. Defaults to 30 -- wide enough to have resolved the
+        KOI-3510/260804 MuSCAT2 incident that motivated this fallback (the
+        needed exposure-matched darks were 8-17 days away). Pass ``0`` to
+        disable cross-night borrowing entirely and keep the pre-fallback
+        behavior (skip the band, or rescale mismatched local darks with a
+        logged warning).
 
     Returns ``(master_dark, master_flat)`` arrays for the first exposure group,
     or ``(None, None)`` if skipped.
@@ -787,13 +814,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--fallback_calib_days",
         "--fallback-calib-days",
         type=int,
-        default=0,
+        default=30,
         help="If a band's darks or flats are missing locally, or its darks don't "
         "exposure-match the science frames, search sibling night directories "
         "within this many days (nearest first) for a usable replacement. "
-        "0 (default) disables cross-night fallback.",
+        "Defaults to 30 (wide enough to have resolved the KOI-3510/260804 "
+        "MuSCAT2 incident that motivated this fallback). Pass 0 to disable "
+        "cross-night fallback and keep the pre-fallback behavior.",
     )
-    return ap.parse_args(argv)
+    args = ap.parse_args(argv)
+    if args.fallback_calib_days < 0:
+        ap.error("--fallback_calib_days must be >= 0 (0 disables cross-night fallback)")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
