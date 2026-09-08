@@ -1792,6 +1792,29 @@ def _target_pixel_override_for_band(
     return None
 
 
+def _target_pixel_fallback_for_band(
+    manual_target_index: int | None,
+    self_reference: bool,
+    inferred_target_positions: list[np.ndarray],
+) -> np.ndarray | None:
+    """Best-effort pixel position offered to *every* self-referenced band,
+    regardless of its own WCS status (contrast with
+    :func:`_target_pixel_override_for_band`, a hard override reserved for
+    bands with no usable WCS at all).
+
+    A band whose WCS is technically usable (invertible) but locally
+    inaccurate for its particular reference frame can still miss the 5 arcsec
+    astrometric-match tolerance and would otherwise silently default to
+    source 0. ``build_reference`` only consults this fallback when that
+    band's own match actually fails, so it never overrides a good match.
+    """
+    if manual_target_index is not None:
+        return None
+    if self_reference and inferred_target_positions:
+        return np.median(np.asarray(inferred_target_positions, dtype=float), axis=0)
+    return None
+
+
 def _image_center_xy(ref: FITSImage) -> tuple[float, float]:
     return ref.data.shape[1] / 2, ref.data.shape[0] / 2
 
@@ -2035,6 +2058,7 @@ def build_reference(
     cutout_size: int = CUTOUT_SIZE,
     target_index_override: int | None = None,
     target_pixel_override: np.ndarray | tuple[float, float] | None = None,
+    target_pixel_fallback: np.ndarray | tuple[float, float] | None = None,
     min_area: int = MIN_STAR_AREA,
     plot_gaia_sources: bool = False,
     edge_margin: int | None = EDGE_MARGIN_PIX,
@@ -2055,7 +2079,16 @@ def build_reference(
 
     If ``target_index_override`` is given, it bypasses the Gaia cross-match.
     If ``target_pixel_override`` is given, the nearest detected source to that
-    pixel coordinate is used as the target.
+    pixel coordinate is used as the target unconditionally (no astrometric
+    match is attempted first).
+
+    If ``target_pixel_fallback`` is given, it is only consulted when this
+    band *has* a usable WCS but the astrometric cross-match against it still
+    misses (separation > 5 arcsec for every detected source) -- e.g. a WCS
+    solution that is present and invertible but locally inaccurate for this
+    particular frame. Rather than defaulting to source 0, the nearest
+    detected source to ``target_pixel_fallback`` (typically the median target
+    pixel already located by other bands) is used instead.
 
     When ``plot_gaia_sources`` is set and the reference WCS can project the
     target coordinate, the Gaia catalog around the target is fetched (or reused
@@ -2128,11 +2161,18 @@ def build_reference(
                 )
 
         if not match_found:
-            logger.warning(
-                "Target not found in detected sources (separation > 5 arcsec) "
-                "and WCS-based localization failed. Falling back to source 0 "
-                "(brightest detected star). Use --tID to override."
-            )
+            if target_pixel_fallback is not None:
+                logger.warning(
+                    "Target not found in detected sources (separation > 5 arcsec) "
+                    "and WCS-based localization failed; trying a pixel-position "
+                    "fallback from other bands. Use --tID to override."
+                )
+            else:
+                logger.warning(
+                    "Target not found in detected sources (separation > 5 arcsec) "
+                    "and WCS-based localization failed. Falling back to source 0 "
+                    "(brightest detected star). Use --tID to override."
+                )
 
     defaulted_to_brightest = False
     if target_index_override is None and target_pixel_override is None:
@@ -2154,6 +2194,26 @@ def build_reference(
             f"({float(target_pixel_override[0]):.1f}, {float(target_pixel_override[1]):.1f}); "
             f"nearest source distance {target_pixel_distance:.1f} px"
         )
+    elif not match_found and target_pixel_fallback is not None:
+        try:
+            target_index, fallback_distance = _nearest_source_index(
+                ref, target_pixel_fallback
+            )
+        except ValueError as exc:
+            logger.warning(
+                f"target pixel fallback also unusable ({exc}); "
+                "defaulting to source 0 (brightest); verify with --tID"
+            )
+            target_index = find_target_index(ref, target_coord)
+        else:
+            defaulted_to_brightest = False
+            logger.info(
+                f"own WCS-based match missed the target; inferred target idx "
+                f"{target_index} instead from other bands' pixel position "
+                f"({float(target_pixel_fallback[0]):.1f}, "
+                f"{float(target_pixel_fallback[1]):.1f}); nearest source "
+                f"distance {fallback_distance:.1f} px"
+            )
     else:
         target_index = find_target_index(ref, target_coord)
     # Validate against the actual number of kept sources (which may be fewer
@@ -2505,6 +2565,7 @@ def run_band(
     n_stars_align: int | None = None,
     target_index_override: int | None = None,
     target_pixel_override: np.ndarray | tuple[float, float] | None = None,
+    target_pixel_fallback: np.ndarray | tuple[float, float] | None = None,
     cids: list[int] | None = None,
     avoid_cids: list[int] | None = None,
     ref_source_positions: np.ndarray | None = None,
@@ -2549,6 +2610,7 @@ def run_band(
         cutout_size=cutout_size,
         target_index_override=target_index_override,
         target_pixel_override=target_pixel_override,
+        target_pixel_fallback=target_pixel_fallback,
         min_area=min_area,
         plot_gaia_sources=plot_gaia_sources,
         edge_margin=edge_margin,
@@ -5563,6 +5625,12 @@ def main(argv=None) -> int:
                 f"pixel ({target_pixel_override[0]:.1f}, {target_pixel_override[1]:.1f}) "
                 f"from {','.join(inferred_target_bands)}-band target position(s)"
             )
+        # Offered even when this band's own WCS is nominally "usable": a
+        # locally inaccurate solve can still miss the 5 arcsec match and
+        # would otherwise default to source 0 (see build_reference).
+        target_pixel_fallback = _target_pixel_fallback_for_band(
+            args.tID, self_reference, inferred_target_positions
+        )
         try:
             res = run_band(
                 band,
@@ -5580,6 +5648,7 @@ def main(argv=None) -> int:
                 n_stars_align=args.n_stars_align,
                 target_index_override=target_index_override,
                 target_pixel_override=target_pixel_override,
+                target_pixel_fallback=target_pixel_fallback,
                 cids=args.cID,
                 avoid_cids=args.avoid_cids,
                 ref_source_positions=ref_source_positions,

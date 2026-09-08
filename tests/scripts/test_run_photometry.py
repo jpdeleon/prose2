@@ -1564,6 +1564,21 @@ def test_target_pixel_override_for_band_uses_inferred_position_only_without_wcs(
     assert rp._target_pixel_override_for_band(2, True, inferred, False) is None
 
 
+def test_target_pixel_fallback_for_band_offered_regardless_of_wcs_status():
+    """Unlike the hard override, the fallback is offered even when this band's
+    own WCS is nominally usable -- it's only *consulted* by build_reference if
+    that band's own match still fails."""
+    inferred = [np.array([10.0, 20.0]), np.array([12.0, 22.0])]
+
+    np.testing.assert_allclose(
+        rp._target_pixel_fallback_for_band(None, True, inferred),
+        np.array([11.0, 21.0]),
+    )
+    assert rp._target_pixel_fallback_for_band(None, False, inferred) is None
+    assert rp._target_pixel_fallback_for_band(2, True, inferred) is None
+    assert rp._target_pixel_fallback_for_band(None, True, []) is None
+
+
 def test_build_reference_target_pixel_override_uses_nearest_source(
     tmp_path, monkeypatch
 ):
@@ -1612,6 +1627,68 @@ def test_build_reference_target_pixel_override_rejects_far_source(
             rout=12.0,
             target_pixel_override=np.array([200.0, 200.0]),
         )
+
+
+def test_build_reference_uses_pixel_fallback_when_own_wcs_match_fails(
+    tmp_path, monkeypatch
+):
+    """A band with a usable-but-inaccurate WCS (own match misses > 5 arcsec)
+    should recover via a pixel position borrowed from other bands instead of
+    silently defaulting to source 0."""
+    called = False
+
+    def _never_called(*a, **kw):
+        nonlocal called
+        called = True
+        raise AssertionError(
+            "find_target_index should not run when the fallback succeeds"
+        )
+
+    monkeypatch.setattr(rp, "find_target_index", _never_called)
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    result = rp.build_reference(
+        fpath,
+        SkyCoord(180, 0, unit="deg"),  # far from this frame's WCS -> own match fails
+        aper_radii=np.array([3.0, 4.0, 5.0]),
+        rin=8.0,
+        rout=12.0,
+        target_pixel_fallback=np.array([9.7, 10.2]),  # near source 1
+    )
+
+    assert result["target_index"] == 1
+    assert result["defaulted_to_brightest"] is False
+    assert not called
+
+
+def test_build_reference_pixel_fallback_too_far_defaults_to_source0(
+    tmp_path, monkeypatch, caplog
+):
+    """When even the borrowed pixel position is too far from any detected
+    source, fall back to source 0 exactly as with no fallback at all."""
+    _patch_ref_seq(monkeypatch)
+    fpath = _write_minimal_fits(tmp_path)
+
+    from astropy.coordinates import SkyCoord
+
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        result = rp.build_reference(
+            fpath,
+            SkyCoord(180, 0, unit="deg"),
+            aper_radii=np.array([3.0, 4.0, 5.0]),
+            rin=8.0,
+            rout=12.0,
+            target_pixel_fallback=np.array([200.0, 200.0]),
+        )
+
+    assert result["target_index"] == 0
+    assert result["defaulted_to_brightest"] is True
+    assert any(
+        "target pixel fallback also unusable" in r.message for r in caplog.records
+    )
 
 
 def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkeypatch):
