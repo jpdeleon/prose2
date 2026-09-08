@@ -209,6 +209,284 @@ class TestCalibrateBandExposure:
         assert len(captured["selected"]) == 3
         assert len(list(out_dir.glob("*_calibrated.fits"))) == len(sciences)
 
+    def test_mixed_exposure_calibrates_every_frame(self, tmp_path):
+        """A target with both 20s and 5s science frames: all must be calibrated."""
+        flat = tmp_path / "flat.fits"
+        dark_20s = tmp_path / "dark_20s.fits"
+        dark_5s = tmp_path / "dark_5s.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0)
+        _fake_fits(dark_20s, "DARK", exptime=20.0)
+        _fake_fits(dark_5s, "DARK", exptime=5.0)
+
+        sci_20s = [tmp_path / f"sci20_{i}.fits" for i in range(3)]
+        sci_5s = [tmp_path / f"sci5_{i}.fits" for i in range(2)]
+        for fp in sci_20s:
+            _fake_fits(fp, "TOI126", exptime=20.0)
+        for fp in sci_5s:
+            _fake_fits(fp, "TOI126", exptime=5.0)
+        sciences = [str(fp) for fp in sci_20s + sci_5s]
+
+        cm.calibrate_band(
+            [str(dark_20s), str(dark_5s)], [str(flat)], sciences, tmp_path, "gp"
+        )
+        assert len(list(tmp_path.glob("*_calibrated.fits"))) == len(sciences)
+
+    def test_mixed_exposure_matches_darks_per_group(self, tmp_path, monkeypatch):
+        """Each exposure group must query darks for its own exposure, not just
+        the first science frame's exposure."""
+        flat = tmp_path / "flat.fits"
+        dark_20s = tmp_path / "dark_20s.fits"
+        dark_5s = tmp_path / "dark_5s.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0)
+        _fake_fits(dark_20s, "DARK", exptime=20.0)
+        _fake_fits(dark_5s, "DARK", exptime=5.0)
+
+        sci_20s = tmp_path / "sci20.fits"
+        sci_5s = tmp_path / "sci5.fits"
+        _fake_fits(sci_20s, "TOI126", exptime=20.0)
+        _fake_fits(sci_5s, "TOI126", exptime=5.0)
+
+        queried_exposures = []
+        real_select = cm.select_darks_for_exposure
+
+        def spy_select(darks, science_exposure, band="?"):
+            queried_exposures.append(science_exposure)
+            return real_select(darks, science_exposure, band)
+
+        monkeypatch.setattr(cm, "select_darks_for_exposure", spy_select)
+
+        cm.calibrate_band(
+            [str(dark_20s), str(dark_5s)],
+            [str(flat)],
+            [str(sci_20s), str(sci_5s)],
+            tmp_path,
+            "gp",
+        )
+
+        assert sorted(queried_exposures) == [5.0, 20.0]
+
+
+# ---------- cross-night calibration fallback ----------
+
+
+class TestCalibrationFallback:
+    """Integration tests for calibrate_band's --fallback-calib-days wiring.
+
+    Builds a two-night layout (target night + a nearby night with usable
+    darks) under an obslog root, monkeypatching ``utils.OBSLOG_ROOT`` so
+    ``find_frames_in_other_nights`` can resolve it without touching real data.
+    """
+
+    def _write_source_night(self, data_root, obslog_root, night, exptime):
+        source_dir = data_root / night
+        source_dir.mkdir(parents=True)
+        dark = source_dir / f"MSCT1_{night}0001.fits"
+        _fake_fits(dark, "DARK", exptime=exptime, filter_value="r")
+        obslog_dir = obslog_root / "muscat" / night
+        obslog_dir.mkdir(parents=True)
+        (obslog_dir / f"obslog-muscat-{night}-ccd1.csv").write_text(
+            f"FRAME,OBJECT,EXPTIME (s),FILTER\n{dark.stem},DARK,{exptime},r\n"
+        )
+        return dark
+
+    def test_borrows_missing_darks_when_enabled(self, tmp_path, monkeypatch):
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat"
+        target_dir = data_root / "220514"
+        target_dir.mkdir(parents=True)
+        self._write_source_night(data_root, obslog_root, "220528", exptime=20.0)
+
+        flat = target_dir / "flat.fits"
+        sci = target_dir / "sci.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0, filter_value="r")
+        _fake_fits(sci, "TOI126", exptime=20.0, filter_value="r")
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        md, mf = cm.calibrate_band(
+            [],  # no local darks
+            [str(flat)],
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            fallback_calib_days=30,
+        )
+        assert md is not None and mf is not None
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 1
+
+    def test_explicitly_disabled_still_skips_band(self, tmp_path, monkeypatch):
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat"
+        target_dir = data_root / "220514"
+        target_dir.mkdir(parents=True)
+        self._write_source_night(data_root, obslog_root, "220528", exptime=20.0)
+
+        flat = target_dir / "flat.fits"
+        sci = target_dir / "sci.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0, filter_value="r")
+        _fake_fits(sci, "TOI126", exptime=20.0, filter_value="r")
+
+        out_dir = tmp_path / "out"
+        md, mf = cm.calibrate_band(
+            [],
+            [str(flat)],
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            fallback_calib_days=0,  # explicitly disabled
+        )
+        assert md is None and mf is None
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 0
+
+    def test_enabled_by_default_borrows_missing_darks(self, tmp_path, monkeypatch):
+        """``fallback_calib_days`` now defaults to 30 (not 0): the borrow this
+        module exists for should fire without the caller opting in."""
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat"
+        target_dir = data_root / "220514"
+        target_dir.mkdir(parents=True)
+        self._write_source_night(data_root, obslog_root, "220528", exptime=20.0)
+
+        flat = target_dir / "flat.fits"
+        sci = target_dir / "sci.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0, filter_value="r")
+        _fake_fits(sci, "TOI126", exptime=20.0, filter_value="r")
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        md, mf = cm.calibrate_band(
+            [],  # no local darks
+            [str(flat)],
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            # fallback_calib_days omitted -> now defaults to 30, so this
+            # should borrow from the 14-day-away night above without opt-in.
+        )
+        assert md is not None and mf is not None
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 1
+
+    def test_prefers_borrowed_exposure_match_over_local_mismatch(
+        self, tmp_path, monkeypatch
+    ):
+        """Local darks exist but at the wrong exposure; an exposure-matched
+        night should be preferred over the local rescaled-mismatch fallback."""
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat"
+        target_dir = data_root / "220514"
+        target_dir.mkdir(parents=True)
+        matched_dark = self._write_source_night(
+            data_root, obslog_root, "220528", exptime=20.0
+        )
+
+        flat = target_dir / "flat.fits"
+        sci = target_dir / "sci.fits"
+        local_dark = target_dir / "local_dark.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0, filter_value="r")
+        _fake_fits(sci, "TOI126", exptime=20.0, filter_value="r")
+        _fake_fits(local_dark, "DARK", exptime=4.7, filter_value="r")  # mismatched
+
+        borrowed_calls = []
+        real_find = cm.find_frames_in_other_nights
+
+        def spy_find(*args, **kwargs):
+            result = real_find(*args, **kwargs)
+            borrowed_calls.append((kwargs.get("exposure"), result))
+            return result
+
+        monkeypatch.setattr(cm, "find_frames_in_other_nights", spy_find)
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        md, mf = cm.calibrate_band(
+            [str(local_dark)],
+            [str(flat)],
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            fallback_calib_days=30,
+        )
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 1
+        assert (20.0, ([str(matched_dark)], "220528")) in borrowed_calls
+
+    def test_borrows_missing_flats_when_enabled(self, tmp_path, monkeypatch):
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat"
+        target_dir = data_root / "220514"
+        target_dir.mkdir(parents=True)
+
+        source_dir = data_root / "220528"
+        source_dir.mkdir(parents=True)
+        flat = source_dir / "MSCT1_2205280002.fits"
+        _fake_fits(flat, "FLAT", exptime=3.0, filter_value="r")
+        obslog_dir = obslog_root / "muscat" / "220528"
+        obslog_dir.mkdir(parents=True)
+        (obslog_dir / "obslog-muscat-220528-ccd1.csv").write_text(
+            "FRAME,OBJECT,EXPTIME (s),FILTER\nMSCT1_2205280002,FLAT,3.0,r\n"
+        )
+
+        dark = target_dir / "dark.fits"
+        sci = target_dir / "sci.fits"
+        _fake_fits(dark, "DARK", exptime=20.0, filter_value="r")
+        _fake_fits(sci, "TOI126", exptime=20.0, filter_value="r")
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        md, mf = cm.calibrate_band(
+            [str(dark)],
+            [],  # no local flats
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            fallback_calib_days=30,
+        )
+        assert md is not None and mf is not None
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 1
+
+
+# ---------- parse_args: --fallback_calib_days ----------
+
+
+class TestFallbackCalibDaysArg:
+    def test_defaults_to_30(self):
+        args = cm.parse_args(["--data_dir", "/d", "--output_dir", "/o"])
+        assert args.fallback_calib_days == 30
+
+    def test_flag_overrides_default(self):
+        args = cm.parse_args(
+            ["--data_dir", "/d", "--output_dir", "/o", "--fallback-calib-days", "7"]
+        )
+        assert args.fallback_calib_days == 7
+
+    def test_can_be_disabled(self):
+        args = cm.parse_args(
+            ["--data_dir", "/d", "--output_dir", "/o", "--fallback-calib-days", "0"]
+        )
+        assert args.fallback_calib_days == 0
+
+    def test_rejects_negative(self):
+        with pytest.raises(SystemExit):
+            cm.parse_args(
+                [
+                    "--data_dir",
+                    "/d",
+                    "--output_dir",
+                    "/o",
+                    "--fallback-calib-days",
+                    "-1",
+                ]
+            )
+
 
 # ---------- main ----------
 
