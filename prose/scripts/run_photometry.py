@@ -3981,6 +3981,36 @@ def plot_cutouts(
 # --------------------------- GIF ---------------------------
 
 
+def _gif_label_from_header(header) -> str:
+    """Build a 'date time' label for a GIF frame, robust to date-only DATE-OBS.
+
+    Some instruments (e.g. MuSCAT2/3) report a date-only ``DATE-OBS`` with the
+    real timestamp only in the numeric time keywords (see :data:`TIME_KEYS`
+    and ``date_from_header``); using ``DATE-OBS`` alone there would stamp
+    every frame in a night with the same label. The time-of-day is derived
+    from those numeric keywords whenever ``DATE-OBS`` lacks one.
+    """
+    raw = str(header.get("DATE-OBS", "")).strip()
+    date_part, _, time_part = raw.replace("T", " ").partition(" ")
+    time_part = time_part.split(".")[0]  # drop sub-second precision
+    if date_part and time_part:
+        return f"{date_part} {time_part}"
+    for key in TIME_KEYS:
+        if key not in header:
+            continue
+        try:
+            value = float(header[key])
+        except (TypeError, ValueError):
+            continue
+        jd = value + MJD_TO_JD if key.upper().startswith("MJD") else value
+        try:
+            dt = Time(jd, format="jd").datetime
+        except (ValueError, OverflowError):
+            continue
+        return f"{date_part or dt.strftime('%Y-%m-%d')} {dt.strftime('%H:%M:%S')}"
+    return raw
+
+
 def _gif_frame(
     data: np.ndarray, label: str = "", max_px: int = GIF_MAX_PX, cmap: str = "Greys"
 ) -> np.ndarray:
@@ -3988,9 +4018,10 @@ def _gif_frame(
 
     The array is z-scaled, colormapped, flipped vertically to match matplotlib's
     ``origin="lower"`` display convention, downsampled so its longest side is
-    ``max_px``, and stamped with ``label`` (e.g. ``DATE-OBS``) via PIL. This
-    avoids the per-frame Figure/savefig round-trip that dominated runtime
-    (see ``cprofile_results.txt``).
+    ``max_px``, and stamped with ``label`` (e.g. from
+    :func:`_gif_label_from_header`) via PIL. This avoids the per-frame
+    Figure/savefig round-trip that dominated runtime (see
+    ``cprofile_results.txt``).
     """
     from PIL import Image, ImageDraw
 
@@ -4040,7 +4071,9 @@ def make_gif(files, path: Path, stride: int, cmap: str = "Greys") -> None:
     frames = []
     for fp in track(sampled, description=f"gif:{path.name}"):
         img = FITSImage(fp)
-        frames.append(_gif_frame(img.data, img.header.get("DATE-OBS", ""), cmap=cmap))
+        frames.append(
+            _gif_frame(img.data, _gif_label_from_header(img.header), cmap=cmap)
+        )
     imageio.mimsave(path, frames, fps=FPS, loop=0)
     logger.info(f"wrote {path}")
 
