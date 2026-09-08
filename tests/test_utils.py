@@ -157,3 +157,37 @@ def test_get_saturation_from_header_sinistro_central_2k_2x2():
     }
     limits_raw = pu.get_saturation_from_header(h_raw)
     assert limits_raw["zs"] == pytest.approx(340000.0 / 6.6)
+
+
+# --------------------------- header_jd ---------------------------
+
+
+def test_header_jd_prefers_mjd_strt():
+    jd, source = pu.header_jd({"MJD-STRT": 60000.0, "MJD-OBS": 60000.5})
+    assert jd == pytest.approx(60000.0 + 2_400_000.5)
+    assert source == "MJD-STRT"
+
+
+def test_header_jd_falls_back_to_mjd_obs():
+    jd, source = pu.header_jd({"MJD-OBS": 60000.0})
+    assert jd == pytest.approx(60000.0 + 2_400_000.5)
+    assert source == "MJD-OBS"
+
+
+def test_header_jd_falls_back_to_date_obs_with_time_component():
+    jd, source = pu.header_jd({"DATE-OBS": "2025-04-16T00:00:00"})
+    assert jd == pytest.approx(2460781.5)
+    assert source == "DATE-OBS"
+
+
+def test_header_jd_rejects_date_only_date_obs():
+    # no time component and no MJD-*/JD keyword -- not usable as a truth JD
+    jd, source = pu.header_jd({"DATE-OBS": "2025-04-16"})
+    assert jd is None
+    assert source == "none"
+
+
+def test_header_jd_returns_none_without_any_usable_keyword():
+    jd, source = pu.header_jd({"OBJECT": "TOI-6715"})
+    assert jd is None
+    assert source == "none"

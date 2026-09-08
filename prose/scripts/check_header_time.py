@@ -39,12 +39,15 @@ import re
 import sys
 
 from astropy.io import fits
-from astropy.time import Time
 
 # Header keywords that can carry the observation time, in order of preference.
 # Single source of truth lives in ``run_photometry`` (also used to derive the
 # output-file date); imported here so the audit and the pipeline never drift.
 from prose.scripts.run_photometry import TIME_KEYS
+
+# Header-only JD estimator, shared with run_photometry's --exclude_after_jd/
+# --exclude_before_jd frame filter so the audit and the filter never drift.
+from prose.utils import header_jd
 
 # Default instrument -> data directory. Keys match the lowercase names used
 # elsewhere in the pipeline; values are the on-disk archive roots.
@@ -113,21 +116,6 @@ def _primary_time_key(header) -> str | None:
     return None
 
 
-def _truth_jd(header) -> tuple[float | None, str]:
-    """Best-effort 'true' JD from the raw header, and the source keyword."""
-    if "MJD-STRT" in header:
-        return float(header["MJD-STRT"]) + 2_400_000.5, "MJD-STRT"
-    if "MJD-OBS" in header:
-        return float(header["MJD-OBS"]) + 2_400_000.5, "MJD-OBS"
-    do = header.get("DATE-OBS")
-    if do and ("T" in str(do) or ":" in str(do)):
-        try:
-            return float(Time(do).jd), "DATE-OBS"
-        except Exception:  # noqa: BLE001
-            return None, "DATE-OBS?"
-    return None, "none"
-
-
 def _resolved_jd(path: str):
     """Return ``(telescope_name, jd_after_normalize)`` as prose would compute it,
     or ``(None, None)`` if prose is unavailable."""
@@ -166,7 +154,7 @@ def audit_instrument(
             "time_key": _primary_time_key(h),
         }
         if check_jd:
-            truth, _ = _truth_jd(h)
+            truth, _ = header_jd(h)
             try:
                 tel, jd = _resolved_jd(f)
                 row["telescope"] = tel

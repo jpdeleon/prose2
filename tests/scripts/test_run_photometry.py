@@ -2187,6 +2187,101 @@ def test_main_mode_raise_condition_for_multiple_modes_unspecified(tmp_path):
         rp.main(argv)
 
 
+# --------------------------- JD exclusion (main) ---------------------------
+
+
+def test_main_exclude_after_jd_drops_only_matching_frames(tmp_path, caplog):
+    # target_name must be a real, MAST-resolvable object (as in the existing
+    # --mode fallback test) so the run proceeds past target resolution instead
+    # of raising a network ResolverError -- exercising the filter itself, not
+    # MAST's error handling.
+    keep_path = _write_sinistro_fits(tmp_path, "keep.fits", "lsc")
+    drop_path = _write_sinistro_fits(tmp_path, "drop.fits", "lsc")
+    fits.setval(keep_path, "DATE-OBS", value="2025-04-16T00:00:00")
+    fits.setval(drop_path, "DATE-OBS", value="2025-04-16T02:00:00")
+    # JD(keep) = 2460781.5, JD(drop) = 2460781.5 + 2h = 2460781.5833...
+
+    argv = [
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--exclude_after_jd",
+        "2460781.55",
+    ]
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        rp.main(argv)
+
+    assert any(
+        "excluded 1 of 2 frame" in r.message for r in caplog.records
+    )
+    # the filter itself did not abort the run (only 'drop.fits' was excluded,
+    # 'keep.fits' survives) -- any eventual failure is downstream (MAST/etc.)
+    assert not any(
+        "after --exclude_after_jd/--exclude_before_jd; aborting" in r.message
+        for r in caplog.records
+    )
+
+
+def test_main_exclude_before_jd_excludes_everything_aborts(tmp_path, caplog):
+    _write_minimal_fits(tmp_path, "a.fits")
+    fits.setval(
+        tmp_path / "a.fits", "DATE-OBS", value="2025-04-16T00:00:00"
+    )
+
+    argv = [
+        "--target_name",
+        "test",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--exclude_before_jd",
+        "2460900.0",  # well after the frame's JD (2460781.5) -> excludes it
+    ]
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        ret = rp.main(argv)
+
+    assert ret == 1
+    assert any(
+        "after --exclude_after_jd/--exclude_before_jd; aborting" in r.message
+        for r in caplog.records
+    )
+
+
+def test_main_exclude_jd_paired_window_drops_only_frames_inside_it(
+    tmp_path, caplog
+):
+    before_path = _write_sinistro_fits(tmp_path, "before.fits", "lsc")
+    inside_path = _write_sinistro_fits(tmp_path, "inside.fits", "lsc")
+    after_path = _write_sinistro_fits(tmp_path, "after.fits", "lsc")
+    fits.setval(before_path, "DATE-OBS", value="2025-04-16T00:00:00")
+    fits.setval(inside_path, "DATE-OBS", value="2025-04-16T02:00:00")
+    fits.setval(after_path, "DATE-OBS", value="2025-04-16T05:00:00")
+    # JD: before=2460781.5, inside=2460781.5833, after=2460781.7083
+
+    argv = [
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--exclude_after_jd",
+        "2460781.55",
+        "--exclude_before_jd",
+        "2460781.65",
+    ]
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        rp.main(argv)
+
+    assert any(
+        "excluded 1 of 3 frame" in r.message for r in caplog.records
+    )
+
+
 def test_gif_stride_step_calculation():
     # 100 frames with target of 10 should yield a stride of 10 (every 10th frame)
     assert max(1, 100 // 10) == 10

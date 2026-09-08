@@ -101,6 +101,7 @@ from prose.utils import (
     frames_from_obslog,
     get_saturation_from_header,
     get_simbad_data,
+    header_jd,
     load_cached_df,
     read_filename_per_band,
     save_cached_df,
@@ -938,6 +939,70 @@ def _read_quality_header(path) -> fits.Header:
         except IndexError:
             pass
     return h
+
+
+def _apply_jd_exclusion(
+    sciences: dict[str, list],
+    bands: list[str],
+    *,
+    after: list[float] | None,
+    before: list[float] | None,
+) -> tuple[dict[str, list], list[str]]:
+    """Drop frames whose header JD falls in a ``--exclude_after_jd``/
+    ``--exclude_before_jd`` window (see ``parse_args`` for the pairing rule,
+    already validated there). Header-only (``_read_quality_header``, no
+    pixel decode), same cost tier as the ``--site``/``--mode``/``--telescope``
+    filters this mirrors.
+
+    Returns the narrowed ``sciences`` and the recomputed ``active_bands``
+    (empty if every frame across every band was excluded).
+    """
+    windows: list[tuple[float, float]] = []
+    after_only: list[float] = []
+    before_only: list[float] = []
+    if after is not None and before is not None:
+        windows = list(zip(after, before))
+    elif after is not None:
+        after_only = list(after)
+    elif before is not None:
+        before_only = list(before)
+
+    def _is_excluded(path) -> bool:
+        try:
+            jd, _source = header_jd(_read_quality_header(path))
+        except Exception as e:
+            logger.warning(
+                f"--exclude_after_jd/--exclude_before_jd: could not read "
+                f"header JD for {Path(path).name}: {e}"
+            )
+            return False
+        if jd is None:
+            return False
+        if any(lo <= jd <= hi for lo, hi in windows):
+            return True
+        if after_only and jd > min(after_only):
+            return True
+        if before_only and jd < max(before_only):
+            return True
+        return False
+
+    filtered_sciences: dict[str, list] = {}
+    n_before = n_after = 0
+    for b, fs in sciences.items():
+        kept = [f for f in fs if not _is_excluded(f)]
+        n_before += len(fs)
+        n_after += len(kept)
+        if kept:
+            filtered_sciences[b] = kept
+
+    n_excluded = n_before - n_after
+    if n_excluded:
+        logger.info(
+            f"--exclude_after_jd/--exclude_before_jd: excluded {n_excluded} "
+            f"of {n_before} frame(s)"
+        )
+    active_bands = [b for b in bands if filtered_sciences.get(b)]
+    return filtered_sciences, active_bands
 
 
 def _frame_header_values(header) -> dict[str, float | None]:
@@ -4967,6 +5032,35 @@ def parse_args(argv=None) -> argparse.Namespace:
         "header keyword. Boolean array where True marks bad pixels (hot, dead, etc.) "
         "that should be masked during photometry. Default: None (no masking).",
     )
+    ap.add_argument(
+        "--exclude_after_jd",
+        "--exclude-after-jd",
+        dest="exclude_after_jd",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Drop frames with header JD greater than any of these values "
+        "(useful for e.g. clouds/guiding loss through the end of a run). "
+        "When --exclude_before_jd is also given, the i-th value here pairs "
+        "positionally with the i-th --exclude_before_jd value to form one "
+        "closed excluded window (after[i], before[i]); the two lists must "
+        "then be the same length and each pair must satisfy after < before. "
+        "Given alone, each value is an independent open-ended cut. Compares "
+        "against the raw header JD, not the barycentric-corrected BJD_TDB "
+        f"the light curve is plotted against -- the two can differ by up to "
+        f"~{MAX_TIME_OFFSET_MIN:.1f} min near a window boundary.",
+    )
+    ap.add_argument(
+        "--exclude_before_jd",
+        "--exclude-before-jd",
+        dest="exclude_before_jd",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Drop frames with header JD less than any of these values "
+        "(useful for e.g. a slow start before focus/guiding stabilized). "
+        "See --exclude_after_jd for the pairing rule when both are given.",
+    )
     args = ap.parse_args(argv)
 
     if args.aper_radii is not None and args.annulus is None:
@@ -4980,6 +5074,19 @@ def parse_args(argv=None) -> argparse.Namespace:
             f"max aperture radius ({args.aper_radii.max():g}) must be <= "
             f"inner sky annulus radius ({args.annulus[0]:g})"
         )
+    if args.exclude_after_jd is not None and args.exclude_before_jd is not None:
+        if len(args.exclude_after_jd) != len(args.exclude_before_jd):
+            ap.error(
+                "--exclude_after_jd and --exclude_before_jd must have the "
+                "same number of values when both are given "
+                f"({len(args.exclude_after_jd)} vs {len(args.exclude_before_jd)})"
+            )
+        for after, before in zip(args.exclude_after_jd, args.exclude_before_jd):
+            if not after < before:
+                ap.error(
+                    "each --exclude_after_jd value must be < its paired "
+                    f"--exclude_before_jd value; got after={after} before={before}"
+                )
     if args.mode is not None and args.data_dir.exists():
         modes = _multisite_modes_from_headers(
             args.data_dir, args.glob, args.target_name, args.bands
@@ -5440,6 +5547,20 @@ def main(argv=None) -> int:
         f"target={args.target_name} inst={instrument} date={date} "
         f"site={probe.get('SITE')}"
     )
+
+    if args.exclude_after_jd is not None or args.exclude_before_jd is not None:
+        sciences, active_bands = _apply_jd_exclusion(
+            sciences,
+            args.bands,
+            after=args.exclude_after_jd,
+            before=args.exclude_before_jd,
+        )
+        if not active_bands:
+            logger.error(
+                f"no frames remain for target={args.target_name} after "
+                "--exclude_after_jd/--exclude_before_jd; aborting"
+            )
+            return 1
 
     if args.target_coord is not None:
         ra_str, dec_str = args.target_coord
