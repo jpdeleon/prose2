@@ -42,6 +42,10 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from prose import FITSImage, blocks, __version__ as PROSE_VERSION
 from prose.console_utils import info
 from prose.core.sequence import SequenceParallel
+from prose.scripts.calibration_fallback import (
+    find_frames_in_other_nights,
+    night_distance_days,
+)
 from prose.utils import frames_from_obslog, scan_fits_headers
 
 logger = logging.getLogger("calibrate_muscat")
@@ -447,10 +451,190 @@ def select_darks_for_exposure(
     return darks, "no-match"
 
 
+def _fallback_borrow_desc(
+    band: str,
+    exposure_desc: str,
+    source_night: str,
+    data_dir: Path,
+) -> str:
+    """One-line, table-style summary of a cross-night calibration borrow, for
+    log messages: band, the exposure that was searched for, which night
+    supplied it, and how far away that night is on the calendar.
+    """
+    days_away = night_distance_days(data_dir.name, source_night)
+    days_desc = "unknown" if days_away is None else str(days_away)
+    return (
+        f"band={band} │ needed exposure={exposure_desc} │ "
+        f"found on night={source_night} │ days away={days_desc}"
+    )
+
+
+def _select_darks_with_fallback(
+    darks: list[str],
+    exposure: float | None,
+    band: str,
+    data_dir: Path | None,
+    fallback_days: int,
+) -> tuple[list[str], str]:
+    """Like :func:`select_darks_for_exposure`, but on a local mismatch, try
+    borrowing exposure-matched darks from a nearby night (see
+    ``calibration_fallback.find_frames_in_other_nights``) before falling back
+    to the unmatched local set.
+    """
+    matched, status = select_darks_for_exposure(darks, exposure, band)
+    if status == "matched" or not fallback_days or data_dir is None:
+        return matched, status
+
+    borrowed, source_night = find_frames_in_other_nights(
+        data_dir, band, "DARK", _band_from, exposure=exposure, max_days=fallback_days
+    )
+    if borrowed:
+        exp_desc = "unknown" if exposure is None else f"{exposure:g}s"
+        info(
+            f"[{band}] local darks don't match exposure {exp_desc} ({status}); "
+            f"borrowed {len(borrowed)} exposure-matched darks "
+            f"({_fallback_borrow_desc(band, exp_desc, source_night, data_dir)})"
+        )
+        return borrowed, "borrowed"
+    return matched, status
+
+
+def _fill_missing_calibration(
+    frames: list[str],
+    kind: str,
+    band: str,
+    data_dir: Path | None,
+    fallback_days: int,
+) -> list[str]:
+    """Borrow *kind* (``"DARK"`` or ``"FLAT"``) frames from a nearby night when
+    *frames* is empty locally."""
+    if frames or not fallback_days or data_dir is None:
+        return frames
+    borrowed, source_night = find_frames_in_other_nights(
+        data_dir, band, kind, _band_from, max_days=fallback_days
+    )
+    if borrowed:
+        info(
+            f"[{band}] no local {kind.lower()}s; borrowed {len(borrowed)} "
+            f"({_fallback_borrow_desc(band, 'any', source_night, data_dir)})"
+        )
+    return borrowed
+
+
 def _wcs_sidecar_path(output_dir: Path, band: str, method: str) -> Path:
     p = output_dir / ".wcs" / f"{band}_{method}.wcs.fits"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _calibrate_science_group(
+    calib: "blocks.Calibration",
+    group_sciences: list[str],
+    output_dir: Path,
+    band: str,
+    solve_wcs: str | None,
+    wcs: object | None,
+) -> tuple[object | None, list[Path]]:
+    """Run one exposure group's science frames through *calib*.
+
+    For ``solve_wcs == "twirl"``, *wcs* is solved once per band (on the first
+    exposure group that needs it) and reused for later groups, since pointing
+    does not depend on exposure time. Returns ``(wcs, calibrated_paths)``.
+    """
+    if solve_wcs == "twirl":
+        if wcs is None:
+            info(f"[{band}] solving WCS on first science frame via twirl+Gaia")
+            first = FITSImage(group_sciences[0])
+            calib.run(first)
+            wcs = _solve_wcs(first)
+            if wcs is not None:
+                info(f"[{band}] WCS solved successfully via twirl")
+                sp = _wcs_sidecar_path(output_dir, band, "twirl")
+                hdu = fits.PrimaryHDU()
+                hdu.header.update(wcs.to_header(relax=True))
+                hdu.writeto(str(sp), overwrite=True)
+            else:
+                info(
+                    f"[{band}] WCS solving failed via twirl; continuing without astrometry"
+                )
+        seq = SequenceParallel(
+            [
+                calib,
+                SaveCalibratedFITS(
+                    output_dir, wcs=wcs, wcs_method="twirl", site=MUSCAT_SITE
+                ),
+            ],
+            name=f"[{band}] calibrating",
+        )
+        seq.run(group_sciences)
+        return wcs, []
+
+    if solve_wcs == "astrometry.net":
+        seq = SequenceParallel(
+            [
+                calib,
+                SaveCalibratedFITS(
+                    output_dir, wcs_method="astrometry.net", site=MUSCAT_SITE
+                ),
+            ],
+            name=f"[{band}] calibrating",
+        )
+        seq.run(group_sciences)
+        calibrated = [
+            output_dir / f"{Path(fp).stem}_calibrated.fits" for fp in group_sciences
+        ]
+        return wcs, calibrated
+
+    seq = SequenceParallel(
+        [calib, SaveCalibratedFITS(output_dir, site=MUSCAT_SITE)],
+        name=f"[{band}] calibrating",
+    )
+    seq.run(group_sciences)
+    return wcs, []
+
+
+def _solve_astrometry_net(
+    band: str, output_dir: Path, calibrated_paths: list[Path]
+) -> None:
+    """Solve WCS once via astrometry.net from the first calibrated frame and
+    inject it into every calibrated frame for *band* (pointing is shared
+    across exposure groups)."""
+    info(f"[{band}] solving WCS on first calibrated frame via astrometry.net")
+    from prose.scripts.solve_wcs_astrometry import (
+        _api_key,
+        inject_wcs_into_file,
+        upload_and_solve,
+        validate_wcs,
+    )
+
+    try:
+        api_key = _api_key()
+    except RuntimeError as e:
+        logger.warning(f"[{band}] {e}; skipping WCS")
+        return
+
+    calibrated_files = [fp for fp in calibrated_paths if fp.is_file()]
+    if not calibrated_files:
+        logger.warning(f"[{band}] no calibrated files found; skipping WCS")
+        return
+
+    wcs = upload_and_solve(calibrated_files[0], api_key)
+    if wcs is None or not validate_wcs(wcs, "muscat"):
+        info(
+            f"[{band}] WCS solving failed via astrometry.net; continuing without astrometry"
+        )
+        return
+
+    for fp in calibrated_files:
+        inject_wcs_into_file(fp, wcs)
+    sp = _wcs_sidecar_path(output_dir, band, "astrometry.net")
+    hdu = fits.PrimaryHDU()
+    hdu.header.update(wcs.to_header(relax=True))
+    hdu.writeto(str(sp), overwrite=True)
+    info(
+        f"[{band}] WCS solved via astrometry.net and "
+        f"injected into {len(calibrated_files)} files"
+    )
 
 
 def calibrate_band(
@@ -461,20 +645,50 @@ def calibrate_band(
     band: str,
     solve_wcs: str | bool | None = None,
     test_run: bool = False,
+    data_dir: Path | None = None,
+    fallback_calib_days: int = 30,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Build master dark + flat and calibrate all science frames for one band.
+
+    Science frames are grouped by exposure time (see ``group_by_exposure``) and
+    each group is calibrated with its own exposure-matched darks — a night
+    where the exposure changed mid-sequence (e.g. 10s then 5s) gets two master
+    darks instead of forcing every frame through darks selected for whichever
+    exposure the first frame happened to use.
 
     Parameters
     ----------
     solve_wcs:
         ``None`` = no WCS solving, ``"twirl"`` = twirl+Gaia, ``"astrometry.net"`` = astrometry.net.
+    data_dir:
+        This band's raw night directory. Required (together with
+        *fallback_calib_days* > 0) to borrow darks/flats from a nearby night
+        when local ones are missing or exposure-mismatched — see
+        ``calibration_fallback.find_frames_in_other_nights``.
+    fallback_calib_days:
+        Search window (in days) for cross-night calibration fallback, nearest
+        night first. Defaults to 30 -- the same MuSCAT2/KOI-3510 incident that
+        motivated this fallback needed exposure-matched darks 8-17 days away,
+        and MuSCAT shares the same no-master-bias calibration model (see
+        ``select_darks_for_exposure``), so it is exposed to the identical
+        failure mode. Pass ``0`` to disable cross-night borrowing entirely and
+        keep the pre-fallback behavior (skip the band, or rescale mismatched
+        local darks with a logged warning).
 
-    Returns ``(master_dark, master_flat)`` arrays or ``(None, None)`` if skipped.
+    Returns ``(master_dark, master_flat)`` arrays for the first exposure group,
+    or ``(None, None)`` if skipped.
     """
     if solve_wcs is True:  # backward compat: old bool True -> astrometry.net
         solve_wcs = "astrometry.net"
     if test_run:
         sciences = sciences[:10]
+
+    darks = _fill_missing_calibration(
+        darks, "DARK", band, data_dir, fallback_calib_days
+    )
+    flats = _fill_missing_calibration(
+        flats, "FLAT", band, data_dir, fallback_calib_days
+    )
 
     if not darks or not flats:
         info(
@@ -490,109 +704,51 @@ def calibrate_band(
         f"{len(sciences)} science frames"
     )
 
-    # Select darks matching the science exposure so the master dark is not built
-    # from a mix of exposures (see ``select_darks_for_exposure``).
-    sci_exposures = read_exposures(sciences[:1])
-    science_exposure = next(iter(sci_exposures.values()), None)
-    darks, _ = select_darks_for_exposure(darks, science_exposure, band)
+    exposure_groups = group_by_exposure(sciences, read_exposures(sciences))
+    ordered_exposures = sorted(exposure_groups, key=lambda exp: (exp is None, exp))
+    if len(ordered_exposures) > 1:
+        info(
+            f"[{band}] science frames span exposures {ordered_exposures}s; "
+            "calibrating each separately with exposure-matched darks"
+        )
 
-    info(f"[{band}] building master calibration frames")
-    calib = blocks.Calibration(
-        darks=darks,
-        flats=flats,
-        shared=True,
-        verbose=True,
-    )
-    try:
-        md = calib.get_master("dark")
-        mf = calib.get_master("flat")
+    master_dark: np.ndarray | None = None
+    master_flat: np.ndarray | None = None
+    wcs = None
+    calibrated_paths: list[Path] = []
 
-        if solve_wcs == "twirl":
-            info(f"[{band}] solving WCS on first science frame via twirl+Gaia")
-            first = FITSImage(sciences[0])
-            calib.run(first)
-            wcs = _solve_wcs(first)
-            if wcs is not None:
-                info(f"[{band}] WCS solved successfully via twirl")
-                sp = _wcs_sidecar_path(output_dir, band, "twirl")
-                hdu = fits.PrimaryHDU()
-                hdu.header.update(wcs.to_header(relax=True))
-                hdu.writeto(str(sp), overwrite=True)
-            else:
-                info(
-                    f"[{band}] WCS solving failed via twirl; continuing without astrometry"
-                )
-            seq = SequenceParallel(
-                [
-                    calib,
-                    SaveCalibratedFITS(
-                        output_dir, wcs=wcs, wcs_method="twirl", site=MUSCAT_SITE
-                    ),
-                ],
-                name=f"[{band}] calibrating",
+    for exposure in ordered_exposures:
+        group_sciences = exposure_groups[exposure]
+        group_darks, _ = _select_darks_with_fallback(
+            darks, exposure, band, data_dir, fallback_calib_days
+        )
+
+        info(f"[{band}] building master calibration frames")
+        calib = blocks.Calibration(
+            darks=group_darks,
+            flats=flats,
+            shared=True,
+            verbose=True,
+        )
+        try:
+            md = calib.get_master("dark")
+            mf = calib.get_master("flat")
+            if master_dark is None:
+                master_dark, master_flat = md, mf
+
+            wcs, group_calibrated = _calibrate_science_group(
+                calib, group_sciences, output_dir, band, solve_wcs, wcs
             )
-            seq.run(sciences)
+            calibrated_paths.extend(group_calibrated)
+        finally:
+            calib.cleanup_shared()
 
-        elif solve_wcs == "astrometry.net":
-            seq = SequenceParallel(
-                [
-                    calib,
-                    SaveCalibratedFITS(
-                        output_dir, wcs_method="astrometry.net", site=MUSCAT_SITE
-                    ),
-                ],
-                name=f"[{band}] calibrating",
-            )
-            seq.run(sciences)
-            info(f"[{band}] solving WCS on first calibrated frame via astrometry.net")
-            from prose.scripts.solve_wcs_astrometry import (
-                _api_key,
-                inject_wcs_into_file,
-                upload_and_solve,
-                validate_wcs,
-            )
-
-            try:
-                api_key = _api_key()
-            except RuntimeError as e:
-                logger.warning(f"[{band}] {e}; skipping WCS")
-            else:
-                calibrated_files = [
-                    output_dir / f"{Path(fp).stem}_calibrated.fits" for fp in sciences
-                ]
-                calibrated_files = [fp for fp in calibrated_files if fp.is_file()]
-                if calibrated_files:
-                    wcs = upload_and_solve(calibrated_files[0], api_key)
-                    if wcs is not None and validate_wcs(wcs, "muscat"):
-                        for fp in calibrated_files:
-                            inject_wcs_into_file(fp, wcs)
-                        sp = _wcs_sidecar_path(output_dir, band, "astrometry.net")
-                        hdu = fits.PrimaryHDU()
-                        hdu.header.update(wcs.to_header(relax=True))
-                        hdu.writeto(str(sp), overwrite=True)
-                        info(
-                            f"[{band}] WCS solved via astrometry.net and "
-                            f"injected into {len(calibrated_files)} files"
-                        )
-                    else:
-                        info(
-                            f"[{band}] WCS solving failed via astrometry.net; continuing without astrometry"
-                        )
-                else:
-                    logger.warning(f"[{band}] no calibrated files found; skipping WCS")
-
-        else:
-            seq = SequenceParallel(
-                [calib, SaveCalibratedFITS(output_dir, site=MUSCAT_SITE)],
-                name=f"[{band}] calibrating",
-            )
-            seq.run(sciences)
-    finally:
-        calib.cleanup_shared()
+    if solve_wcs == "astrometry.net" and calibrated_paths:
+        _solve_astrometry_net(band, output_dir, calibrated_paths)
 
     info(f"[{band}] done  ({len(sciences)} frames -> {output_dir})")
 
-    return md, mf
+    return master_dark, master_flat
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -643,7 +799,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "$ASTROMETRY_NET_API_KEY). The WCS is solved once per band and applied "
         "to all calibrated frames. Omit the flag entirely to skip WCS solving.",
     )
-    return ap.parse_args(argv)
+    ap.add_argument(
+        "--fallback_calib_days",
+        "--fallback-calib-days",
+        type=int,
+        default=30,
+        help="If a band's darks or flats are missing locally, or its darks don't "
+        "exposure-match the science frames, search sibling night directories "
+        "within this many days (nearest first) for a usable replacement. "
+        "Defaults to 30 (MuSCAT shares MuSCAT2's no-master-bias calibration "
+        "model and the same exposure-mismatch failure mode). Pass 0 to disable "
+        "cross-night fallback and keep the pre-fallback behavior.",
+    )
+    args = ap.parse_args(argv)
+    if args.fallback_calib_days < 0:
+        ap.error("--fallback_calib_days must be >= 0 (0 disables cross-night fallback)")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -684,6 +855,8 @@ def main(argv: list[str] | None = None) -> int:
             band,
             solve_wcs=args.solve_wcs,
             test_run=args.test_run,
+            data_dir=args.data_dir,
+            fallback_calib_days=args.fallback_calib_days,
         )
         if md is not None and mf is not None:
             master_darks.append((band, md))
