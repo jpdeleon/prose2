@@ -378,6 +378,62 @@ class TestExposureMatching:
         cm.calibrate_band(darks["gp"], flats["gp"], sciences["gp"], tmp_path, "gp")
         assert len(list(tmp_path.glob("*_calibrated.fits"))) == len(sciences["gp"])
 
+    def test_mixed_exposure_calibrates_every_frame(self, tmp_path):
+        """A target with both 10s and 5s science frames: all must be calibrated."""
+        flat = tmp_path / "flat.fits"
+        dark_10s = tmp_path / "dark_10s.fits"
+        dark_5s = tmp_path / "dark_5s.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0)
+        _fake_fits(dark_10s, "DARK", exptime=10.0)
+        _fake_fits(dark_5s, "DARK", exptime=5.0)
+
+        sci_10s = [tmp_path / f"sci10_{i}.fits" for i in range(3)]
+        sci_5s = [tmp_path / f"sci5_{i}.fits" for i in range(2)]
+        for fp in sci_10s:
+            _fake_fits(fp, "KOI-3510", exptime=10.0)
+        for fp in sci_5s:
+            _fake_fits(fp, "KOI-3510", exptime=5.0)
+        sciences = [str(fp) for fp in sci_10s + sci_5s]
+
+        cm.calibrate_band(
+            [str(dark_10s), str(dark_5s)], [str(flat)], sciences, tmp_path, "gp"
+        )
+        assert len(list(tmp_path.glob("*_calibrated.fits"))) == len(sciences)
+
+    def test_mixed_exposure_matches_darks_per_group(self, tmp_path, monkeypatch):
+        """Each exposure group must query darks for its own exposure, not just
+        the first science frame's exposure."""
+        flat = tmp_path / "flat.fits"
+        dark_10s = tmp_path / "dark_10s.fits"
+        dark_5s = tmp_path / "dark_5s.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0)
+        _fake_fits(dark_10s, "DARK", exptime=10.0)
+        _fake_fits(dark_5s, "DARK", exptime=5.0)
+
+        sci_10s = tmp_path / "sci10.fits"
+        sci_5s = tmp_path / "sci5.fits"
+        _fake_fits(sci_10s, "KOI-3510", exptime=10.0)
+        _fake_fits(sci_5s, "KOI-3510", exptime=5.0)
+
+        queried_exposures = []
+        real_select = cm.select_darks_for_exposure
+
+        def spy_select(darks, science_exposure, band="?"):
+            queried_exposures.append(science_exposure)
+            return real_select(darks, science_exposure, band)
+
+        monkeypatch.setattr(cm, "select_darks_for_exposure", spy_select)
+
+        cm.calibrate_band(
+            [str(dark_10s), str(dark_5s)],
+            [str(flat)],
+            [str(sci_10s), str(sci_5s)],
+            tmp_path,
+            "gp",
+        )
+
+        assert sorted(queried_exposures) == [5.0, 10.0]
+
 
 # ---------- main ----------
 
