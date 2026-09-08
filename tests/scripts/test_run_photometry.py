@@ -5,6 +5,7 @@ these tests focus on the deterministic, side-effect-free helpers (naming,
 header parsing, z-scaling, CSV column mapping).
 """
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -113,6 +114,19 @@ def test_date_from_header_returns_empty_without_any_time_keyword():
 def test_date_from_header_ignores_unparseable_time_keyword():
     # A non-numeric MJD must not raise; fall through to ''.
     assert rp.date_from_header({"MJD-STRT": "n/a"}) == ""
+
+
+def test_setup_logger_timestamps_have_second_precision(tmp_path):
+    """Log line timestamps must read 'YYYY-MM-DD HH:MM:SS', not the logging
+    module's default '...,mmm' millisecond suffix -- millisecond precision is
+    noise for this pipeline's log lines (frame counts, exclusion summaries,
+    stage transitions), not information."""
+    log_path = rp.setup_logger(tmp_path, verbose=True)
+    rp.logger.info("hello")
+    lines = [l for l in log_path.read_text().splitlines() if "hello" in l]
+    assert lines
+    assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - INFO: hello$", lines[-1])
+    assert "," not in lines[-1].split(" - ", 1)[0]
 
 
 def test_inject_wcs_from_sidecars_updates_wcsless_calibrated_files(tmp_path):

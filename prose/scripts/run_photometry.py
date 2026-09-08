@@ -396,7 +396,9 @@ def setup_logger(outdir: Path, verbose: bool = False) -> Path:
     """
     logger.setLevel(logging.INFO)
     log_path = outdir / f"{datetime.now().isoformat()}.log"
-    fmt = logging.Formatter("%(asctime)s - %(levelname)s: %(message)s")
+    fmt = logging.Formatter(
+        "%(asctime)s - %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
     file_handler = logging.FileHandler(log_path)
     file_handler.setLevel(logging.INFO)
