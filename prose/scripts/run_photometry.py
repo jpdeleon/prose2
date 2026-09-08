@@ -3684,6 +3684,16 @@ def plot_raw_flux(
         ax.set_ylabel("raw flux (arbitrary units)")
         ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+        secax = ax.secondary_xaxis(
+            location="top",
+            functions=(lambda rel: rel + t0, lambda jd: jd - t0),
+        )
+        secax.xaxis.set_major_formatter(
+            plt.FuncFormatter(
+                lambda jd, _: Time(jd, format="jd").datetime.strftime("%m-%d\n%H:%M")
+            )
+        )
+        secax.set_xlabel("UTC")
 
     fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}")
     _savefig(fig, path)
@@ -3720,6 +3730,21 @@ def plot_covariates(
         ax.set_title(band)
         ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+        # t0 differs per band (each computed inside this loop); bind it as a
+        # default arg so the closures don't all resolve to the last band's t0.
+        secax = ax.secondary_xaxis(
+            location="top",
+            functions=(
+                lambda rel, t0=t0: rel + t0,
+                lambda jd, t0=t0: jd - t0,
+            ),
+        )
+        secax.xaxis.set_major_formatter(
+            plt.FuncFormatter(
+                lambda jd, _: Time(jd, format="jd").datetime.strftime("%m-%d\n%H:%M")
+            )
+        )
+        secax.set_xlabel("UTC")
     axes[0].set_ylabel("normalized signal + arbitrary offset")
     desc = ref_header_desc(band_results[bands[0]]["ref"], "stacks")
     fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}\n{desc}")

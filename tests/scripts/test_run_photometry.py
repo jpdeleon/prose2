@@ -2269,6 +2269,158 @@ def test_plot_covariates_ylabel_notes_arbitrary_offset(tmp_path, monkeypatch):
     )
 
 
+def test_plot_covariates_secondary_axis_converts_utc_per_band(tmp_path, monkeypatch):
+    """Each band panel gets its own UTC twin axis. t0 is computed inside the
+    per-band loop, so this also guards against a late-binding closure bug
+    where every panel's UTC conversion would resolve to the last band's t0."""
+    import matplotlib.pyplot as plt
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from prose import FITSImage
+    from prose.core.source import Sources
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10, 10], [5, 5]]))
+
+    n = 6
+
+    def _make_df(t0):
+        return pd.DataFrame(
+            {
+                "time": t0 + np.linspace(0.0, 0.1, n),
+                "flux": np.linspace(0.99, 1.01, n),
+                "fwhm": np.full(n, 4.0),
+                "peak": np.full(n, 15000.0),
+                "airmass": np.full(n, 1.1),
+                "bkg": np.full(n, 10.0),
+                "dx": np.zeros(n),
+                "dy": np.zeros(n),
+            }
+        )
+
+    class _FakeCovDiff:
+        def __init__(self, df):
+            self.df = df
+            self.time = df["time"].to_numpy()
+
+    band_results = {
+        "gp": {"ref": ref, "diff": _FakeCovDiff(_make_df(2460000.0))},
+        "rp": {"ref": ref, "diff": _FakeCovDiff(_make_df(2460005.0))},
+    }
+
+    captured_funcs = []
+    original_secondary_xaxis = plt.Axes.secondary_xaxis
+
+    def mock_secondary_xaxis(self, *a, **kw):
+        captured_funcs.append(kw["functions"])
+        return original_secondary_xaxis(self, *a, **kw)
+
+    monkeypatch.setattr(plt.Axes, "secondary_xaxis", mock_secondary_xaxis)
+    monkeypatch.setattr(rp, "_savefig", lambda fig, path: None)
+
+    out = tmp_path / "covariates.png"
+    rp.plot_covariates(band_results, out, "TOI-6715", "muscat4", "2026-06-23", 0)
+
+    assert len(captured_funcs) == 2
+    to_jd_gp, from_jd_gp = captured_funcs[0]
+    to_jd_rp, from_jd_rp = captured_funcs[1]
+    assert to_jd_gp(0.0) == pytest.approx(2460000.0)
+    assert from_jd_gp(2460000.0) == pytest.approx(0.0)
+    assert to_jd_rp(0.0) == pytest.approx(2460005.0)
+    assert from_jd_rp(2460005.0) == pytest.approx(0.0)
+
+
+def test_plot_raw_flux_adds_utc_secondary_axis(tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from prose import FITSImage
+    from prose.core.source import Sources
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10, 10], [5, 5]]))
+    ref.telescope.jd_scale = "jd"
+
+    n = 6
+    t0 = 2460000.0
+    time = t0 + np.linspace(0.0, 0.1, n)
+
+    class _FakeDiffRaw:
+        def __init__(self):
+            self.time = time
+            self.target = 0
+            self.comparisons = [1]
+            self.aperture = 0
+
+    class _FakeFluxesArr:
+        def __init__(self):
+            self.time = time
+            rng = np.random.default_rng(0)
+            self.fluxes = rng.normal(1000.0, 5.0, size=(1, 2, n))
+
+    band_results = {
+        "gp": {"ref": ref, "diff": _FakeDiffRaw(), "fluxes": _FakeFluxesArr()}
+    }
+
+    captured_funcs = []
+    original_secondary_xaxis = plt.Axes.secondary_xaxis
+
+    def mock_secondary_xaxis(self, *a, **kw):
+        captured_funcs.append(kw["functions"])
+        return original_secondary_xaxis(self, *a, **kw)
+
+    monkeypatch.setattr(plt.Axes, "secondary_xaxis", mock_secondary_xaxis)
+    monkeypatch.setattr(rp, "_savefig", lambda fig, path: None)
+
+    out = tmp_path / "raw_flux.png"
+    rp.plot_raw_flux(band_results, out, "TOI-6715", "muscat4", "2026-06-23", 0)
+
+    assert len(captured_funcs) == 1
+    to_jd, from_jd = captured_funcs[0]
+    assert to_jd(0.0) == pytest.approx(t0)
+    assert from_jd(t0) == pytest.approx(0.0)
+
+
 def test_plot_stacks_draws_saturation_axhline(tmp_path, monkeypatch):
     from astropy.io import fits
     from astropy.wcs import WCS
