@@ -3720,6 +3720,7 @@ def plot_covariates(
         ax.set_title(band)
         ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+    axes[0].set_ylabel("normalized signal + arbitrary offset")
     desc = ref_header_desc(band_results[bands[0]]["ref"], "stacks")
     fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}\n{desc}")
     _savefig(fig, path)

@@ -2198,6 +2198,77 @@ def test_gif_stride_step_calculation():
     assert max(1, 20 // 10) == 2
 
 
+def test_plot_covariates_ylabel_notes_arbitrary_offset(tmp_path, monkeypatch):
+    """Each signal is mean/std normalized then stacked with a fixed vertical
+    offset purely for visual separation, so the y-axis has no physical
+    meaning -- the label must say so."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from prose import FITSImage
+    from prose.core.source import Sources
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+    data = np.ones((20, 20))
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, data, header=hdr)
+
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10, 10], [5, 5]]))
+
+    n = 6
+    df = pd.DataFrame(
+        {
+            "time": np.linspace(2460000.0, 2460000.1, n),
+            "flux": np.linspace(0.99, 1.01, n),
+            "fwhm": np.full(n, 4.0),
+            "peak": np.full(n, 15000.0),
+            "airmass": np.full(n, 1.1),
+            "bkg": np.full(n, 10.0),
+            "dx": np.zeros(n),
+            "dy": np.zeros(n),
+        }
+    )
+
+    class _FakeCovDiff:
+        def __init__(self, df):
+            self.df = df
+            self.time = df["time"].to_numpy()
+
+    captured = {}
+    monkeypatch.setattr(
+        rp, "_savefig", lambda fig, path: captured.setdefault("fig", fig)
+    )
+
+    out = tmp_path / "covariates.png"
+    rp.plot_covariates(
+        {"gp": {"ref": ref, "diff": _FakeCovDiff(df)}},
+        out,
+        "TOI-6715",
+        "muscat4",
+        "2026-06-23",
+        0,
+    )
+
+    assert (
+        captured["fig"].axes[0].get_ylabel() == "normalized signal + arbitrary offset"
+    )
+
+
 def test_plot_stacks_draws_saturation_axhline(tmp_path, monkeypatch):
     from astropy.io import fits
     from astropy.wcs import WCS
