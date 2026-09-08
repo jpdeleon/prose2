@@ -996,10 +996,17 @@ def _apply_jd_exclusion(
             filtered_sciences[b] = kept
 
     n_excluded = n_before - n_after
-    if n_excluded:
-        logger.info(
-            f"--exclude_after_jd/--exclude_before_jd: excluded {n_excluded} "
-            f"of {n_before} frame(s)"
+    logger.info(
+        f"--exclude_after_jd/--exclude_before_jd: excluded {n_excluded} "
+        f"of {n_before} frame(s)"
+    )
+    if n_excluded == 0:
+        logger.warning(
+            "--exclude_after_jd/--exclude_before_jd: excluded 0 frames -- the "
+            "given JD window(s) do not overlap any frame's header JD. Double-"
+            "check the values against the data (this filter compares against "
+            "the raw header JD, not the barycentric-corrected BJD_TDB the "
+            "light curve is plotted against)."
         )
     active_bands = [b for b in bands if filtered_sciences.get(b)]
     return filtered_sciences, active_bands

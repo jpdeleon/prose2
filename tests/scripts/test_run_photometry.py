@@ -2282,6 +2282,42 @@ def test_main_exclude_jd_paired_window_drops_only_frames_inside_it(
     )
 
 
+def test_main_exclude_jd_window_outside_data_span_warns_but_continues(
+    tmp_path, caplog
+):
+    fpath = _write_sinistro_fits(tmp_path, "a.fits", "lsc")
+    fits.setval(fpath, "DATE-OBS", value="2025-04-16T00:00:00")
+    # JD(a) = 2460781.5 -- nowhere near the window below
+
+    argv = [
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--exclude_after_jd",
+        "2470000.0",
+    ]
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        rp.main(argv)
+
+    # always logged, even when the count is zero
+    assert any(
+        "excluded 0 of 1 frame" in r.message for r in caplog.records
+    )
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "excluded 0 frames" in r.message and "do not overlap" in r.message
+        for r in warnings
+    )
+    # the run was not aborted by the filter itself (the frame survives)
+    assert not any(
+        "after --exclude_after_jd/--exclude_before_jd; aborting" in r.message
+        for r in caplog.records
+    )
+
+
 def test_gif_stride_step_calculation():
     # 100 frames with target of 10 should yield a stride of 10 (every 10th frame)
     assert max(1, 100 // 10) == 10
