@@ -477,7 +477,14 @@ class TestFallbackCalibDaysArg:
     def test_rejects_negative(self):
         with pytest.raises(SystemExit):
             cm.parse_args(
-                ["--data_dir", "/d", "--output_dir", "/o", "--fallback-calib-days", "-1"]
+                [
+                    "--data_dir",
+                    "/d",
+                    "--output_dir",
+                    "/o",
+                    "--fallback-calib-days",
+                    "-1",
+                ]
             )
 
 

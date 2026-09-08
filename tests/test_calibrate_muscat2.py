@@ -339,7 +339,14 @@ class TestCLI:
     def test_fallback_calib_days_rejects_negative(self):
         with pytest.raises(SystemExit):
             cm.parse_args(
-                ["--data_dir", "/d", "--output_dir", "/o", "--fallback-calib-days", "-1"]
+                [
+                    "--data_dir",
+                    "/d",
+                    "--output_dir",
+                    "/o",
+                    "--fallback-calib-days",
+                    "-1",
+                ]
             )
 
     def test_solve_wcs_main_flag(self, fake_data_dir, tmp_path):
