@@ -41,6 +41,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from prose import FITSImage, blocks, __version__ as PROSE_VERSION
 from prose.console_utils import info
 from prose.core.sequence import SequenceParallel
+from prose.scripts.calibration_fallback import find_frames_in_other_nights
 from prose.utils import frames_from_obslog, scan_fits_headers
 
 logger = logging.getLogger("calibrate_muscat2")
@@ -459,6 +460,57 @@ def select_darks_for_exposure(
     return darks, "no-match"
 
 
+def _select_darks_with_fallback(
+    darks: list[str],
+    exposure: float | None,
+    band: str,
+    data_dir: Path | None,
+    fallback_days: int,
+) -> tuple[list[str], str]:
+    """Like :func:`select_darks_for_exposure`, but on a local mismatch, try
+    borrowing exposure-matched darks from a nearby night (see
+    ``calibration_fallback.find_frames_in_other_nights``) before falling back
+    to the unmatched local set.
+    """
+    matched, status = select_darks_for_exposure(darks, exposure, band)
+    if status == "matched" or not fallback_days or data_dir is None:
+        return matched, status
+
+    borrowed, source_night = find_frames_in_other_nights(
+        data_dir, band, "DARK", _band_from, exposure=exposure, max_days=fallback_days
+    )
+    if borrowed:
+        exp_desc = "unknown" if exposure is None else f"{exposure:g}s"
+        info(
+            f"[{band}] local darks don't match exposure {exp_desc} ({status}); "
+            f"borrowed {len(borrowed)} exposure-matched darks from night {source_night}"
+        )
+        return borrowed, "borrowed"
+    return matched, status
+
+
+def _fill_missing_calibration(
+    frames: list[str],
+    kind: str,
+    band: str,
+    data_dir: Path | None,
+    fallback_days: int,
+) -> list[str]:
+    """Borrow *kind* (``"DARK"`` or ``"FLAT"``) frames from a nearby night when
+    *frames* is empty locally."""
+    if frames or not fallback_days or data_dir is None:
+        return frames
+    borrowed, source_night = find_frames_in_other_nights(
+        data_dir, band, kind, _band_from, max_days=fallback_days
+    )
+    if borrowed:
+        info(
+            f"[{band}] no local {kind.lower()}s; borrowed {len(borrowed)} "
+            f"from night {source_night}"
+        )
+    return borrowed
+
+
 def _wcs_sidecar_path(output_dir: Path, band: str, method: str) -> Path:
     p = output_dir / ".wcs" / f"{band}_{method}.wcs.fits"
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -583,6 +635,8 @@ def calibrate_band(
     band: str,
     solve_wcs: str | bool | None = None,
     test_run: bool = False,
+    data_dir: Path | None = None,
+    fallback_calib_days: int = 0,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Build master dark + flat and calibrate all science frames for one band.
 
@@ -596,6 +650,14 @@ def calibrate_band(
     ----------
     solve_wcs:
         ``None`` = no WCS solving, ``"twirl"`` = twirl+Gaia, ``"astrometry.net"`` = astrometry.net.
+    data_dir:
+        This band's raw night directory. Required (together with
+        *fallback_calib_days* > 0) to borrow darks/flats from a nearby night
+        when local ones are missing or exposure-mismatched — see
+        ``calibration_fallback.find_frames_in_other_nights``.
+    fallback_calib_days:
+        Search window (in days) for cross-night calibration fallback. ``0``
+        (the default) disables it.
 
     Returns ``(master_dark, master_flat)`` arrays for the first exposure group,
     or ``(None, None)`` if skipped.
@@ -604,6 +666,13 @@ def calibrate_band(
         solve_wcs = "astrometry.net"
     if test_run:
         sciences = sciences[:10]
+
+    darks = _fill_missing_calibration(
+        darks, "DARK", band, data_dir, fallback_calib_days
+    )
+    flats = _fill_missing_calibration(
+        flats, "FLAT", band, data_dir, fallback_calib_days
+    )
 
     if not darks or not flats:
         info(
@@ -634,7 +703,9 @@ def calibrate_band(
 
     for exposure in ordered_exposures:
         group_sciences = exposure_groups[exposure]
-        group_darks, _ = select_darks_for_exposure(darks, exposure, band)
+        group_darks, _ = _select_darks_with_fallback(
+            darks, exposure, band, data_dir, fallback_calib_days
+        )
 
         info(f"[{band}] building master calibration frames")
         calib = blocks.Calibration(
@@ -712,6 +783,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "$ASTROMETRY_NET_API_KEY). The WCS is solved once per band and applied "
         "to all calibrated frames. Omit the flag entirely to skip WCS solving.",
     )
+    ap.add_argument(
+        "--fallback_calib_days",
+        "--fallback-calib-days",
+        type=int,
+        default=0,
+        help="If a band's darks or flats are missing locally, or its darks don't "
+        "exposure-match the science frames, search sibling night directories "
+        "within this many days (nearest first) for a usable replacement. "
+        "0 (default) disables cross-night fallback.",
+    )
     return ap.parse_args(argv)
 
 
@@ -753,6 +834,8 @@ def main(argv: list[str] | None = None) -> int:
             band,
             solve_wcs=args.solve_wcs,
             test_run=args.test_run,
+            data_dir=args.data_dir,
+            fallback_calib_days=args.fallback_calib_days,
         )
         if md is not None and mf is not None:
             master_darks.append((band, md))

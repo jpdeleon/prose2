@@ -11,6 +11,7 @@ import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
 
+from prose import utils
 from prose.scripts import calibrate_muscat as cm1
 from prose.scripts import calibrate_muscat2 as cm
 from prose.scripts import solve_wcs_astrometry as swa
@@ -319,6 +320,16 @@ class TestCLI:
         )
         assert args.solve_wcs == "astrometry.net"
 
+    def test_fallback_calib_days_defaults_to_disabled(self):
+        args = cm.parse_args(["--data_dir", "/d", "--output_dir", "/o"])
+        assert args.fallback_calib_days == 0
+
+    def test_fallback_calib_days_flag(self):
+        args = cm.parse_args(
+            ["--data_dir", "/d", "--output_dir", "/o", "--fallback-calib-days", "30"]
+        )
+        assert args.fallback_calib_days == 30
+
     def test_solve_wcs_main_flag(self, fake_data_dir, tmp_path):
         """End-to-end with --solve-wcs: WCS may fail on fake data but must not crash."""
         out_dir = tmp_path / "out"
@@ -433,6 +444,164 @@ class TestExposureMatching:
         )
 
         assert sorted(queried_exposures) == [5.0, 10.0]
+
+
+# ---------- cross-night calibration fallback ----------
+
+
+class TestCalibrationFallback:
+    """Integration tests for calibrate_band's --fallback-calib-days wiring.
+
+    Builds a two-night layout (target night + a nearby night with usable
+    darks) under an obslog root, monkeypatching ``utils.OBSLOG_ROOT`` so
+    ``find_frames_in_other_nights`` can resolve it without touching real data.
+    """
+
+    def _write_source_night(self, data_root, obslog_root, night, exptime):
+        source_dir = data_root / night
+        source_dir.mkdir(parents=True)
+        dark = source_dir / f"MCT21_{night}0001.fits"
+        _fake_fits(dark, "DARK", exptime=exptime, filter_value="r")
+        obslog_dir = obslog_root / "muscat2" / night
+        obslog_dir.mkdir(parents=True)
+        (obslog_dir / f"obslog-muscat2-{night}-ccd1.csv").write_text(
+            f"FRAME,OBJECT,EXPTIME (s),FILTER\n{dark.stem},DARK,{exptime},r\n"
+        )
+        return dark
+
+    def test_borrows_missing_darks_when_enabled(self, tmp_path, monkeypatch):
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat2"
+        target_dir = data_root / "260804"
+        target_dir.mkdir(parents=True)
+        self._write_source_night(data_root, obslog_root, "260818", exptime=10.0)
+
+        flat = target_dir / "flat.fits"
+        sci = target_dir / "sci.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0, filter_value="r")
+        _fake_fits(sci, "KOI-3510", exptime=10.0, filter_value="r")
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        md, mf = cm.calibrate_band(
+            [],  # no local darks
+            [str(flat)],
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            fallback_calib_days=30,
+        )
+        assert md is not None and mf is not None
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 1
+
+    def test_disabled_by_default_still_skips_band(self, tmp_path, monkeypatch):
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat2"
+        target_dir = data_root / "260804"
+        target_dir.mkdir(parents=True)
+        self._write_source_night(data_root, obslog_root, "260818", exptime=10.0)
+
+        flat = target_dir / "flat.fits"
+        sci = target_dir / "sci.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0, filter_value="r")
+        _fake_fits(sci, "KOI-3510", exptime=10.0, filter_value="r")
+
+        out_dir = tmp_path / "out"
+        md, mf = cm.calibrate_band(
+            [],
+            [str(flat)],
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            # fallback_calib_days omitted -> default 0 (disabled)
+        )
+        assert md is None and mf is None
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 0
+
+    def test_prefers_borrowed_exposure_match_over_local_mismatch(
+        self, tmp_path, monkeypatch
+    ):
+        """Local darks exist but at the wrong exposure; an exposure-matched
+        night should be preferred over the local rescaled-mismatch fallback."""
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat2"
+        target_dir = data_root / "260804"
+        target_dir.mkdir(parents=True)
+        matched_dark = self._write_source_night(
+            data_root, obslog_root, "260818", exptime=10.0
+        )
+
+        flat = target_dir / "flat.fits"
+        sci = target_dir / "sci.fits"
+        local_dark = target_dir / "local_dark.fits"
+        _fake_fits(flat, "FLAT", exptime=1.0, filter_value="r")
+        _fake_fits(sci, "KOI-3510", exptime=10.0, filter_value="r")
+        _fake_fits(local_dark, "DARK", exptime=4.7, filter_value="r")  # mismatched
+
+        borrowed_calls = []
+        real_find = cm.find_frames_in_other_nights
+
+        def spy_find(*args, **kwargs):
+            result = real_find(*args, **kwargs)
+            borrowed_calls.append((kwargs.get("exposure"), result))
+            return result
+
+        monkeypatch.setattr(cm, "find_frames_in_other_nights", spy_find)
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        md, mf = cm.calibrate_band(
+            [str(local_dark)],
+            [str(flat)],
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            fallback_calib_days=30,
+        )
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 1
+        assert (10.0, ([str(matched_dark)], "260818")) in borrowed_calls
+
+    def test_borrows_missing_flats_when_enabled(self, tmp_path, monkeypatch):
+        obslog_root = tmp_path / "obslog"
+        monkeypatch.setattr(utils, "OBSLOG_ROOT", str(obslog_root))
+        data_root = tmp_path / "data" / "muscat2"
+        target_dir = data_root / "260804"
+        target_dir.mkdir(parents=True)
+
+        source_dir = data_root / "260818"
+        source_dir.mkdir(parents=True)
+        flat = source_dir / "MCT21_2608180002.fits"
+        _fake_fits(flat, "FLAT", exptime=3.0, filter_value="r")
+        obslog_dir = obslog_root / "muscat2" / "260818"
+        obslog_dir.mkdir(parents=True)
+        (obslog_dir / "obslog-muscat2-260818-ccd1.csv").write_text(
+            "FRAME,OBJECT,EXPTIME (s),FILTER\nMCT21_2608180002,FLAT,3.0,r\n"
+        )
+
+        dark = target_dir / "dark.fits"
+        sci = target_dir / "sci.fits"
+        _fake_fits(dark, "DARK", exptime=10.0, filter_value="r")
+        _fake_fits(sci, "KOI-3510", exptime=10.0, filter_value="r")
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        md, mf = cm.calibrate_band(
+            [str(dark)],
+            [],  # no local flats
+            [str(sci)],
+            out_dir,
+            "rp",
+            data_dir=target_dir,
+            fallback_calib_days=30,
+        )
+        assert md is not None and mf is not None
+        assert len(list(out_dir.glob("*_calibrated.fits"))) == 1
 
 
 # ---------- main ----------
