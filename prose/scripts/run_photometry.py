@@ -5362,6 +5362,23 @@ def main(argv=None) -> int:
                 "Please specify --mode to select one."
             )
 
+    if instrument != "muscat2" and instrument != "muscat":
+        if args.exclude_after_jd is not None or args.exclude_before_jd is not None:
+            # Apply before --test_run truncation below -- see the matching
+            # comment in the muscat/muscat2 branch for why the order matters.
+            sciences, active_bands = _apply_jd_exclusion(
+                sciences,
+                args.bands,
+                after=args.exclude_after_jd,
+                before=args.exclude_before_jd,
+            )
+            if not active_bands:
+                logger.error(
+                    f"no frames remain for target={args.target_name} after "
+                    "--exclude_after_jd/--exclude_before_jd; aborting"
+                )
+                return 1
+
     if instrument != "muscat2" and instrument != "muscat" and args.test_run:
         nrf = args.test_run_frames
         if args.refid is not None:
@@ -5532,6 +5549,26 @@ def main(argv=None) -> int:
             args.target_name,
             filter_aliases=INSTRUMENT_FILTER_ALIASES.get(calib_label),
         )
+        if args.exclude_after_jd is not None or args.exclude_before_jd is not None:
+            # Apply before --test_run truncation below: test_run's arbitrary
+            # first-N-frames (or --refid-centered window) selection has no
+            # awareness of the exclusion window, so filtering after it could
+            # trivially wipe out a whole test sample that doesn't happen to
+            # overlap the window, even when the real (non-test-run) reduction
+            # would have plenty of surviving frames.
+            sciences, active_bands = _apply_jd_exclusion(
+                sciences,
+                args.bands,
+                after=args.exclude_after_jd,
+                before=args.exclude_before_jd,
+            )
+            if not active_bands:
+                logger.error(
+                    f"{calib_label}: no frames remain for target="
+                    f"{args.target_name} after --exclude_after_jd/"
+                    "--exclude_before_jd; aborting"
+                )
+                return 1
         if args.test_run:
             nrf = args.test_run_frames
             if args.refid is not None:
@@ -5557,20 +5594,6 @@ def main(argv=None) -> int:
         f"target={args.target_name} inst={instrument} date={date} "
         f"site={probe.get('SITE')}"
     )
-
-    if args.exclude_after_jd is not None or args.exclude_before_jd is not None:
-        sciences, active_bands = _apply_jd_exclusion(
-            sciences,
-            args.bands,
-            after=args.exclude_after_jd,
-            before=args.exclude_before_jd,
-        )
-        if not active_bands:
-            logger.error(
-                f"no frames remain for target={args.target_name} after "
-                "--exclude_after_jd/--exclude_before_jd; aborting"
-            )
-            return 1
 
     if args.target_coord is not None:
         ra_str, dec_str = args.target_coord
