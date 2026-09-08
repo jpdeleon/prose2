@@ -5048,7 +5048,10 @@ def parse_args(argv=None) -> argparse.Namespace:
         "Given alone, each value is an independent open-ended cut. Compares "
         "against the raw header JD, not the barycentric-corrected BJD_TDB "
         f"the light curve is plotted against -- the two can differ by up to "
-        f"~{MAX_TIME_OFFSET_MIN:.1f} min near a window boundary.",
+        f"~{MAX_TIME_OFFSET_MIN / 2:.1f} min near a window boundary (light "
+        f"travel time across 1 AU; {MAX_TIME_OFFSET_MIN:.1f} min is this "
+        f"module's own, deliberately generous GJD->BJD sanity-check margin, "
+        f"not the expected drift).",
     )
     ap.add_argument(
         "--exclude_before_jd",
