@@ -295,6 +295,72 @@ def test_parse_args_max_aperture_equal_to_inner_annulus_is_allowed():
     assert args.annulus == (24.0, 40.0)
 
 
+# --------------------------- JD exclusion ---------------------------
+
+
+def test_parse_args_exclude_jd_defaults_are_none():
+    args = rp.parse_args(_argv())
+    assert args.exclude_after_jd is None
+    assert args.exclude_before_jd is None
+
+
+def test_parse_args_exclude_after_jd_alone_accepts_multiple_values():
+    args = rp.parse_args(
+        _argv("--exclude_after_jd", "2460423.90", "2460500.10")
+    )
+    assert args.exclude_after_jd == [2460423.90, 2460500.10]
+    assert args.exclude_before_jd is None
+
+
+def test_parse_args_exclude_before_jd_alone_accepts_multiple_values():
+    args = rp.parse_args(
+        _argv("--exclude_before_jd", "2460423.10", "2460500.05")
+    )
+    assert args.exclude_before_jd == [2460423.10, 2460500.05]
+    assert args.exclude_after_jd is None
+
+
+def test_parse_args_exclude_jd_both_given_paired_positionally():
+    args = rp.parse_args(
+        _argv(
+            "--exclude_after_jd", "2460423.10", "2460423.60",
+            "--exclude_before_jd", "2460423.20", "2460423.75",
+        )
+    )
+    assert args.exclude_after_jd == [2460423.10, 2460423.60]
+    assert args.exclude_before_jd == [2460423.20, 2460423.75]
+
+
+def test_parse_args_exclude_jd_rejects_length_mismatch():
+    with pytest.raises(SystemExit):
+        rp.parse_args(
+            _argv(
+                "--exclude_after_jd", "2460423.10", "2460423.60",
+                "--exclude_before_jd", "2460423.20",
+            )
+        )
+
+
+def test_parse_args_exclude_jd_rejects_after_not_less_than_before():
+    with pytest.raises(SystemExit):
+        rp.parse_args(
+            _argv(
+                "--exclude_after_jd", "2460423.20",
+                "--exclude_before_jd", "2460423.10",
+            )
+        )
+
+
+def test_parse_args_exclude_jd_rejects_after_equal_before():
+    with pytest.raises(SystemExit):
+        rp.parse_args(
+            _argv(
+                "--exclude_after_jd", "2460423.10",
+                "--exclude_before_jd", "2460423.10",
+            )
+        )
+
+
 # --------------------------- ccd trim parsing ---------------------------
 
 

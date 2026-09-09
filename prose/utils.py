@@ -422,6 +422,29 @@ def scan_fits_headers(
         )
 
 
+def header_jd(header) -> tuple[float | None, str]:
+    """Best-effort JD from a raw FITS header, and the source keyword used.
+
+    Deliberately independent of any telescope config or ``TIME_KEYS``-style
+    keyword list: this is meant as a cheap, header-only cross-check of
+    whatever a full reduction resolves elsewhere (see
+    ``prose.scripts.check_header_time``, which uses it to audit the real
+    per-frame JD prose computes during reduction), so it intentionally does
+    not share code with that resolution path.
+    """
+    if "MJD-STRT" in header:
+        return float(header["MJD-STRT"]) + 2_400_000.5, "MJD-STRT"
+    if "MJD-OBS" in header:
+        return float(header["MJD-OBS"]) + 2_400_000.5, "MJD-OBS"
+    do = header.get("DATE-OBS")
+    if do and ("T" in str(do) or ":" in str(do)):
+        try:
+            return float(Time(do).jd), "DATE-OBS"
+        except Exception:
+            return None, "DATE-OBS?"
+    return None, "none"
+
+
 def read_filename_per_band(sciences: list, bands: list, target_name: str, ext: int = 0, filter_aliases: dict[str, str] | None = None) -> dict:
     """
     Collect FITS files by filter band for a specific target.

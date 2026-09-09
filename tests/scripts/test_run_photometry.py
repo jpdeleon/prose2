@@ -5,6 +5,7 @@ these tests focus on the deterministic, side-effect-free helpers (naming,
 header parsing, z-scaling, CSV column mapping).
 """
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -113,6 +114,19 @@ def test_date_from_header_returns_empty_without_any_time_keyword():
 def test_date_from_header_ignores_unparseable_time_keyword():
     # A non-numeric MJD must not raise; fall through to ''.
     assert rp.date_from_header({"MJD-STRT": "n/a"}) == ""
+
+
+def test_setup_logger_timestamps_have_second_precision(tmp_path):
+    """Log line timestamps must read 'YYYY-MM-DD HH:MM:SS', not the logging
+    module's default '...,mmm' millisecond suffix -- millisecond precision is
+    noise for this pipeline's log lines (frame counts, exclusion summaries,
+    stage transitions), not information."""
+    log_path = rp.setup_logger(tmp_path, verbose=True)
+    rp.logger.info("hello")
+    lines = [l for l in log_path.read_text().splitlines() if "hello" in l]
+    assert lines
+    assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - INFO: hello$", lines[-1])
+    assert "," not in lines[-1].split(" - ", 1)[0]
 
 
 def test_inject_wcs_from_sidecars_updates_wcsless_calibrated_files(tmp_path):
@@ -2185,6 +2199,180 @@ def test_main_mode_raise_condition_for_multiple_modes_unspecified(tmp_path):
 
     with pytest.raises(ValueError, match="Multiple configuration modes found"):
         rp.main(argv)
+
+
+# --------------------------- JD exclusion (main) ---------------------------
+
+
+def test_main_exclude_after_jd_drops_only_matching_frames(tmp_path, caplog):
+    # target_name must be a real, MAST-resolvable object (as in the existing
+    # --mode fallback test) so the run proceeds past target resolution instead
+    # of raising a network ResolverError -- exercising the filter itself, not
+    # MAST's error handling.
+    keep_path = _write_sinistro_fits(tmp_path, "keep.fits", "lsc")
+    drop_path = _write_sinistro_fits(tmp_path, "drop.fits", "lsc")
+    fits.setval(keep_path, "DATE-OBS", value="2025-04-16T00:00:00")
+    fits.setval(drop_path, "DATE-OBS", value="2025-04-16T02:00:00")
+    # JD(keep) = 2460781.5, JD(drop) = 2460781.5 + 2h = 2460781.5833...
+
+    argv = [
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--exclude_after_jd",
+        "2460781.55",
+    ]
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        rp.main(argv)
+
+    assert any(
+        "excluded 1 of 2 frame" in r.message for r in caplog.records
+    )
+    # the filter itself did not abort the run (only 'drop.fits' was excluded,
+    # 'keep.fits' survives) -- any eventual failure is downstream (MAST/etc.)
+    assert not any(
+        "after --exclude_after_jd/--exclude_before_jd; aborting" in r.message
+        for r in caplog.records
+    )
+
+
+def test_main_exclude_before_jd_excludes_everything_aborts(tmp_path, caplog):
+    _write_minimal_fits(tmp_path, "a.fits")
+    fits.setval(
+        tmp_path / "a.fits", "DATE-OBS", value="2025-04-16T00:00:00"
+    )
+
+    argv = [
+        "--target_name",
+        "test",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--exclude_before_jd",
+        "2460900.0",  # well after the frame's JD (2460781.5) -> excludes it
+    ]
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        ret = rp.main(argv)
+
+    assert ret == 1
+    assert any(
+        "after --exclude_after_jd/--exclude_before_jd; aborting" in r.message
+        for r in caplog.records
+    )
+
+
+def test_main_exclude_jd_paired_window_drops_only_frames_inside_it(
+    tmp_path, caplog
+):
+    before_path = _write_sinistro_fits(tmp_path, "before.fits", "lsc")
+    inside_path = _write_sinistro_fits(tmp_path, "inside.fits", "lsc")
+    after_path = _write_sinistro_fits(tmp_path, "after.fits", "lsc")
+    fits.setval(before_path, "DATE-OBS", value="2025-04-16T00:00:00")
+    fits.setval(inside_path, "DATE-OBS", value="2025-04-16T02:00:00")
+    fits.setval(after_path, "DATE-OBS", value="2025-04-16T05:00:00")
+    # JD: before=2460781.5, inside=2460781.5833, after=2460781.7083
+
+    argv = [
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--exclude_after_jd",
+        "2460781.55",
+        "--exclude_before_jd",
+        "2460781.65",
+    ]
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        rp.main(argv)
+
+    assert any(
+        "excluded 1 of 3 frame" in r.message for r in caplog.records
+    )
+
+
+def test_main_exclude_jd_window_outside_data_span_warns_but_continues(
+    tmp_path, caplog
+):
+    fpath = _write_sinistro_fits(tmp_path, "a.fits", "lsc")
+    fits.setval(fpath, "DATE-OBS", value="2025-04-16T00:00:00")
+    # JD(a) = 2460781.5 -- nowhere near the window below
+
+    argv = [
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--exclude_after_jd",
+        "2470000.0",
+    ]
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        rp.main(argv)
+
+    # always logged, even when the count is zero
+    assert any(
+        "excluded 0 of 1 frame" in r.message for r in caplog.records
+    )
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "excluded 0 frames" in r.message and "do not overlap" in r.message
+        for r in warnings
+    )
+    # the run was not aborted by the filter itself (the frame survives)
+    assert not any(
+        "after --exclude_after_jd/--exclude_before_jd; aborting" in r.message
+        for r in caplog.records
+    )
+
+
+def test_main_exclude_before_jd_applies_before_test_run_truncation(tmp_path, caplog):
+    """Regression test for a reported bug: --test_run naively takes the first
+    N frames per band *before* any JD exclusion ran, so a cutoff that legally
+    excludes only part of a real dataset could wipe out an entire test-run
+    sample that happened to land entirely in the excluded region -- even
+    though the real (non-test-run) reduction had plenty of surviving frames.
+    Exclusion must run first, so --test_run then samples from what's left."""
+    paths = []
+    for i in range(6):
+        p = _write_sinistro_fits(tmp_path, f"f{i}.fits", "lsc")
+        fits.setval(p, "DATE-OBS", value=f"2025-04-16T{i:02d}:00:00")
+        paths.append(p)
+    # JD: f0=2460781.5, f1=.5417, f2=.5833, f3=.625, f4=.6667, f5=.7083
+
+    argv = [
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--exclude_before_jd",
+        "2460781.60",  # excludes f0,f1,f2; keeps f3,f4,f5
+        "--test_run",
+        "--test_run_frames",
+        "2",
+    ]
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        rp.main(argv)
+
+    # exclusion ran on the full 6-frame set (3 of 6), not the already-
+    # truncated 2-frame test-run sample
+    assert any("excluded 3 of 6 frame" in r.message for r in caplog.records)
+    assert any(
+        "test-run: limiting to 2 frames per band" in r.message
+        for r in caplog.records
+    )
+    assert not any(
+        "after --exclude_after_jd/--exclude_before_jd; aborting" in r.message
+        for r in caplog.records
+    )
 
 
 def test_gif_stride_step_calculation():
