@@ -3446,7 +3446,16 @@ def plot_ref_image(
     desc = ref_header_desc(ref, "reference frame")
     if not wcs_ok:
         desc += " (pixel frame; WCS unusable)"
-    title = f"{target_name} | {instrument} | {date} | {band} | tID={target_id}\n{desc}"
+    # Surfaces the FITS frame number backing this reference image so a user who
+    # likes what a test run picked can pin it for the full run with --refid,
+    # instead of the two runs landing on different frames (and therefore
+    # different star indices) via the positional len(files)//2 default.
+    ref_frame_number = _fits_file_number(ref.metadata.get("path") or "")
+    refid_part = f" | refID={ref_frame_number}" if ref_frame_number is not None else ""
+    title = (
+        f"{target_name} | {instrument} | {date} | {band} | "
+        f"tID={target_id}{refid_part}\n{desc}"
+    )
     ax.set_title(title, y=1.08)
 
     # SIMBAD markers are WCS-projected, so only draw them when the WCS is usable.
