@@ -774,6 +774,87 @@ class Fluxes:
             mask &= np.abs(flux - np.nanmean(flux)) < np.nanstd(flux[mask]) * sigma
         return self.mask(mask)
 
+    def sigma_clip_flux_poly(
+        self,
+        sigma: float = 5.0,
+        degree: int = 2,
+        iterations: int = 5,
+        return_mask: bool = False,
+    ):
+        """Return a Fluxes instance masked by sigma clipping residuals of a
+        polynomial fit to the target flux time series.
+
+        A smooth low-order trend (airmass ramp, differential extinction, slow
+        collimation drift) is removed before clipping so the scatter used for
+        the sigma threshold is not inflated by the trend itself. Frames whose
+        flux deviates by more than ``sigma`` standard deviations from their
+        local trend are then rejected. Typical targets of this filter are
+        satellite streaks, cosmic-ray hits on the target aperture and centroid
+        jumps.
+
+        The polynomial is refitted at every iteration using only the remaining
+        frames, so the fit stays robust to the very outliers it is meant to
+        remove. ``self.target`` and ``self.aperture`` must be set (see
+        :meth:`Fluxes.estimate_best_aperture` for the latter).
+
+        Parameters
+        ----------
+        sigma : float, optional
+            sigma threshold for residual clipping, by default 5.0
+        degree : int, optional
+            degree of the polynomial fitted against time, by default 2
+        iterations : int, optional
+            number of refit-and-clip passes, by default 5
+        return_mask : bool, optional
+            if True, return the boolean frame mask instead of a masked
+            :class:`Fluxes`, by default False
+
+        Returns
+        -------
+        Fluxes or np.ndarray
+            masked Fluxes or, if ``return_mask`` is True, the boolean mask
+        """
+        if self.target is None or self.aperture is None:
+            raise ValueError("target and aperture must be set")
+        if degree < 0:
+            raise ValueError("degree must be >= 0")
+        time = (
+            np.asarray(self.time, dtype=float)
+            if self.time is not None
+            else np.arange(self.fluxes.shape[-1])
+        )
+        flux = np.asarray(self.flux, dtype=float)
+        valid = np.isfinite(time) & np.isfinite(flux)
+        mask = valid.copy()
+        if valid.sum() <= degree:
+            warnings.warn(
+                f"fewer than {degree + 1} finite flux points to fit a "
+                f"degree-{degree} polynomial; leaving flux unmasked",
+                stacklevel=2,
+            )
+            return mask if return_mask else self.mask(mask)
+        t = time - np.mean(time)  # centering improves polynomial fit conditioning
+        resid = np.full_like(flux, np.nan)
+        for _ in range(iterations):
+            keep = mask & valid
+            if keep.sum() <= degree:
+                break
+            try:
+                coeffs = np.polyfit(t[keep], flux[keep], degree)
+            except (ValueError, np.linalg.LinAlgError):
+                break
+            resid[valid] = flux[valid] - np.polyval(coeffs, t[valid])
+            resid_kept = resid[keep]
+            mean = np.mean(resid_kept)
+            std = np.std(resid_kept)
+            if std == 0 or not np.isfinite(std):
+                break
+            new_mask = mask & (np.abs(resid - mean) < sigma * std)
+            if np.array_equal(new_mask, mask):
+                break
+            mask = new_mask
+        return mask if return_mask else self.mask(mask)
+
     def mask_stars(self, mask: np.array, keep_indexing: bool = True):
         """Mask stars fluxes.
 
