@@ -370,6 +370,79 @@ def optimal_flux(diff_fluxes, method="stddiff", sigma=4):
     return i
 
 
+def flux_sigma_clip_mask(
+    time: np.ndarray,
+    flux: np.ndarray,
+    sigma: float = 5.0,
+    degree: int = 2,
+    iterations: int = 5,
+) -> np.ndarray:
+    """Boolean keep-mask from iteratively sigma-clipping a flux time series.
+
+    A low-order polynomial is fitted against mean-centered time to remove a
+    smooth trend before clipping, so the scatter used for the sigma threshold
+    is not inflated by the trend itself. The polynomial is refitted at every
+    iteration on the remaining frames only. Non-finite ``time``/``flux``
+    entries are always rejected; when fewer than ``degree + 1`` finite points
+    remain the flux is left fully unmasked (with a warning).
+
+    This is the shared algorithm behind
+    :meth:`Fluxes.sigma_clip_flux_poly`; it operates on plain arrays so it
+    can also be applied to CSV light-curves (see
+    ``prose.scripts.postprocess_lightcurves``).
+
+    Parameters
+    ----------
+    time : np.ndarray
+        1-D array of (typically BJD) timestamps; used directly for the fit.
+    flux : np.ndarray
+        1-D array of fluxes. ``flux[i]`` is the measurement at ``time[i]``.
+    sigma : float, optional
+        sigma threshold for residual clipping, by default 5.0
+    degree : int, optional
+        degree of the polynomial fitted against time, by default 2
+    iterations : int, optional
+        number of refit-and-clip passes, by default 5
+
+    Returns
+    -------
+    np.ndarray
+        boolean mask, ``True`` where the measurement is kept
+    """
+    if degree < 0:
+        raise ValueError("degree must be >= 0")
+    valid = np.isfinite(time) & np.isfinite(flux)
+    mask = valid.copy()
+    if valid.sum() <= degree:
+        warnings.warn(
+            f"fewer than {degree + 1} finite flux points to fit a "
+            f"degree-{degree} polynomial; leaving flux unmasked",
+            stacklevel=2,
+        )
+        return mask
+    t = time - np.mean(time)  # centering improves polynomial fit conditioning
+    resid = np.full_like(flux, np.nan)
+    for _ in range(iterations):
+        keep = mask & valid
+        if keep.sum() <= degree:
+            break
+        try:
+            coeffs = np.polyfit(t[keep], flux[keep], degree)
+        except (ValueError, np.linalg.LinAlgError):
+            break
+        resid[valid] = flux[valid] - np.polyval(coeffs, t[valid])
+        resid_kept = resid[keep]
+        mean = np.mean(resid_kept)
+        std = np.std(resid_kept)
+        if std == 0 or not np.isfinite(std):
+            break
+        new_mask = mask & (np.abs(resid - mean) < sigma * std)
+        if np.array_equal(new_mask, mask):
+            break
+        mask = new_mask
+    return mask
+
+
 @dataclass
 class Fluxes:
     """Photometric fluxes, from single to multiple stars and apertures.
@@ -824,35 +897,9 @@ class Fluxes:
             else np.arange(self.fluxes.shape[-1])
         )
         flux = np.asarray(self.flux, dtype=float)
-        valid = np.isfinite(time) & np.isfinite(flux)
-        mask = valid.copy()
-        if valid.sum() <= degree:
-            warnings.warn(
-                f"fewer than {degree + 1} finite flux points to fit a "
-                f"degree-{degree} polynomial; leaving flux unmasked",
-                stacklevel=2,
-            )
-            return mask if return_mask else self.mask(mask)
-        t = time - np.mean(time)  # centering improves polynomial fit conditioning
-        resid = np.full_like(flux, np.nan)
-        for _ in range(iterations):
-            keep = mask & valid
-            if keep.sum() <= degree:
-                break
-            try:
-                coeffs = np.polyfit(t[keep], flux[keep], degree)
-            except (ValueError, np.linalg.LinAlgError):
-                break
-            resid[valid] = flux[valid] - np.polyval(coeffs, t[valid])
-            resid_kept = resid[keep]
-            mean = np.mean(resid_kept)
-            std = np.std(resid_kept)
-            if std == 0 or not np.isfinite(std):
-                break
-            new_mask = mask & (np.abs(resid - mean) < sigma * std)
-            if np.array_equal(new_mask, mask):
-                break
-            mask = new_mask
+        mask = flux_sigma_clip_mask(
+            time, flux, sigma=sigma, degree=degree, iterations=iterations
+        )
         return mask if return_mask else self.mask(mask)
 
     def mask_stars(self, mask: np.array, keep_indexing: bool = True):
