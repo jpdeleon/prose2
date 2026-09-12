@@ -700,6 +700,51 @@ def test_differential_photometry_all_cids_out_of_range_falls_back_to_auto(caplog
     assert "auto-selection" in caplog.text
 
 
+def test_differential_photometry_sig_flux_detrends_before_clipping(caplog, monkeypatch):
+    """--sig_flux fits a polynomial to the target raw flux and clips residuals."""
+    from prose import Fluxes
+
+    rng = np.random.default_rng(42)
+    n = 200
+    time = np.arange(n, dtype=float)
+    flux = np.ones((5, n))
+    flux[0] *= 10000 + 2.0 * time  # ramp the target so trend inflates plain sigma
+    out_idx = [25, 120]
+    flux[0, out_idx] += 6000 * rng.choice([-1, 1], 2)
+    for i in range(1, 5):
+        flux[i] *= 10000 + 100 * rng.normal(0, 1, n)
+    obj = Fluxes(fluxes=flux, errors=np.full((5, n), 25.0), time=time)
+    obj.target = 0
+
+    monkeypatch.setattr(rp, "SIGMA_FLUX", 6.0)
+    monkeypatch.setattr(rp, "POLY_DEG", 2)
+
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        result = rp.differential_photometry(obj, target_index=0, cids=[1, 2, 3])
+
+    assert result is not None
+    assert len(result.time) == n - 2
+    assert any(
+        "FLUX POLY SIGMA CLIPPING" in r.message and "2 / 200" in r.message
+        for r in caplog.records
+    )
+
+
+def test_differential_photometry_sig_flux_off_by_default(caplog, monkeypatch):
+    """With SIGMA_FLUX unset, no flux detrending/clipping happens."""
+    rng = np.random.default_rng(42)
+    fluxes = _make_fluxes(5, 20, rng)
+    monkeypatch.setattr(rp, "SIGMA_FLUX", None)
+    monkeypatch.setattr(rp, "POLY_DEG", 2)
+
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        result = rp.differential_photometry(fluxes, target_index=0, cids=[1, 2, 3])
+
+    assert result is not None
+    assert len(result.time) == 20
+    assert not any("FLUX POLY SIGMA CLIPPING" in r.message for r in caplog.records)
+
+
 # --------------------------- differential_photometry with avoid_cids ---------------------------
 
 

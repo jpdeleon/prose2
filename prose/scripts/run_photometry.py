@@ -304,6 +304,10 @@ SIGMA_BKG = None
 SIGMA_FWHM = None
 SIGMA_DX = None
 SIGMA_DY = None
+# flux-cleaning — None disables; otherwise a polynomial is fitted to the raw
+# target flux time series and residuals are sigma clipped (see Fluxes.sigma_clip_flux_poly)
+SIGMA_FLUX = None
+POLY_DEG = 2
 BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
 # Maximum pixel distance for cross-matching sources between bands.  When
@@ -3107,6 +3111,26 @@ def differential_photometry(
         f"(bkg={_fmt(SIGMA_BKG)}, fwhm={_fmt(SIGMA_FWHM)}, "
         f"dx={_fmt(SIGMA_DX)}, dy={_fmt(SIGMA_DY)}) !!!"
     )
+    if SIGMA_FLUX is not None and fluxes.time is not None and len(fluxes.time) > 0:
+        n_before_flux = len(fluxes.time)
+        # decision is taken on the target's flux at the aperture the pipeline
+        # will itself select (stddiff); the mask applies to all stars/frames.
+        try:
+            fluxes.estimate_best_aperture()
+            fluxes = fluxes.sigma_clip_flux_poly(
+                sigma=SIGMA_FLUX, degree=POLY_DEG
+            )
+        except (ValueError, np.linalg.LinAlgError):
+            logger.warning(
+                f"!!! FLUX POLY SIGMA CLIPPING: could not fit degree-{POLY_DEG} "
+                f"polynomial to raw target flux; leaving flux unmasked !!!"
+            )
+        n_after_flux = len(fluxes.time) if fluxes.time is not None else 0
+        logger.info(
+            f"!!! FLUX POLY SIGMA CLIPPING: {n_before_flux - n_after_flux} "
+            f"/ {n_before_flux} frames clipped "
+            f"(flux={_fmt(SIGMA_FLUX)}, deg={POLY_DEG}) !!!"
+        )
     if fluxes.time is None or len(fluxes.time) == 0:
         return None
     if cids:
@@ -5023,6 +5047,28 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Sigma threshold for drift Y outlier clipping (default: disabled).",
     )
     ap.add_argument(
+        "--sig_flux",
+        "--sig-flux",
+        type=float,
+        default=None,
+        dest="sig_flux",
+        help="Sigma threshold for outlier clipping of the target raw flux "
+        "time series (default: disabled). A polynomial (see --flux_poly_deg) "
+        "is fitted to flux versus time and frames whose residual deviates by "
+        "more than this many standard deviations are rejected (e.g. satellite "
+        "streaks, cosmic-ray hits on the target aperture).",
+    )
+    ap.add_argument(
+        "--flux_poly_deg",
+        "--flux-poly-deg",
+        type=int,
+        default=2,
+        dest="flux_poly_deg",
+        help="Degree of the polynomial fitted to the raw target flux time "
+        "series before residual sigma clipping (default: %(default)s). "
+        "Only used when --sig_flux is set.",
+    )
+    ap.add_argument(
         "--cmap",
         default="gray",
         help="Colormap for image display plots (default: 'gray'; use 'gray_r' to reverse).",
@@ -5127,10 +5173,13 @@ def main(argv=None) -> int:
     args = parse_args(argv)
 
     global SIGMA_BKG, SIGMA_FWHM, SIGMA_DX, SIGMA_DY
+    global SIGMA_FLUX, POLY_DEG
     SIGMA_BKG = args.sig_bkg
     SIGMA_FWHM = args.sig_fwhm
     SIGMA_DX = args.sig_dx
     SIGMA_DY = args.sig_dy
+    SIGMA_FLUX = args.sig_flux
+    POLY_DEG = args.flux_poly_deg
 
     assert args.tID not in (args.cID or []), (
         f"tID={args.tID} must not be in cID={args.cID}"

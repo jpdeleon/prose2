@@ -166,7 +166,7 @@ Everything is written to `--results_dir`:
 | Apertures | `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
 | Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--centroid_method`, `--ccd_trim` |
 | Time & plots | `--use_barycorrpy`, `--bin_size_minutes`, `--plot_gaia_sources`, `--gif`, `--gif_stride` |
-| Light-curve cleaning | `--sig_bkg`, `--sig_fwhm`, `--sig_dx`, `--sig_dy` |
+| Light-curve cleaning | `--sig_bkg`, `--sig_fwhm`, `--sig_dx`, `--sig_dy`, `--sig_flux`, `--flux_poly_deg` |
 | MuSCAT raw calibration | `--calib_dir` |
 | Run control | `--test_run`, `--test_run_frames`, `--verbose` |
 
@@ -184,6 +184,14 @@ The `--sig_*` flags sigma-clip the differential light curve on the sky
 background (`--sig_bkg`), FWHM (`--sig_fwhm`), and drift in X/Y (`--sig_dx`,
 `--sig_dy`). All four are **disabled by default**; pass a sigma threshold to
 clip outliers (e.g. cloud-affected frames) on that axis.
+
+`--sig_flux` clips outliers on the **raw target flux time series**: a
+polynomial of degree `--flux_poly_deg` (default 2) is fitted to flux versus
+time and frames whose residual deviates by more than `--sig_flux` standard
+deviations are rejected. Detrending first keeps a slow trend (airmass ramp,
+collimation drift) from inflating the scatter used for the sigma threshold,
+so transients such as satellite streaks or cosmic-ray hits on the target
+aperture stand out and are removed. It is also **disabled by default**.
 
 `--plot_gaia_sources` overlays the queried Gaia source positions (projected
 into each cutout's WCS) on the target zoom panels of the `*_apertures.png` and

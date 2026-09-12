@@ -88,3 +88,52 @@ def test_weights_single_comparison_star():
     w = weights(fluxes)
     assert w.shape == (2,)
     assert np.all(np.isfinite(w))
+
+
+def test_sigma_clip_flux_poly():
+    rng = np.random.default_rng(42)
+    n = 500
+    time = 2461200.0 + np.cumsum(rng.uniform(0.01, 0.02, n))
+    # smooth quadratic trend the plain mean-based clip would mistake for scatter
+    base = 40000.0 + 800.0 * (time - time.min()) + 50.0 * (time - time.min()) ** 2
+    flux = base + rng.normal(0, 120, n)
+    out_idx = [40, 150, 333]
+    flux[out_idx] += rng.choice([-1, 1], 3) * rng.uniform(2500, 5000, 3)
+
+    f = Fluxes(flux, time=time, errors=np.ones(n), target=0, aperture=0)
+    mask = f.sigma_clip_flux_poly(sigma=6.0, degree=2, return_mask=True)
+    assert isinstance(mask, np.ndarray)
+    assert mask.dtype == bool
+    # exactly the injected spikes are rejected, nothing else
+    assert not np.any(mask[out_idx])
+    assert np.count_nonzero(~mask) == 3
+    # without detrending, the trend inflates sigma and nothing is rejected
+    m = np.ones(n, dtype=bool)
+    for _ in range(5):
+        m &= np.abs(flux - np.nanmean(flux)) < np.nanstd(flux[m]) * 6.0
+    assert np.count_nonzero(~m) == 0
+
+    # masked instance shares the frame mask across the whole time axis
+    clipped = f.sigma_clip_flux_poly(sigma=6.0, degree=2)
+    assert len(clipped.time) == n - 3
+    assert "bkg" not in clipped.data or len(clipped.data["bkg"]) == n - 3
+
+    # too few points to fit: warn and leave flux unmasked
+    g = Fluxes(flux[:2], time=time[:2], target=0, aperture=0)
+    with pytest.warns(UserWarning, match="fewer than"):
+        kept = g.sigma_clip_flux_poly(sigma=6.0, degree=2)
+    assert len(kept.time) == 2
+
+    # time-less 1D series falls back to frame index
+    h = Fluxes(flux, target=0, aperture=0)
+    mask_h = h.sigma_clip_flux_poly(sigma=6.0, degree=2, return_mask=True)
+    assert np.count_nonzero(~mask_h) == 3
+
+
+def test_sigma_clip_flux_poly_guards():
+    with pytest.raises(ValueError, match="target and aperture"):
+        Fluxes(np.random.rand(3, 50)).sigma_clip_flux_poly(sigma=6.0)
+    with pytest.raises(ValueError, match="degree"):
+        Fluxes(np.random.rand(50), target=0, aperture=0).sigma_clip_flux_poly(
+            sigma=6.0, degree=-1
+        )
