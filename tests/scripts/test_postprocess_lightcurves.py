@@ -83,6 +83,61 @@ def test_clip_df_rejects_spikes_keeps_nan_err(tmp_path):
     assert stats["n_clipped"] == n - stats["n_kept"]
 
 
+def test_clip_df_excludes_jd_range_before_fitting(tmp_path):
+    n = 150
+    time = 2461200.0 + np.arange(n) * 0.01
+    flux = np.ones(n)
+    flux[10] += 0.02  # a real outlier inside the kept range
+    # A large instrumental drift confined to the tail: if it were included in
+    # the trend fit it would pull the polynomial and change which in-range
+    # points look like outliers.
+    flux[120:] += np.linspace(0, 5.0, n - 120)
+    err = np.full(n, 0.001)
+    df = pd.DataFrame({"BJD_TDB": time, "Flux": flux, "Err": err})
+
+    cutoff = time[119] + 0.005  # strictly between index 119 and 120
+    mask, stats = pp.clip_df(
+        df, sigma=5.0, degree=2, iterations=5, exclude_after_jd=cutoff
+    )
+    assert stats["n_excluded_range"] == n - 120
+    assert not mask[120:].any()
+    assert not mask[10]
+
+    expected_in_range = flux_sigma_clip_mask(
+        time[:120], flux[:120], sigma=5.0, degree=2, iterations=5
+    )
+    assert np.array_equal(mask[:120], expected_in_range)
+
+
+def test_clip_df_excludes_before_and_after_jd(tmp_path):
+    n = 100
+    time = 2461200.0 + np.arange(n) * 0.01
+    flux = np.ones(n)
+    err = np.full(n, 0.001)
+    df = pd.DataFrame({"BJD_TDB": time, "Flux": flux, "Err": err})
+
+    mask, stats = pp.clip_df(
+        df,
+        sigma=5.0,
+        degree=2,
+        iterations=5,
+        exclude_before_jd=time[10],
+        exclude_after_jd=time[89],
+    )
+    assert stats["n_excluded_range"] == 20
+    assert not mask[:10].any()
+    assert mask[10:90].all()
+    assert not mask[90:].any()
+
+
+def test_clip_df_no_exclusion_reports_zero_excluded_range(tmp_path):
+    path = tmp_path / "TOI123_muscat2_g_260811.csv"
+    _make_csv(path)
+    df = read_lightcurve(path)
+    _, stats = pp.clip_df(df, sigma=5.0, degree=2, iterations=5)
+    assert stats["n_excluded_range"] == 0
+
+
 def test_clip_df_falls_back_to_row_index_time(tmp_path):
     path = tmp_path / "TOI123_muscat2_g_260811.csv"
     rng = np.random.default_rng(3)
@@ -214,3 +269,77 @@ def test_run_missing_results_dir():
     args = pp.parse_args(["/nonexistent/results"])
     with pytest.raises(FileNotFoundError):
         pp.run(args)
+
+
+def test_parse_args_jd_exclusion_defaults_to_none(tmp_path):
+    args = pp.parse_args([str(tmp_path)])
+    assert args.exclude_before_jd is None
+    assert args.exclude_after_jd is None
+
+
+def test_run_rejects_before_not_less_than_after(tmp_path, band_run):
+    results_dir, _ = band_run
+    args = pp.parse_args(
+        [
+            str(results_dir),
+            "--exclude-before-jd",
+            "2461200.5",
+            "--exclude-after-jd",
+            "2461200.5",
+        ]
+    )
+    with pytest.raises(ValueError, match="exclude-before-jd.*exclude-after-jd"):
+        pp.run(args)
+
+
+def test_run_with_jd_exclusion_apply_drops_rows_and_reports(tmp_path, band_run):
+    results_dir, stems = band_run
+    df0 = pd.read_csv(results_dir / f"{stems[0]}.csv")
+    cutoff = float(df0["BJD_TDB"].iloc[59]) + 1e-6  # keep the first 60, drop the rest
+
+    args = pp.parse_args(
+        [
+            str(results_dir),
+            "--sigma",
+            "5",
+            "--degree",
+            "2",
+            "--exclude-after-jd",
+            str(cutoff),
+            "--apply",
+            "--target",
+            "KIC",
+            "--inst",
+            "muscat2",
+            "--date",
+            "260810",
+        ]
+    )
+    report = pp.run(args)
+    assert report["ok"] and report["applied"]
+    assert report["exclude_after_jd"] == pytest.approx(cutoff)
+    assert report["exclude_before_jd"] is None
+    assert report["files"][0]["n_excluded_range"] == 60
+    df_after = pd.read_csv(results_dir / f"{stems[0]}.csv")
+    assert len(df_after) == report["files"][0]["n_kept"]
+    assert len(df_after) <= 60
+
+
+def test_run_with_jd_exclusion_preview_writes_file(tmp_path, band_run):
+    results_dir, _ = band_run
+    df0 = pd.read_csv(results_dir / "KIC_muscat2_gp_260810.csv")
+    cutoff = float(df0["BJD_TDB"].iloc[59])
+    preview_path = tmp_path / "preview.png"
+    args = pp.parse_args(
+        [
+            str(results_dir),
+            "--exclude-before-jd",
+            str(cutoff),
+            "--preview",
+            str(preview_path),
+        ]
+    )
+    report = pp.run(args)
+    assert report["ok"]
+    assert report["exclude_before_jd"] == pytest.approx(cutoff)
+    assert preview_path.is_file()

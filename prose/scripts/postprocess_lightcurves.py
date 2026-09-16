@@ -16,6 +16,13 @@ Rows whose ``Err`` is a finite non-positive value are always rejected. A NaN
 an outlier filter must not silently drop otherwise-real photometry. When
 ``BJD_TDB`` is absent or fully non-finite, the row index is used as the time
 axis so the clip still runs.
+
+``--exclude-before-jd``/``--exclude-after-jd`` drop rows outside a
+``[before, after]`` window on that same time axis *before* the sigma-clip
+trend is fitted, so a gap or a bad head/tail segment (e.g. clouds, a
+meridian flip) cannot skew the fit used to reject the rest. This compares
+against the finished light-curve's own time axis, not the raw header JD
+used by ``run_photometry``'s identically-named flags.
 """
 
 from __future__ import annotations
@@ -73,18 +80,56 @@ def _time_axis(df: pd.DataFrame) -> np.ndarray:
     return np.arange(len(df), dtype=float)
 
 
+def _range_mask(
+    time: np.ndarray,
+    exclude_before_jd: float | None,
+    exclude_after_jd: float | None,
+) -> np.ndarray:
+    """Keep-mask for an optional ``[exclude_before_jd, exclude_after_jd]`` window.
+
+    ``exclude_before_jd`` drops rows with a timestamp less than it;
+    ``exclude_after_jd`` drops rows with a timestamp greater than it. Either
+    (or both) may be ``None`` to skip that bound. Compares against the same
+    time axis used for the sigma-clip fit (``BJD_TDB``, or the row index when
+    that column is absent/non-finite) -- not the raw header JD used by
+    ``run_photometry``'s own ``--exclude_after_jd``/``--exclude_before_jd``.
+    """
+    mask = np.ones(len(time), dtype=bool)
+    if exclude_before_jd is not None:
+        mask &= time >= exclude_before_jd
+    if exclude_after_jd is not None:
+        mask &= time <= exclude_after_jd
+    return mask
+
+
 def clip_df(
     df: pd.DataFrame,
     sigma: float = 5.0,
     degree: int = 2,
     iterations: int = 5,
+    exclude_before_jd: float | None = None,
+    exclude_after_jd: float | None = None,
 ) -> tuple[np.ndarray, dict]:
-    """Compute the keep-mask and a stats dict for one light-curve."""
+    """Compute the keep-mask and a stats dict for one light-curve.
+
+    When ``exclude_before_jd``/``exclude_after_jd`` are given, rows outside
+    that window are dropped first and excluded from the polynomial fit used
+    by the sigma-clip, so a gap or a bad tail/head segment cannot skew the
+    trend fitted to the data that remains.
+    """
     time = _time_axis(df)
     flux = np.asarray(df[FLUX_KEY], dtype=float)
-    mask = flux_sigma_clip_mask(
-        time, flux, sigma=sigma, degree=degree, iterations=iterations
-    )
+    range_mask = _range_mask(time, exclude_before_jd, exclude_after_jd)
+    n_excluded_range = int((~range_mask).sum())
+    mask = np.zeros(len(df), dtype=bool)
+    if range_mask.any():
+        mask[range_mask] = flux_sigma_clip_mask(
+            time[range_mask],
+            flux[range_mask],
+            sigma=sigma,
+            degree=degree,
+            iterations=iterations,
+        )
     err = pd.to_numeric(df[ERR_KEY], errors="coerce")
     mask = mask & ~(np.isfinite(err) & (err <= 0))
     n = len(df)
@@ -95,6 +140,7 @@ def clip_df(
         "n": n,
         "n_clipped": n_clipped,
         "n_kept": n_kept,
+        "n_excluded_range": n_excluded_range,
         "kept_fraction": round(n_kept / n, 6) if n else 0.0,
         "sigma": sigma,
         "degree": degree,
@@ -115,13 +161,22 @@ def analyze_csvs(
     sigma: float,
     degree: int,
     iterations: int,
+    exclude_before_jd: float | None = None,
+    exclude_after_jd: float | None = None,
 ) -> tuple[dict[str, np.ndarray], list[dict]]:
     """Clip every CSV; return ``{filename: keep-mask}`` and a per-file report."""
     masks: dict[str, np.ndarray] = {}
     report: list[dict] = []
     for path in csvs:
         df = read_lightcurve(path)
-        mask, stats = clip_df(df, sigma, degree, iterations)
+        mask, stats = clip_df(
+            df,
+            sigma,
+            degree,
+            iterations,
+            exclude_before_jd=exclude_before_jd,
+            exclude_after_jd=exclude_after_jd,
+        )
         stats["file"] = path.name
         masks[path.name] = mask
         report.append(stats)
@@ -203,6 +258,8 @@ def plot_preview(
     sigma: float,
     degree: int,
     path: Path,
+    exclude_before_jd: float | None = None,
+    exclude_after_jd: float | None = None,
 ) -> None:
     """One panel per band: kept scatter in the band's color, rejected frames in red, the trend."""
     fig, axes = plt.subplots(
@@ -218,10 +275,15 @@ def plot_preview(
         mask = masks[p.name]
         time = _time_axis(df)
         flux = np.asarray(df[FLUX_KEY], dtype=float)
-        t = time - _guess_min_time(time)
+        t0 = _guess_min_time(time)
+        t = time - t0
         c = band_color(_band_of(p))
         ax.plot(t[mask], flux[mask], ".", c=c, alpha=0.4, ms=4)
         ax.plot(t[~mask], flux[~mask], "rx", ms=7, mew=1.5)
+        if exclude_before_jd is not None:
+            ax.axvline(exclude_before_jd - t0, color="gray", ls="--", lw=1, alpha=0.7)
+        if exclude_after_jd is not None:
+            ax.axvline(exclude_after_jd - t0, color="gray", ls="--", lw=1, alpha=0.7)
         keep = mask & np.isfinite(time) & np.isfinite(flux)
         if keep.sum() > degree:
             # Fit against t (time shifted near zero), not raw time (BJD ~
@@ -412,12 +474,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--confmode", default="", help="config-mode token (single/multi)"
     )
     parser.add_argument("--telescope", default="", help="telescope id for multisite")
+    parser.add_argument(
+        "--exclude-before-jd",
+        "--exclude_before_jd",
+        dest="exclude_before_jd",
+        type=float,
+        default=None,
+        help="Drop rows with a time (BJD_TDB, or row index when that column is "
+        "absent/non-finite) less than this value, before fitting the sigma-clip "
+        "trend. Compares against the finished light-curve's own time axis, not "
+        "the raw header JD used by run_photometry's --exclude_before_jd.",
+    )
+    parser.add_argument(
+        "--exclude-after-jd",
+        "--exclude_after_jd",
+        dest="exclude_after_jd",
+        type=float,
+        default=None,
+        help="Drop rows with a time greater than this value, before fitting the "
+        "sigma-clip trend. See --exclude-before-jd for the time axis used.",
+    )
     return parser.parse_args(argv)
 
 
-def _write_preview(path: Path, csvs, masks, sigma, degree) -> None:
+def _write_preview(
+    path: Path,
+    csvs,
+    masks,
+    sigma,
+    degree,
+    exclude_before_jd=None,
+    exclude_after_jd=None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    plot_preview(csvs, masks, sigma, degree, path)
+    plot_preview(
+        csvs,
+        masks,
+        sigma,
+        degree,
+        path,
+        exclude_before_jd=exclude_before_jd,
+        exclude_after_jd=exclude_after_jd,
+    )
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -426,18 +524,43 @@ def run(args: argparse.Namespace) -> dict:
         raise FileNotFoundError(f"results dir not found: {results_dir}")
     if args.apply and (not args.target or not args.inst or not args.date):
         raise ValueError("--apply requires --target, --inst and --date")
+    exclude_before_jd = args.exclude_before_jd
+    exclude_after_jd = args.exclude_after_jd
+    if (
+        exclude_before_jd is not None
+        and exclude_after_jd is not None
+        and not (exclude_before_jd < exclude_after_jd)
+    ):
+        raise ValueError(
+            "--exclude-before-jd must be < --exclude-after-jd; got "
+            f"before={exclude_before_jd} after={exclude_after_jd}"
+        )
     csvs = band_csvs(results_dir)
     if not csvs:
         raise FileNotFoundError(f"no band light-curve CSVs found in {results_dir}")
     masks, report = analyze_csvs(
-        results_dir, csvs, args.sigma, args.degree, args.iterations
+        results_dir,
+        csvs,
+        args.sigma,
+        args.degree,
+        args.iterations,
+        exclude_before_jd=exclude_before_jd,
+        exclude_after_jd=exclude_after_jd,
     )
     applied = False
     preview = None
     written: list[str] = []
     summary_png = None
     if args.preview is not None:
-        _write_preview(args.preview, csvs, masks, args.sigma, args.degree)
+        _write_preview(
+            args.preview,
+            csvs,
+            masks,
+            args.sigma,
+            args.degree,
+            exclude_before_jd=exclude_before_jd,
+            exclude_after_jd=exclude_after_jd,
+        )
         preview = str(args.preview)
     elif args.apply:
         written, summary_png = apply_clip(
@@ -460,6 +583,8 @@ def run(args: argparse.Namespace) -> dict:
         "sigma": args.sigma,
         "degree": args.degree,
         "iterations": args.iterations,
+        "exclude_before_jd": exclude_before_jd,
+        "exclude_after_jd": exclude_after_jd,
         "applied": applied,
         "n_files": len(report),
         "files": report,
