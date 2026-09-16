@@ -23,6 +23,10 @@ trend is fitted, so a gap or a bad head/tail segment (e.g. clouds, a
 meridian flip) cannot skew the fit used to reject the rest. This compares
 against the finished light-curve's own time axis, not the raw header JD
 used by ``run_photometry``'s identically-named flags.
+
+``--sigma none`` (or ``off``/empty) disables the sigma-clip step entirely,
+so a run can drop only the excluded JD range (and the always-on invalid-Err
+rows) without also sigma-clipping the rest of the light-curve.
 """
 
 from __future__ import annotations
@@ -104,7 +108,7 @@ def _range_mask(
 
 def clip_df(
     df: pd.DataFrame,
-    sigma: float = 5.0,
+    sigma: float | None = 5.0,
     degree: int = 2,
     iterations: int = 5,
     exclude_before_jd: float | None = None,
@@ -115,7 +119,9 @@ def clip_df(
     When ``exclude_before_jd``/``exclude_after_jd`` are given, rows outside
     that window are dropped first and excluded from the polynomial fit used
     by the sigma-clip, so a gap or a bad tail/head segment cannot skew the
-    trend fitted to the data that remains.
+    trend fitted to the data that remains. ``sigma=None`` skips the sigma-clip
+    step entirely -- only the JD-range window and the invalid-``Err`` filter
+    (see module docstring) still apply.
     """
     time = _time_axis(df)
     flux = np.asarray(df[FLUX_KEY], dtype=float)
@@ -123,13 +129,16 @@ def clip_df(
     n_excluded_range = int((~range_mask).sum())
     mask = np.zeros(len(df), dtype=bool)
     if range_mask.any():
-        mask[range_mask] = flux_sigma_clip_mask(
-            time[range_mask],
-            flux[range_mask],
-            sigma=sigma,
-            degree=degree,
-            iterations=iterations,
-        )
+        if sigma is None:
+            mask[range_mask] = True
+        else:
+            mask[range_mask] = flux_sigma_clip_mask(
+                time[range_mask],
+                flux[range_mask],
+                sigma=sigma,
+                degree=degree,
+                iterations=iterations,
+            )
     err = pd.to_numeric(df[ERR_KEY], errors="coerce")
     mask = mask & ~(np.isfinite(err) & (err <= 0))
     n = len(df)
@@ -158,7 +167,7 @@ def band_csvs(results_dir: Path) -> list[Path]:
 def analyze_csvs(
     results_dir: Path,
     csvs: list[Path],
-    sigma: float,
+    sigma: float | None,
     degree: int,
     iterations: int,
     exclude_before_jd: float | None = None,
@@ -252,10 +261,14 @@ def _stem(path: Path) -> str:
     return path.name.rsplit(".csv", 1)[0]
 
 
+def _sigma_label(sigma: float | None) -> str:
+    return "off" if sigma is None else f"{sigma:g}"
+
+
 def plot_preview(
     csvs: list[Path],
     masks: dict[str, np.ndarray],
-    sigma: float,
+    sigma: float | None,
     degree: int,
     path: Path,
     exclude_before_jd: float | None = None,
@@ -308,7 +321,7 @@ def plot_preview(
             )
         ax.set_title(
             f"{p.name}  |  rejected {(~mask).sum()}/{len(mask)} "
-            f"(sigma={sigma:g}, deg={degree})"
+            f"(sigma={_sigma_label(sigma)}, deg={degree})"
         )
         ax.set_ylabel("Flux")
     axes[-1].set_xlabel("time (JD)")
@@ -321,7 +334,7 @@ def plot_lightcurves_from_csv(
     target_name: str,
     instrument: str,
     date: str,
-    sigma: float,
+    sigma: float | None,
     degree: int,
     masks: dict[str, np.ndarray] | None = None,
 ) -> None:
@@ -378,7 +391,7 @@ def plot_lightcurves_from_csv(
     secax.set_xlabel("UTC")
     fig.suptitle(
         f"{target_name} | {instrument} | {date} | post-processed "
-        f"(sigma={sigma:g}, deg={degree})"
+        f"(sigma={_sigma_label(sigma)}, deg={degree})"
     )
     _savefig(fig, path)
 
@@ -421,7 +434,7 @@ def apply_clip(
     target: str,
     inst: str,
     date: str,
-    sigma: float,
+    sigma: float | None,
     degree: int,
     site: str | None = None,
     confmode: str | None = None,
@@ -444,6 +457,13 @@ def apply_clip(
     return written, fig_path.name
 
 
+def _sigma_arg(value: str) -> float | None:
+    """argparse ``type=`` for ``--sigma``: 'none'/'off'/'' disables sigma-clipping."""
+    if value.strip().lower() in ("", "none", "off"):
+        return None
+    return float(value)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m prose.scripts.postprocess_lightcurves",
@@ -454,7 +474,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("results_dir", type=Path, help="run results directory")
     parser.add_argument(
-        "--sigma", type=float, default=5.0, help="clip threshold in sigma"
+        "--sigma",
+        type=_sigma_arg,
+        default=5.0,
+        help="clip threshold in sigma; 'none'/'off' disables sigma-clipping "
+        "entirely so only --exclude-before-jd/--exclude-after-jd and the "
+        "invalid-Err filter still apply",
     )
     parser.add_argument("--degree", type=int, default=2, help="trend polynomial degree")
     parser.add_argument(
