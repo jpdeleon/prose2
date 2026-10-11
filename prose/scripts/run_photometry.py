@@ -4502,10 +4502,18 @@ def _fits_file_number(path: Path) -> int | None:
 
     Raw FITS:   MCT20_1911191480.fits                -> 1480
     Calibrated: MCT20_1911191480_calibrated.fits      -> 1480
+
+    LCO-archive names (MuSCAT3/4, Sinistro, QHY600) carry the frame number
+    as the 4-digit field after the date:
+    coj0m416-sq36-20260804-0098-e91.fits.fz          -> 98
     """
-    m = re.search(r"_(\d{6})(\d{4})(?:_calibrated)?\.fits$", str(path))
+    name = str(path)
+    m = re.search(r"_(\d{6})(\d{4})(?:_calibrated)?\.fits$", name)
     if m:
         return int(m.group(2))
+    m = re.search(r"-\d{8}-(\d{4})-[a-z]\d+(?:[_-]calibrated)?\.fits(?:\.fz)?$", name)
+    if m:
+        return int(m.group(1))
     return None
 
 
