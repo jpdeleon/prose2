@@ -86,6 +86,24 @@ def test_get_instrument(header, expected):
 
 
 @pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("MCT20_1911191480.fits", 1480),
+        ("MCT20_1911191480_calibrated.fits", 1480),
+        # LCO archive names: MuSCAT3/4, Sinistro, QHY600, SBIG
+        ("coj0m416-sq36-20260804-0098-e91.fits.fz", 98),
+        ("coj0m416-sq36-20260804-0098-e91.fits", 98),
+        ("ogg0m406-kb27-20200724-0218-e91.fits", 218),
+        ("lsc1m005-fa15-20240101-0123-e91_calibrated.fits", 123),
+        ("coj2m002-ep12-20240101-0045-e91-calibrated.fits", 45),
+        ("not_a_frame.fits", None),
+    ],
+)
+def test_fits_file_number(path, expected):
+    assert rp._fits_file_number(path) == expected
+
+
+@pytest.mark.parametrize(
     "day_obs, expected",
     [("20250416", "250416"), ("2025-04-16", "250416")],
 )
