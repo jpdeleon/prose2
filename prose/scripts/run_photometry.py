@@ -156,7 +156,7 @@ FPS = 5
 GIF_MAX_PX = 512  # max GIF frame dimension [pix]; larger frames are downsampled
 
 # reference-image / detection defaults (mirror the template notebook)
-MAX_NUM_STARS = 10  # nth brightest stars to keep
+MAX_NUM_STARS = 20  # nth brightest stars to keep
 DETECT_NUM_STARS_FACTOR = 1.5  # detect more stars initially to capture faint targets
 CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
 
@@ -238,7 +238,7 @@ _HEADER_SCORE_WEIGHTS = {
     "background": 0.05,
 }
 CCD_TRIM_SIZE_YX = (0, 0)  # trim image edges [pix]
-MIN_STAR_AREA = 10  # min detected-source area [pix]
+MIN_STAR_AREA = 20  # min detected-source area [pix]
 MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
 ALIGN_DISCARD_TOLERANCE = 0.4  # cross-filter alignments can share <50% top sources
 # Close-companion exclusion for the comparison-star pool. The auto threshold is
