@@ -3881,12 +3881,33 @@ def test_check_refid_exptime_consistency_ignores_single_band(tmp_path):
     assert rp._check_refid_exptime_consistency(refs) == {"gp": 30.0}
 
 
-def test_check_refid_exptime_consistency_skips_bands_without_exptime(tmp_path):
+def test_check_refid_exptime_consistency_warns_for_bands_without_exptime(
+    tmp_path, caplog
+):
     refs = {
         "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
         "rp": _write_fits_with_exptime(tmp_path / "b.fits", None),
     }
-    assert rp._check_refid_exptime_consistency(refs) == {"gp": 30.0}
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        result = rp._check_refid_exptime_consistency(refs)
+
+    assert result == {"gp": 30.0}
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "rp" in warnings[0] and "EXPTIME" in warnings[0]
+
+
+def test_check_refid_exptime_consistency_no_warning_when_all_present(
+    tmp_path, caplog
+):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", 30.0),
+    }
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        rp._check_refid_exptime_consistency(refs)
+
+    assert not caplog.records
 
 
 def test_check_refid_exptime_consistency_reads_extension_header(tmp_path):

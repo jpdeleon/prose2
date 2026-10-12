@@ -4541,10 +4541,17 @@ def _check_refid_exptime_consistency(
     replaced by the nearest frame) or lands minutes apart, where pointing drift
     can shift the FOV between bands. Exposure times within ``tol`` seconds
     (default 1 s) count as equal. Returns the per-band exposure times;
-    bands with no readable EXPTIME are skipped. Raises ``ValueError`` on mismatch.
+    bands with no readable EXPTIME are skipped with a warning. Raises ``ValueError`` on mismatch.
     """
     exptimes = {band: _read_exptime(Path(f)) for band, f in ref_files.items()}
     known = {b: t for b, t in exptimes.items() if not np.isnan(t)}
+    unreadable = [b for b in exptimes if b not in known]
+    if unreadable:
+        logger.warning(
+            f"no readable EXPTIME in the reference frame of band(s) "
+            f"{', '.join(unreadable)}; exposure-time consistency for --refid "
+            "cannot be verified for them"
+        )
     if known and max(known.values()) - min(known.values()) > tol:
         detail = ", ".join(f"{b}={t:g}s" for b, t in known.items())
         raise ValueError(
