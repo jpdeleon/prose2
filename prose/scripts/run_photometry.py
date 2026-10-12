@@ -4517,6 +4517,44 @@ def _fits_file_number(path: Path) -> int | None:
     return None
 
 
+def _read_exptime(path: Path) -> float:
+    """EXPTIME of a FITS file (NaN if absent); falls back to the first image
+    extension for tile-compressed LCO ``.fits.fz`` files."""
+    for ext in (0, 1):
+        try:
+            value = _header_float(fits.getheader(path, ext), "EXPTIME")
+        except (OSError, IndexError):
+            continue
+        if not np.isnan(value):
+            return value
+    return float("nan")
+
+
+def _check_refid_exptime_consistency(
+    ref_files: dict[str, Path], tol: float = 0.01
+) -> dict[str, float]:
+    """Require one exposure time across per-band reference frames.
+
+    An explicit ``--refid`` under per-band self-reference is a *number*, not a
+    time: bands with different exposure times (different cadences) do not share
+    frame numbers, so the number is either missing in some bands (silently
+    replaced by the nearest frame) or lands minutes apart, where pointing drift
+    can shift the FOV between bands. Returns the per-band exposure times;
+    bands with no readable EXPTIME are skipped. Raises ``ValueError`` on mismatch.
+    """
+    exptimes = {band: _read_exptime(Path(f)) for band, f in ref_files.items()}
+    known = {b: t for b, t in exptimes.items() if not np.isnan(t)}
+    if known and max(known.values()) - min(known.values()) > tol:
+        detail = ", ".join(f"{b}={t:g}s" for b, t in known.items())
+        raise ValueError(
+            "--refid with per-band self-reference requires the same exposure "
+            f"time in every band ({detail}); bands with different exposure "
+            "times do not share frame numbers, and far-apart reference frames "
+            "can differ in FOV (pointing drift). Use --ref_band, or drop --refid."
+        )
+    return known
+
+
 def _find_frame_by_number(files: list[Path], number: int) -> int:
     """Return the index of the file whose FITS frame number is closest to *number*."""
     best_i, best_delta = 0, float("inf")
@@ -4764,7 +4802,9 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Reference-frame FITS file number (the 4-digit number after the "
         "date in the filename, e.g. 1480 for MCT20_1911191480.fits). "
         "Searches each band's science frames for the closest match "
-        "(default: 0 for self-reference, middle frame when --ref_band is set).",
+        "(default: 0 for self-reference, middle frame when --ref_band is set). "
+        "With per-band self-reference, errors out if the bands' reference "
+        "frames have different exposure times.",
     )
     ap.add_argument(
         "--ref_select",
@@ -5835,6 +5875,13 @@ def main(argv=None) -> int:
         refid = min(refid, len(ref_files) - 1)
         selected_ref_files[band] = ref_files[refid]
         ref_selection_diagnostics[band] = diag
+
+    if self_reference and args.refid is not None:
+        try:
+            _check_refid_exptime_consistency(selected_ref_files)
+        except ValueError as e:
+            logger.error(str(e))
+            return 1
 
     ref_wcs_ok_by_band: dict[str, bool] = {}
     if self_reference and args.tID is None and target_coord is not None:

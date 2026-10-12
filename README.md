@@ -180,6 +180,13 @@ number after the date in the filename, e.g. `1480` for `MCT20_1911191480.fits`),
 matching the closest science frame in each band (default: 0 for self-reference,
 the middle frame when `--ref_band` is set).
 
+Under per-band self-reference (no `--ref_band`), `--refid` is rejected with an
+error when the bands' reference frames have different `EXPTIME` values. Bands
+with different cadences do not share frame numbers, so the number is either
+missing in some bands (replaced by the nearest frame) or lands far apart in
+time, where pointing drift can change the FOV between bands. Use `--ref_band`
+or omit `--refid` in that case.
+
 The `--sig_*` flags sigma-clip the differential light curve on the sky
 background (`--sig_bkg`), FWHM (`--sig_fwhm`), and drift in X/Y (`--sig_dx`,
 `--sig_dy`). All four are **disabled by default**; pass a sigma threshold to
