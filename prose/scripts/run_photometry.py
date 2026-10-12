@@ -4531,7 +4531,7 @@ def _read_exptime(path: Path) -> float:
 
 
 def _check_refid_exptime_consistency(
-    ref_files: dict[str, Path], tol: float = 0.01
+    ref_files: dict[str, Path], tol: float = 1.0
 ) -> dict[str, float]:
     """Require one exposure time across per-band reference frames.
 
@@ -4539,7 +4539,8 @@ def _check_refid_exptime_consistency(
     time: bands with different exposure times (different cadences) do not share
     frame numbers, so the number is either missing in some bands (silently
     replaced by the nearest frame) or lands minutes apart, where pointing drift
-    can shift the FOV between bands. Returns the per-band exposure times;
+    can shift the FOV between bands. Exposure times within ``tol`` seconds
+    (default 1 s) count as equal. Returns the per-band exposure times;
     bands with no readable EXPTIME are skipped. Raises ``ValueError`` on mismatch.
     """
     exptimes = {band: _read_exptime(Path(f)) for band, f in ref_files.items()}

@@ -3857,6 +3857,25 @@ def test_check_refid_exptime_consistency_raises_when_different(tmp_path):
         rp._check_refid_exptime_consistency(refs)
 
 
+def test_check_refid_exptime_consistency_tolerates_sub_second_difference(tmp_path):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", 30.9),
+    }
+    assert rp._check_refid_exptime_consistency(refs) == {"gp": 30.0, "rp": 30.9}
+
+
+def test_check_refid_exptime_consistency_rejects_difference_above_one_second(
+    tmp_path,
+):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", 31.5),
+    }
+    with pytest.raises(ValueError, match="exposure time"):
+        rp._check_refid_exptime_consistency(refs)
+
+
 def test_check_refid_exptime_consistency_ignores_single_band(tmp_path):
     refs = {"gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0)}
     assert rp._check_refid_exptime_consistency(refs) == {"gp": 30.0}
