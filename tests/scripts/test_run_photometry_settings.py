@@ -491,3 +491,28 @@ def test_bright_contaminant_yields_smaller_aperture_than_faint_neighbour():
     aper_bright = rp._aperture_radii_pix(fwhm, rin_bright)
     aper_faint = rp._aperture_radii_pix(fwhm, rin_faint)
     assert aper_bright.max() < aper_faint.max()
+
+
+# --------------------------- --ref_select time ---------------------------
+
+
+def test_ref_select_time_is_accepted_with_refid():
+    args = rp.parse_args(_argv("--ref_select", "time", "--refid", "1214"))
+    assert args.ref_select == "time"
+
+
+def test_ref_select_time_accepts_dash_spelling():
+    args = rp.parse_args(_argv("--ref-select", "time", "--refid", "5"))
+    assert args.ref_select == "time"
+
+
+def test_ref_select_time_requires_refid():
+    with pytest.raises(SystemExit):
+        rp.parse_args(_argv("--ref_select", "time"))
+
+
+def test_ref_select_time_rejects_ref_band():
+    with pytest.raises(SystemExit):
+        rp.parse_args(
+            _argv("--ref_select", "time", "--refid", "5", "--ref_band", "gp")
+        )

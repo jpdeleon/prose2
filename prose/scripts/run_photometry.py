@@ -1528,6 +1528,8 @@ def format_ref_selection_report(band: str, diagnostics: dict) -> str:
     chosen_path = diagnostics.get("chosen_path")
     if method != "quality":
         lines.append(f"chosen frame: {Path(chosen_path).name if chosen_path else '?'}")
+        if diagnostics.get("offset_s") is not None:
+            lines.append(f"offset from anchor: {diagnostics['offset_s']:.1f} s")
         return "\n".join(lines) + "\n"
 
     top_k = diagnostics.get("top_k", REF_SELECT_DEFAULT_TOP_K)
@@ -4575,6 +4577,77 @@ def _find_frame_by_number(files: list[Path], number: int) -> int:
     return best_i
 
 
+# --ref_select time: warn when a band's nearest frame is further than this
+# (seconds) from the anchor frame -- far-apart frames can differ in FOV.
+TIME_MATCH_WARN_S = 60.0
+
+
+def _frame_jd(path) -> float | None:
+    """Header JD of a frame (header-only read), or None if unreadable."""
+    try:
+        jd, _source = header_jd(_read_quality_header(path))
+    except Exception:  # noqa: BLE001 - any unreadable header means "no time"
+        return None
+    return jd
+
+
+def _closest_frame_by_jd(files: list[Path], jd: float) -> tuple[int, float]:
+    """Index of the frame whose header time is closest to *jd*, and the
+    absolute offset in seconds. Frames without a readable time are skipped."""
+    best_i, best_dt = None, float("inf")
+    for i, fp in enumerate(files):
+        frame_jd = _frame_jd(fp)
+        if frame_jd is None:
+            continue
+        dt = abs(frame_jd - jd)
+        if dt < best_dt:
+            best_i, best_dt = i, dt
+    if best_i is None:
+        raise ValueError("no frame has a readable header time")
+    return best_i, best_dt * 86400.0
+
+
+def _find_time_anchor(
+    sciences: dict[str, list[Path]], number: int
+) -> tuple[str, float]:
+    """Band and header JD of the frame whose FITS file number is exactly
+    *number* (first band, in dict order, that has it)."""
+    for band, files in sciences.items():
+        for fp in files:
+            if _fits_file_number(fp) != number:
+                continue
+            jd = _frame_jd(fp)
+            if jd is None:
+                raise ValueError(
+                    f"--refid {number} (band {band}, {Path(fp).name}) has no "
+                    "readable header time"
+                )
+            return band, jd
+    raise ValueError(
+        f"--ref_select time: no frame numbered {number} in any band "
+        "(an exact match is required to anchor the reference time)"
+    )
+
+
+def _test_run_window(
+    sciences: dict[str, list[Path]], refid: int | None, nrf: int, by_time: bool = False
+) -> dict[str, list[Path]]:
+    """Per-band ``--test_run`` subset of *nrf* frames: the first *nrf*, or a
+    window centred on the ``--refid`` frame (by number, or by header time)."""
+    if refid is None:
+        return {b: fs[:nrf] for b, fs in sciences.items()}
+    anchor_jd = _find_time_anchor(sciences, refid)[1] if by_time else None
+    windows = {}
+    for b, fs in sciences.items():
+        if by_time:
+            center = _closest_frame_by_jd(fs, anchor_jd)[0]
+        else:
+            center = _find_frame_by_number(fs, refid)
+        start = max(0, center - nrf // 2)
+        windows[b] = fs[start : start + nrf]
+    return windows
+
+
 def _normalize_toi_name(name: str) -> str:
     """Convert TOI names to MAST-compatible format.
 
@@ -4817,13 +4890,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument(
         "--ref_select",
         "--ref-select",
-        choices=["position", "quality"],
+        choices=["position", "quality", "time"],
         default="position",
         help="Reference-frame selection strategy: 'position' (default, "
         "unchanged legacy behavior -- first frame for self-reference, "
         "middle frame for --ref_band) or 'quality' (fast header + pixel "
-        "quality pre-check picks the sharpest, cleanest available frame). "
-        "Ignored when --refid is set (explicit override always wins).",
+        "quality pre-check picks the sharpest, cleanest available frame) "
+        "or 'time' (requires --refid: the frame numbered --refid anchors a "
+        "header time, and each band uses its frame closest in time to it, "
+        "so bands with different cadences stay simultaneous; per-band "
+        "self-reference only). Otherwise ignored when --refid is set "
+        "(explicit override always wins).",
     )
     ap.add_argument(
         "--ref_select_top_k",
@@ -5197,6 +5274,14 @@ def parse_args(argv=None) -> argparse.Namespace:
             f"max aperture radius ({args.aper_radii.max():g}) must be <= "
             f"inner sky annulus radius ({args.annulus[0]:g})"
         )
+    if args.ref_select == "time":
+        if args.refid is None:
+            ap.error("--ref_select time requires --refid")
+        if args.ref_band is not None:
+            ap.error(
+                "--ref_select time applies to per-band self-reference; "
+                "do not combine it with --ref_band"
+            )
     if args.exclude_after_jd is not None and args.exclude_before_jd is not None:
         if len(args.exclude_after_jd) != len(args.exclude_before_jd):
             ap.error(
@@ -5497,14 +5582,13 @@ def main(argv=None) -> int:
 
     if instrument != "muscat2" and instrument != "muscat" and args.test_run:
         nrf = args.test_run_frames
-        if args.refid is not None:
-            new_sciences = {}
-            for b, fs in sciences.items():
-                start = max(0, _find_frame_by_number(fs, args.refid) - nrf // 2)
-                new_sciences[b] = fs[start : start + nrf]
-            sciences = new_sciences
-        else:
-            sciences = {b: fs[:nrf] for b, fs in sciences.items()}
+        try:
+            sciences = _test_run_window(
+                sciences, args.refid, nrf, by_time=args.ref_select == "time"
+            )
+        except ValueError as e:
+            logger.error(str(e))
+            return 1
         logger.info(f"test-run: limiting to {nrf} frames per band (refid={args.refid})")
 
     active_bands = [b for b in args.bands if sciences.get(b)]
@@ -5687,14 +5771,13 @@ def main(argv=None) -> int:
                 return 1
         if args.test_run:
             nrf = args.test_run_frames
-            if args.refid is not None:
-                new_sciences = {}
-                for b, fs in sciences.items():
-                    start = max(0, _find_frame_by_number(fs, args.refid) - nrf // 2)
-                    new_sciences[b] = fs[start : start + nrf]
-                sciences = new_sciences
-            else:
-                sciences = {b: fs[:nrf] for b, fs in sciences.items()}
+            try:
+                sciences = _test_run_window(
+                    sciences, args.refid, nrf, by_time=args.ref_select == "time"
+                )
+            except ValueError as e:
+                logger.error(str(e))
+                return 1
         counts = {b: len(sciences.get(b, [])) for b in args.bands}
         logger.info(f"frames per band: {counts}")
         active_bands = [b for b in args.bands if sciences.get(b)]
@@ -5816,6 +5899,19 @@ def main(argv=None) -> int:
     # benefit. Positional selection is cheap arithmetic and doesn't care, but
     # this cache keeps the two code paths uniform.
     _quality_selection_cache: dict[tuple, tuple[int, dict]] = {}
+    time_anchor_band, time_anchor_jd = None, None
+    if args.ref_select == "time":
+        try:
+            time_anchor_band, time_anchor_jd = _find_time_anchor(
+                {b: sciences[b] for b in ordered_bands}, args.refid
+            )
+        except ValueError as e:
+            logger.error(str(e))
+            return 1
+        logger.info(
+            f"ref_select=time: frame {args.refid} ({time_anchor_band}) "
+            f"anchors the reference time (JD {time_anchor_jd:.6f})"
+        )
     for band in ordered_bands:
         band_files = sciences[band]
         if self_reference:
@@ -5823,7 +5919,26 @@ def main(argv=None) -> int:
         else:
             ref_files, default_refid = sciences[ref_band], len(sciences[ref_band]) // 2
 
-        if args.refid is not None:
+        if args.ref_select == "time":
+            try:
+                refid, offset_s = _closest_frame_by_jd(ref_files, time_anchor_jd)
+            except ValueError as e:
+                logger.error(f"[{band}] ref_select=time: {e}")
+                return 1
+            chosen = Path(ref_files[refid])
+            logger.info(
+                f"[{band}] ref_select=time: chose {chosen.name} "
+                f"(offset {offset_s:.1f}s from frame {args.refid} "
+                f"in {time_anchor_band})"
+            )
+            if offset_s > TIME_MATCH_WARN_S:
+                logger.warning(
+                    f"[{band}] ref_select=time: nearest frame is {offset_s:.0f}s "
+                    f"from the anchor (> {TIME_MATCH_WARN_S:.0f}s); the FOV may "
+                    "differ from the other bands"
+                )
+            diag = {"method": "time", "chosen_path": chosen, "offset_s": offset_s}
+        elif args.refid is not None:
             refid = _find_frame_by_number(ref_files, args.refid)
             diag = {"method": "explicit --refid"}
         elif args.ref_select == "quality" and _quality_select_eligible(instrument):
@@ -5884,7 +5999,7 @@ def main(argv=None) -> int:
         selected_ref_files[band] = ref_files[refid]
         ref_selection_diagnostics[band] = diag
 
-    if self_reference and args.refid is not None:
+    if self_reference and args.refid is not None and args.ref_select != "time":
         try:
             _check_refid_exptime_consistency(selected_ref_files)
         except ValueError as e:
