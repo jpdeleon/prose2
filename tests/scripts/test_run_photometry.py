@@ -3826,3 +3826,138 @@ def test_parse_args_display_stack_nframes_default_and_override():
         rp.parse_args(base + ["--display-stack-nframes", "9"]).display_stack_nframes
         == 9
     )
+
+
+def _write_fits_with_exptime(path, exptime, ext=0):
+    hdr = fits.Header()
+    if exptime is not None:
+        hdr["EXPTIME"] = exptime
+    if ext == 0:
+        fits.PrimaryHDU(np.zeros((2, 2)), header=hdr).writeto(path)
+    else:
+        hdus = [fits.PrimaryHDU(), fits.ImageHDU(np.zeros((2, 2)), header=hdr)]
+        fits.HDUList(hdus).writeto(path)
+    return path
+
+
+def test_check_refid_exptime_consistency_passes_when_equal(tmp_path):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", 30.0),
+    }
+    assert rp._check_refid_exptime_consistency(refs) == {"gp": 30.0, "rp": 30.0}
+
+
+def test_check_refid_exptime_consistency_raises_when_different(tmp_path):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", 60.0),
+    }
+    with pytest.raises(ValueError, match="exposure time"):
+        rp._check_refid_exptime_consistency(refs)
+
+
+def test_check_refid_exptime_consistency_tolerates_sub_second_difference(tmp_path):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", 30.9),
+    }
+    assert rp._check_refid_exptime_consistency(refs) == {"gp": 30.0, "rp": 30.9}
+
+
+def test_check_refid_exptime_consistency_rejects_difference_above_one_second(
+    tmp_path,
+):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", 31.5),
+    }
+    with pytest.raises(ValueError, match="exposure time"):
+        rp._check_refid_exptime_consistency(refs)
+
+
+def test_check_refid_exptime_consistency_ignores_single_band(tmp_path):
+    refs = {"gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0)}
+    assert rp._check_refid_exptime_consistency(refs) == {"gp": 30.0}
+
+
+def test_check_refid_exptime_consistency_warns_for_bands_without_exptime(
+    tmp_path, caplog
+):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", None),
+    }
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        result = rp._check_refid_exptime_consistency(refs)
+
+    assert result == {"gp": 30.0}
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "rp" in warnings[0] and "EXPTIME" in warnings[0]
+
+
+def test_check_refid_exptime_consistency_no_warning_when_all_present(
+    tmp_path, caplog
+):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", 30.0),
+    }
+    with caplog.at_level("WARNING", logger="prose_run_photometry"):
+        rp._check_refid_exptime_consistency(refs)
+
+    assert not caplog.records
+
+
+def test_check_refid_exptime_consistency_reads_extension_header(tmp_path):
+    refs = {
+        "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0, ext=1),
+        "rp": _write_fits_with_exptime(tmp_path / "b.fits", 45.0, ext=1),
+    }
+    with pytest.raises(ValueError, match="exposure time"):
+        rp._check_refid_exptime_consistency(refs)
+
+
+def _refid_exptime_main_argv(tmp_path, *extra):
+    return [
+        "--target_name",
+        "TOI-6715",
+        "--data_dir",
+        str(tmp_path),
+        "--results_dir",
+        str(tmp_path / "results"),
+        "--bands",
+        "gp",
+        "rp",
+        "--refid",
+        "1",
+        *extra,
+    ]
+
+
+def test_main_refid_with_self_reference_rejects_mixed_exposure_times(tmp_path, caplog):
+    gp = _write_sinistro_fits(tmp_path, "gp.fits", "lsc", filter_name="gp")
+    rp_ = _write_sinistro_fits(tmp_path, "rp.fits", "lsc", filter_name="rp")
+    fits.setval(gp, "EXPTIME", value=30.0)
+    fits.setval(rp_, "EXPTIME", value=60.0)
+
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        rc = rp.main(_refid_exptime_main_argv(tmp_path))
+
+    assert rc == 1
+    assert any(
+        r.levelname == "ERROR" and "exposure time" in r.message for r in caplog.records
+    )
+
+
+def test_main_refid_exposure_check_skipped_with_ref_band(tmp_path, caplog):
+    gp = _write_sinistro_fits(tmp_path, "gp.fits", "lsc", filter_name="gp")
+    rp_ = _write_sinistro_fits(tmp_path, "rp.fits", "lsc", filter_name="rp")
+    fits.setval(gp, "EXPTIME", value=30.0)
+    fits.setval(rp_, "EXPTIME", value=60.0)
+
+    with caplog.at_level("INFO", logger="prose_run_photometry"):
+        rp.main(_refid_exptime_main_argv(tmp_path, "--ref_band", "gp"))
+
+    assert not any("exposure time" in r.message for r in caplog.records)
