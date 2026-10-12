@@ -496,23 +496,50 @@ def test_bright_contaminant_yields_smaller_aperture_than_faint_neighbour():
 # --------------------------- --ref_select time ---------------------------
 
 
-def test_ref_select_time_is_accepted_with_refid():
-    args = rp.parse_args(_argv("--ref_select", "time", "--refid", "1214"))
+def test_ref_select_time_is_accepted_with_ref_time():
+    args = rp.parse_args(_argv("--ref_select", "time", "--ref_time", "02:24:08"))
     assert args.ref_select == "time"
+    assert args.ref_time == "02:24:08"
 
 
-def test_ref_select_time_accepts_dash_spelling():
-    args = rp.parse_args(_argv("--ref-select", "time", "--refid", "5"))
-    assert args.ref_select == "time"
+def test_ref_select_time_accepts_dash_spellings():
+    args = rp.parse_args(_argv("--ref-select", "time", "--ref-time", "2459707.6"))
+    assert args.ref_time == "2459707.6"
 
 
-def test_ref_select_time_requires_refid():
+@pytest.mark.parametrize("fmt", ["02:24", "02:24:08", "2022-05-08T02:24:08",
+                                 "2022-05-08 02:24:08", "2459707.6001"])
+def test_ref_time_accepts_clock_iso_and_jd(fmt):
+    assert rp.parse_args(
+        _argv("--ref_select", "time", "--ref_time", fmt)
+    ).ref_time == fmt
+
+
+def test_ref_select_time_requires_ref_time():
     with pytest.raises(SystemExit):
         rp.parse_args(_argv("--ref_select", "time"))
+
+
+def test_ref_time_requires_ref_select_time():
+    with pytest.raises(SystemExit):
+        rp.parse_args(_argv("--ref_time", "02:24:08"))
+
+
+@pytest.mark.parametrize("bad", ["abc", "25:00:00", "12", "02:61", ""])
+def test_ref_time_rejects_unparseable_values(bad):
+    with pytest.raises(SystemExit):
+        rp.parse_args(_argv("--ref_select", "time", "--ref_time", bad))
+
+
+def test_ref_select_time_rejects_refid():
+    with pytest.raises(SystemExit):
+        rp.parse_args(
+            _argv("--ref_select", "time", "--ref_time", "02:24", "--refid", "5")
+        )
 
 
 def test_ref_select_time_rejects_ref_band():
     with pytest.raises(SystemExit):
         rp.parse_args(
-            _argv("--ref_select", "time", "--refid", "5", "--ref_band", "gp")
+            _argv("--ref_select", "time", "--ref_time", "02:24", "--ref_band", "gp")
         )

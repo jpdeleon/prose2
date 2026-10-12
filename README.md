@@ -187,12 +187,15 @@ missing in some bands (replaced by the nearest frame) or lands far apart in
 time, where pointing drift can change the FOV between bands. Use `--ref_band`
 or omit `--refid` in that case.
 
-`--ref_select time` (requires `--refid`, per-band self-reference only) keeps
-frames simultaneous across bands with different cadences: the frame whose
-FITS number is exactly `--refid` anchors a header time, and each band's
-reference is its frame closest in time to it (offset logged; warned above
-60 s). It replaces the exposure-time check above, which does not apply.
-With `--test_run` each band's window is centred on its time-matched frame.
+`--ref_select time` (requires `--ref_time`; per-band self-reference only)
+keeps frames simultaneous across bands with different cadences: each band's
+reference is its frame whose header time is closest to `--ref_time`. The time
+can be `HH:MM[:SS]` UT (placed on the night of the data, UT-midnight crossings
+handled), `YYYY-MM-DDTHH:MM:SS` UTC, or a Julian date. The offset is logged
+(warned above 60 s) and written to the ref-selection report. It cannot be
+combined with `--refid` or `--ref_band`, and the exposure-time check above does
+not apply. With `--test_run` each band's window is centred on its time-matched
+frame.
 
 The `--sig_*` flags sigma-clip the differential light curve on the sky
 background (`--sig_bkg`), FWHM (`--sig_fwhm`), and drift in X/Y (`--sig_dx`,
