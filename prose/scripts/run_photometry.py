@@ -59,6 +59,8 @@ import argparse
 import csv
 import logging
 import os
+import functools
+import math
 import re
 import sys
 import time as time_module
@@ -1529,7 +1531,7 @@ def format_ref_selection_report(band: str, diagnostics: dict) -> str:
     if method != "quality":
         lines.append(f"chosen frame: {Path(chosen_path).name if chosen_path else '?'}")
         if diagnostics.get("offset_s") is not None:
-            lines.append(f"offset from anchor: {diagnostics['offset_s']:.1f} s")
+            lines.append(f"offset from reference time: {diagnostics['offset_s']:.1f} s")
         return "\n".join(lines) + "\n"
 
     top_k = diagnostics.get("top_k", REF_SELECT_DEFAULT_TOP_K)
@@ -4578,17 +4580,23 @@ def _find_frame_by_number(files: list[Path], number: int) -> int:
 
 
 # --ref_select time: warn when a band's nearest frame is further than this
-# (seconds) from the anchor frame -- far-apart frames can differ in FOV.
+# (seconds) from the requested time -- far-apart frames can differ in FOV.
 TIME_MATCH_WARN_S = 60.0
 
 
-def _frame_jd(path) -> float | None:
-    """Header JD of a frame (header-only read), or None if unreadable."""
+@functools.lru_cache(maxsize=None)
+def _frame_jd_cached(path: str) -> float | None:
     try:
         jd, _source = header_jd(_read_quality_header(path))
     except Exception:  # noqa: BLE001 - any unreadable header means "no time"
         return None
     return jd
+
+
+def _frame_jd(path) -> float | None:
+    """Header JD of a frame (header-only read, cached per path), or None if
+    unreadable."""
+    return _frame_jd_cached(str(path))
 
 
 def _closest_frame_by_jd(files: list[Path], jd: float) -> tuple[int, float]:
@@ -4607,40 +4615,88 @@ def _closest_frame_by_jd(files: list[Path], jd: float) -> tuple[int, float]:
     return best_i, best_dt * 86400.0
 
 
-def _find_time_anchor(
-    sciences: dict[str, list[Path]], number: int
-) -> tuple[str, float]:
-    """Band and header JD of the frame whose FITS file number is exactly
-    *number* (first band, in dict order, that has it)."""
-    for band, files in sciences.items():
-        for fp in files:
-            if _fits_file_number(fp) != number:
-                continue
-            jd = _frame_jd(fp)
-            if jd is None:
-                raise ValueError(
-                    f"--refid {number} (band {band}, {Path(fp).name}) has no "
-                    "readable header time"
-                )
-            return band, jd
+_REF_TIME_CLOCK_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?$")
+_REF_TIME_ISO_RE = re.compile(
+    r"^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?$"
+)
+_MIN_JD = 2_000_000.0  # anything smaller is not a plausible Julian date
+
+
+def _parse_ref_time_spec(text: str) -> tuple[str, float]:
+    """Parse a ``--ref_time`` value without needing any data.
+
+    Returns ``("clock", seconds_of_day_ut)`` for ``HH:MM[:SS]``, or
+    ``("jd", jd)`` for an ISO datetime (UTC) or a Julian date. Raises
+    ``ValueError`` for anything else.
+    """
+    text = str(text).strip()
+    m = _REF_TIME_CLOCK_RE.match(text)
+    if m:
+        h, mi, sec = int(m[1]), int(m[2]), float(m[3] or 0)
+        if h > 23 or mi > 59 or sec >= 60:
+            raise ValueError(f"invalid clock time {text!r}")
+        return "clock", h * 3600 + mi * 60 + sec
+    m = _REF_TIME_ISO_RE.match(text)
+    if m:
+        y, mo, d, h, mi = (int(m[i]) for i in range(1, 6))
+        sec = float(m[6] or 0)
+        iso = f"{y:04d}-{mo:02d}-{d:02d}T{h:02d}:{mi:02d}:{sec:09.6f}"
+        try:
+            return "jd", float(Time(iso, format="isot", scale="utc").jd)
+        except ValueError as e:
+            raise ValueError(f"invalid date/time {text!r}: {e}") from e
+    try:
+        jd = float(text)
+    except ValueError:
+        jd = None
+    if jd is not None and jd >= _MIN_JD:
+        return "jd", jd
     raise ValueError(
-        f"--ref_select time: no frame numbered {number} in any band "
-        "(an exact match is required to anchor the reference time)"
+        f"invalid --ref_time {text!r}: use HH:MM[:SS] (UT), "
+        "YYYY-MM-DDTHH:MM:SS (UTC) or a Julian date"
     )
 
 
+def _resolve_ref_time(spec: tuple[str, float], lo: float, hi: float) -> float:
+    """Absolute JD for a parsed ``--ref_time``. A bare UT clock time is placed
+    on the UTC day (of the data span ``[lo, hi]``) that puts it closest to the
+    span, which also handles observations crossing UT midnight."""
+    kind, value = spec
+    if kind == "jd":
+        return value
+    day0 = math.floor(lo - 0.5) + 0.5  # UTC midnight on/before the first frame
+    candidates = [day0 + k + value / 86400.0 for k in (0, 1, 2)]
+    return min(candidates, key=lambda c: max(lo - c, 0.0, c - hi))
+
+
+def _ref_jd_from_spec(text: str, sciences: dict[str, list[Path]]) -> float:
+    """Resolve ``--ref_time`` to a JD using the frames' overall time span."""
+    spec = _parse_ref_time_spec(text)
+    if spec[0] == "jd":
+        return spec[1]
+    jds = [
+        jd for fs in sciences.values() for f in fs if (jd := _frame_jd(f)) is not None
+    ]
+    if not jds:
+        raise ValueError("no frame has a readable header time")
+    return _resolve_ref_time(spec, min(jds), max(jds))
+
+
 def _test_run_window(
-    sciences: dict[str, list[Path]], refid: int | None, nrf: int, by_time: bool = False
+    sciences: dict[str, list[Path]],
+    refid: int | None,
+    nrf: int,
+    ref_jd: float | None = None,
 ) -> dict[str, list[Path]]:
     """Per-band ``--test_run`` subset of *nrf* frames: the first *nrf*, or a
-    window centred on the ``--refid`` frame (by number, or by header time)."""
-    if refid is None:
+    window centred on the ``--refid`` frame (by number) or on the frame
+    closest to *ref_jd* (``--ref_select time``)."""
+    if refid is None and ref_jd is None:
         return {b: fs[:nrf] for b, fs in sciences.items()}
-    anchor_jd = _find_time_anchor(sciences, refid)[1] if by_time else None
     windows = {}
     for b, fs in sciences.items():
-        if by_time:
-            center = _closest_frame_by_jd(fs, anchor_jd)[0]
+        if ref_jd is not None:
+            center = _closest_frame_by_jd(fs, ref_jd)[0]
         else:
             center = _find_frame_by_number(fs, refid)
         start = max(0, center - nrf // 2)
@@ -4896,11 +4952,20 @@ def parse_args(argv=None) -> argparse.Namespace:
         "unchanged legacy behavior -- first frame for self-reference, "
         "middle frame for --ref_band) or 'quality' (fast header + pixel "
         "quality pre-check picks the sharpest, cleanest available frame) "
-        "or 'time' (requires --refid: the frame numbered --refid anchors a "
-        "header time, and each band uses its frame closest in time to it, "
-        "so bands with different cadences stay simultaneous; per-band "
-        "self-reference only). Otherwise ignored when --refid is set "
-        "(explicit override always wins).",
+        "or 'time' (requires --ref_time: each band uses its frame closest "
+        "in time to it, so bands with different cadences stay simultaneous; "
+        "per-band self-reference, no --refid/--ref_band). Otherwise ignored "
+        "when --refid is set (explicit override always wins).",
+    )
+    ap.add_argument(
+        "--ref_time",
+        "--ref-time",
+        default=None,
+        metavar="TIME",
+        help="Reference time for --ref_select time: HH:MM[:SS] UT (placed on "
+        "the night of the data, UT midnight crossings handled), "
+        "YYYY-MM-DDTHH:MM:SS UTC, or a Julian date. Each band uses its frame "
+        "whose header time is closest to it.",
     )
     ap.add_argument(
         "--ref_select_top_k",
@@ -5274,9 +5339,20 @@ def parse_args(argv=None) -> argparse.Namespace:
             f"max aperture radius ({args.aper_radii.max():g}) must be <= "
             f"inner sky annulus radius ({args.annulus[0]:g})"
         )
+    if args.ref_time is not None and args.ref_select != "time":
+        ap.error("--ref_time requires --ref_select time")
     if args.ref_select == "time":
-        if args.refid is None:
-            ap.error("--ref_select time requires --refid")
+        if args.ref_time is None:
+            ap.error("--ref_select time requires --ref_time")
+        try:
+            _parse_ref_time_spec(args.ref_time)
+        except ValueError as e:
+            ap.error(str(e))
+        if args.refid is not None:
+            ap.error(
+                "--ref_select time is driven by --ref_time; do not combine "
+                "it with --refid"
+            )
         if args.ref_band is not None:
             ap.error(
                 "--ref_select time applies to per-band self-reference; "
@@ -5580,12 +5656,15 @@ def main(argv=None) -> int:
                 )
                 return 1
 
+    # --ref_select time: resolved once from the full frame span (before any
+    # --test_run windowing narrows it) so a clock time lands on the same day.
+    time_ref_jd: float | None = None
     if instrument != "muscat2" and instrument != "muscat" and args.test_run:
         nrf = args.test_run_frames
         try:
-            sciences = _test_run_window(
-                sciences, args.refid, nrf, by_time=args.ref_select == "time"
-            )
+            if args.ref_select == "time":
+                time_ref_jd = _ref_jd_from_spec(args.ref_time, sciences)
+            sciences = _test_run_window(sciences, args.refid, nrf, ref_jd=time_ref_jd)
         except ValueError as e:
             logger.error(str(e))
             return 1
@@ -5772,8 +5851,10 @@ def main(argv=None) -> int:
         if args.test_run:
             nrf = args.test_run_frames
             try:
+                if args.ref_select == "time":
+                    time_ref_jd = _ref_jd_from_spec(args.ref_time, sciences)
                 sciences = _test_run_window(
-                    sciences, args.refid, nrf, by_time=args.ref_select == "time"
+                    sciences, args.refid, nrf, ref_jd=time_ref_jd
                 )
             except ValueError as e:
                 logger.error(str(e))
@@ -5899,18 +5980,18 @@ def main(argv=None) -> int:
     # benefit. Positional selection is cheap arithmetic and doesn't care, but
     # this cache keeps the two code paths uniform.
     _quality_selection_cache: dict[tuple, tuple[int, dict]] = {}
-    time_anchor_band, time_anchor_jd = None, None
     if args.ref_select == "time":
         try:
-            time_anchor_band, time_anchor_jd = _find_time_anchor(
-                {b: sciences[b] for b in ordered_bands}, args.refid
-            )
+            if time_ref_jd is None:
+                time_ref_jd = _ref_jd_from_spec(
+                    args.ref_time, {b: sciences[b] for b in ordered_bands}
+                )
         except ValueError as e:
             logger.error(str(e))
             return 1
         logger.info(
-            f"ref_select=time: frame {args.refid} ({time_anchor_band}) "
-            f"anchors the reference time (JD {time_anchor_jd:.6f})"
+            f"ref_select=time: reference time {Time(time_ref_jd, format='jd').isot} "
+            f"UT (JD {time_ref_jd:.6f})"
         )
     for band in ordered_bands:
         band_files = sciences[band]
@@ -5921,20 +6002,19 @@ def main(argv=None) -> int:
 
         if args.ref_select == "time":
             try:
-                refid, offset_s = _closest_frame_by_jd(ref_files, time_anchor_jd)
+                refid, offset_s = _closest_frame_by_jd(ref_files, time_ref_jd)
             except ValueError as e:
                 logger.error(f"[{band}] ref_select=time: {e}")
                 return 1
             chosen = Path(ref_files[refid])
             logger.info(
                 f"[{band}] ref_select=time: chose {chosen.name} "
-                f"(offset {offset_s:.1f}s from frame {args.refid} "
-                f"in {time_anchor_band})"
+                f"(offset {offset_s:.1f}s from the reference time)"
             )
             if offset_s > TIME_MATCH_WARN_S:
                 logger.warning(
                     f"[{band}] ref_select=time: nearest frame is {offset_s:.0f}s "
-                    f"from the anchor (> {TIME_MATCH_WARN_S:.0f}s); the FOV may "
+                    f"from the reference time (> {TIME_MATCH_WARN_S:.0f}s); the FOV may "
                     "differ from the other bands"
                 )
             diag = {"method": "time", "chosen_path": chosen, "offset_s": offset_s}

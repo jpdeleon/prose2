@@ -3966,6 +3966,7 @@ def test_main_refid_exposure_check_skipped_with_ref_band(tmp_path, caplog):
 # --------------------------- --ref_select time ---------------------------
 
 _T0_JD = 2460000.0
+_MIDNIGHT_JD = 2459707.5  # 2022-05-08 00:00 UT
 
 
 def _write_timed_fits(path, mjd_offset_s, filter_name="gp", exptime=30.0):
@@ -4008,28 +4009,45 @@ def test_closest_frame_by_jd_raises_when_no_frame_has_time(tmp_path):
         rp._closest_frame_by_jd([no_time], _T0_JD)
 
 
+def test_parse_ref_time_spec_clock_formats():
+    assert rp._parse_ref_time_spec("02:24:08") == ("clock", 2 * 3600 + 24 * 60 + 8)
+    assert rp._parse_ref_time_spec("02:24") == ("clock", 2 * 3600 + 24 * 60)
+
+
+def test_parse_ref_time_spec_iso_and_jd():
+    kind, jd = rp._parse_ref_time_spec("2022-05-08T02:24:00")
+    assert kind == "jd"
+    assert jd == pytest.approx(_MIDNIGHT_JD + (2 * 3600 + 24 * 60) / 86400.0)
+    assert rp._parse_ref_time_spec("2022-05-08 02:24:00") == ("jd", jd)
+    assert rp._parse_ref_time_spec("2459707.6001") == ("jd", 2459707.6001)
+
+
+@pytest.mark.parametrize("bad", ["abc", "25:00:00", "12", "02:61", "", "1:2:3:4"])
+def test_parse_ref_time_spec_rejects_bad_values(bad):
+    with pytest.raises(ValueError):
+        rp._parse_ref_time_spec(bad)
+
+
+def test_resolve_ref_time_places_clock_time_inside_span():
+    lo, hi = _MIDNIGHT_JD + 0.10, _MIDNIGHT_JD + 0.22
+    jd = rp._resolve_ref_time(("clock", 3 * 3600), lo, hi)
+    assert jd == pytest.approx(_MIDNIGHT_JD + 3 / 24.0)
+
+
+def test_resolve_ref_time_handles_span_crossing_utc_midnight():
+    lo, hi = _MIDNIGHT_JD + 0.9, _MIDNIGHT_JD + 1.1  # 21:36 -> 02:24 next day
+    before = rp._resolve_ref_time(("clock", 22 * 3600), lo, hi)
+    after = rp._resolve_ref_time(("clock", 1 * 3600), lo, hi)
+    assert before == pytest.approx(_MIDNIGHT_JD + 22 / 24.0)
+    assert after == pytest.approx(_MIDNIGHT_JD + 1 + 1 / 24.0)
+
+
+def test_resolve_ref_time_passes_absolute_jd_through():
+    assert rp._resolve_ref_time(("jd", 2459707.6), 0.0, 1.0) == 2459707.6
+
+
 def _lco_name(number):
     return f"coj0m416-sq36-20260804-{number:04d}-e91.fits"
-
-
-def test_find_time_anchor_locates_exact_frame_number_across_bands(tmp_path):
-    gp = [_write_timed_fits(tmp_path / _lco_name(n), n * 30.0) for n in (1, 2)]
-    ip = [
-        _write_timed_fits(tmp_path / f"ip_{_lco_name(n)}", n * 15.0, "ip")
-        for n in (1214, 1215)
-    ]
-
-    band, jd = rp._find_time_anchor({"gp": gp, "ip": ip}, 1214)
-
-    assert band == "ip"
-    assert jd == pytest.approx(_T0_JD + 1214 * 15.0 / 86400.0, abs=1e-8)
-
-
-def test_find_time_anchor_raises_when_number_absent(tmp_path):
-    gp = [_write_timed_fits(tmp_path / _lco_name(1), 30.0)]
-
-    with pytest.raises(ValueError, match="1214"):
-        rp._find_time_anchor({"gp": gp}, 1214)
 
 
 def _write_sinistro_like(tmp_path, name, offset_s, filter_name, exptime):
@@ -4041,7 +4059,7 @@ def _write_sinistro_like(tmp_path, name, offset_s, filter_name, exptime):
 
 def test_main_ref_select_time_picks_closest_frame_in_each_band(tmp_path, caplog):
     # gp frames 1..3 at t=0,30,60 s ; ip frames 11..16 at t=0,15,...,75 s.
-    # --refid 13 (ip, t=30 s) must map to gp frame 2 (t=30 s).
+    # --ref_time at t=30 s must map to gp frame 2 and ip frame 13.
     for n, t in zip((1, 2, 3), (0.0, 30.0, 60.0)):
         _write_sinistro_like(tmp_path, _lco_name(n), t, "gp", 30.0)
     for n, t in zip(range(11, 17), (0.0, 15.0, 30.0, 45.0, 60.0, 75.0)):
@@ -4059,8 +4077,8 @@ def test_main_ref_select_time_picks_closest_frame_in_each_band(tmp_path, caplog)
         "ip",
         "--ref_select",
         "time",
-        "--refid",
-        "13",
+        "--ref_time",
+        repr(_T0_JD + 30.0 / 86400.0),
     ]
     with caplog.at_level("INFO", logger="prose_run_photometry"):
         rp.main(argv)
@@ -4080,8 +4098,10 @@ def test_test_run_window_by_time_centres_each_band_on_matching_time(tmp_path):
         _write_timed_fits(tmp_path / f"ip_{_lco_name(n)}", n * 15.0, "ip")
         for n in range(20, 40)
     ]
-    # anchor: ip frame 30 -> t = 450 s ; gp frame 15 has t = 450 s (index 5)
-    windows = rp._test_run_window({"gp": gp, "ip": ip}, 30, 4, by_time=True)
+    # t = 450 s: gp frame 15 (index 5), ip frame 30 (index 10)
+    windows = rp._test_run_window(
+        {"gp": gp, "ip": ip}, None, 4, ref_jd=_T0_JD + 450.0 / 86400.0
+    )
 
     assert gp[5] in windows["gp"]
     assert ip[10] in windows["ip"]
