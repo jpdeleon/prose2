@@ -209,7 +209,11 @@ def get_saturation_from_header(h) -> dict:
         else:
             gain = 6.6 if h.get('CONFMODE') == 'central_2k_2x2' else 1.0
             base_limit = 340_000 / gain
-        saturation_limits = {'gp': base_limit, 'rp': base_limit, 'ip': base_limit, 'zs': base_limit}
+        # up/Y/w are schedulable on the SOPHIA-equipped units (ep60+); one limit
+        # per frame comes from SATURATE, so it is the same for every band.
+        saturation_limits = {
+            b: base_limit for b in ('up', 'gp', 'rp', 'ip', 'zs', 'Y', 'w')
+        }
 
     # 0m4x telescopes (LCO 0.4m network: SBIG STL-6303 and QHY600+DeltaRho 350)
     elif h['TELID'].startswith('0m4'):
