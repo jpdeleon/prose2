@@ -159,6 +159,37 @@ def test_get_saturation_from_header_sinistro_central_2k_2x2():
     assert limits_raw["zs"] == pytest.approx(340000.0 / 6.6)
 
 
+def test_get_saturation_from_header_sinistro_sophia_all_schedulable_bands():
+    # SOPHIA (ep60+, from 2026-10-12) adds up/Y/w to the sinistro filter set;
+    # values below are from a real elp1m008-ep60-20261012-0106-e91 header.
+    h = {
+        "TELID": "1m0a",
+        "SITEID": "elp",
+        "INSTRUME": "ep60",
+        "CONFMODE": "full_frame",
+        "GAIN": 1.0,
+        "SATURATE": 286000.0,
+        "MAXLIN": 275000.0,
+        "filter": "Y",
+    }
+    limits = pu.get_saturation_from_header(h)
+    for band in ("up", "gp", "rp", "ip", "zs", "Y", "w"):
+        assert limits[band] == 286000.0, band
+
+
+def test_sinistro_telescope_file_lists_sophia_camera_names():
+    # SOPHIA cameras are "epXX" (counting up from ep60) inside the same
+    # 1M0-SCICAM-SINISTRO instrument; INSTRUME is matched against `names`
+    # verbatim, so an unlisted epXX silently falls back to a default telescope.
+    import yaml
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "data" / "sinistro.telescope"
+    names = yaml.safe_load(path.read_text())["names"]
+    assert "ep60" in names
+    assert "fa03" in names  # legacy Sinistro cameras remain matched
+
+
 # --------------------------- header_jd ---------------------------
 
 

@@ -17,6 +17,7 @@ names:
 - fa16
 - fa19
 - fa20
+- ep60
 keyword_telescope: TELESCOP
 keyword_object: OBJECT
 keyword_image_type: IMAGETYP
