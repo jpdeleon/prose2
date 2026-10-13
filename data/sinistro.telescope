@@ -50,3 +50,5 @@ latlong: [null, null]
 saturation: null
 hdu: 0
 camera_name: Sinistro 4K x 4K 15-micron
+keyword_gain: GAIN
+keyword_read_noise: RDNOISE

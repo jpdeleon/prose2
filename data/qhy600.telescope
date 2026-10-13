@@ -37,3 +37,5 @@ latlong: [null, null]
 saturation: null
 hdu: 0
 camera_name: QHY600 CMOS 9576x6388 3.76-micron (DeltaRho 350)
+keyword_gain: GAIN
+keyword_read_noise: RDNOISE

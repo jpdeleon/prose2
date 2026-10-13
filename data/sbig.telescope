@@ -37,3 +37,5 @@ latlong: [null, null]
 saturation: null
 hdu: 0
 camera_name: SBIG STL-6303 3K x 2K 9-micron
+keyword_gain: GAIN
+keyword_read_noise: RDNOISE

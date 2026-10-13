@@ -148,6 +148,19 @@ class Telescope:
     date_string_format: str = None
     """date string format, default is :code:`None`"""
 
+    keyword_gain: str = None
+    """FITS header keyword holding the per-frame gain (electrons/ADU), default is
+    :code:`None`. When set and the header value is a positive finite number it
+    replaces `gain` in the image metadata; otherwise `gain` is used. Leave unset
+    for raw data whose header gain does not describe the pixel units."""
+
+    keyword_read_noise: str = None
+    """FITS header keyword holding the per-frame read noise, default is
+    :code:`None`. When set and the header value is a positive finite number it
+    replaces `read_noise` in the image metadata; otherwise `read_noise` is used.
+    Useful where read noise depends on camera unit or readout mode (e.g. LCO
+    BANZAI ``RDNOISE``)."""
+
     _default: bool = True
     save: bool = False
 
