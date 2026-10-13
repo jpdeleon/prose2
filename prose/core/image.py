@@ -693,6 +693,21 @@ def _parse_sexagesimal(value, unit):
     return Angle(value, unit).to(u.deg)
 
 
+def _header_positive_float(header, keyword, default):
+    """Header value of `keyword` when it is a positive finite number, else `default`.
+
+    A missing keyword, a non-numeric value (e.g. ``"UNKNOWN"``) or a non-positive
+    or NaN value all fall back to `default`.
+    """
+    if not keyword:
+        return default
+    try:
+        value = float(header.get(keyword))
+    except (TypeError, ValueError):
+        return default
+    return value if np.isfinite(value) and value > 0 else default
+
+
 def FITSImage(
     filepath_or_hdu: Union[str, Path, _BaseHDU],
     verbose: bool = False,
@@ -753,8 +768,10 @@ def FITSImage(
         "jd": header.get(telescope.keyword_jd, None),
         "object": header.get(telescope.keyword_object, None),
         "pixel_scale": telescope.pixel_scale,
-        "gain": telescope.gain,
-        "read_noise": telescope.read_noise,
+        "gain": _header_positive_float(header, telescope.keyword_gain, telescope.gain),
+        "read_noise": _header_positive_float(
+            header, telescope.keyword_read_noise, telescope.read_noise
+        ),
         "overscan": telescope.trimming[::-1],
         "path": path,
         "dimensions": (header.get("NAXIS1", 1), header.get("NAXIS2", 1)),
