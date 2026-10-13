@@ -36,3 +36,5 @@ latlong: [-31.273333, 149.071111]
 saturation: 46000
 hdu: 0
 camera_name: MuSCAT4 (ch ip/i_narrow)
+keyword_gain: GAIN
+keyword_read_noise: RDNOISE

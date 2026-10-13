@@ -166,7 +166,11 @@ def test_header_noise_falls_back_to_telescope_when_value_unusable(tmp_path, bad)
 
 # LCO BANZAI-reduced instruments: headers carry per-frame GAIN (e-/ADU, 1.0) and
 # RDNOISE (e-), verified on real archive frames of each instrument.
-BANZAI_TELESCOPE_FILES = ["sinistro", "sbig", "qhy600"]
+BANZAI_TELESCOPE_FILES = (
+    ["sinistro", "sbig", "qhy600"]
+    + [f"muscat3_{b}" for b in ("gp", "rp", "ip", "zs")]
+    + [f"muscat4_{b}" for b in ("gp", "rp", "ip", "zs")]
+)
 
 
 @pytest.mark.parametrize("name", BANZAI_TELESCOPE_FILES)

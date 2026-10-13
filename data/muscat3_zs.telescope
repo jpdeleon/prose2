@@ -36,3 +36,5 @@ latlong: [20.7075, -156.256111]
 saturation: 50000
 hdu: 0
 camera_name: MuSCAT3 (ch zs/z_narrow)
+keyword_gain: GAIN
+keyword_read_noise: RDNOISE
