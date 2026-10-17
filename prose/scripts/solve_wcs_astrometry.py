@@ -208,6 +208,51 @@ def _header_hint(fits_path: Path) -> dict:
     return hints
 
 
+NOVA_STATUS_URL = "https://nova.astrometry.net/status/{}"
+
+# Frames tried per band before giving up: first, middle and last.
+MAX_SOLVE_FRAMES = 3
+
+
+def _submission_url(submission_id) -> str:
+    if submission_id is None:
+        return "submission id unknown"
+    return f"submission {submission_id}: {NOVA_STATUS_URL.format(submission_id)}"
+
+
+def candidate_frames(files: Sequence[Path], n: int = MAX_SOLVE_FRAMES) -> list[Path]:
+    """Frames to try for a plate solve: first, middle, last (at most *n*),
+    without duplicates, in that order. A bad first frame (focus, clouds,
+    tracking) then no longer fails the whole band."""
+    if not files:
+        return []
+    indices = [0, len(files) // 2, len(files) - 1]
+    picked: list[int] = []
+    for i in indices:
+        if i not in picked:
+            picked.append(i)
+    return [files[i] for i in picked[:n]]
+
+
+def solve_first_valid(
+    files: Sequence[Path], api_key: str, instrument: str | None
+) -> WCS | None:
+    """Plate-solve the first of :func:`candidate_frames` that yields a WCS
+    passing :func:`validate_wcs`; ``None`` if every attempt fails.
+
+    The returned WCS comes from whichever frame solved, which may not be the
+    first; callers inject it into every frame, as they already did for the
+    first-frame solution, so a small pointing drift between frames carries
+    through the same way.
+    """
+    for fp in candidate_frames(files):
+        wcs = upload_and_solve(fp, api_key)
+        if wcs is not None and validate_wcs(wcs, instrument):
+            return wcs
+        logger.warning(f"Plate solve did not succeed on {fp.name}; trying next frame.")
+    return None
+
+
 def upload_and_solve(
     fits_path: Path,
     api_key: str,
@@ -247,7 +292,7 @@ def upload_and_solve(
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", AstropyDeprecationWarning)
-            wcs_header = an.solve_from_image(
+            wcs_header, submission_id = an.solve_from_image(
                 str(fits_path),
                 # photutils is a prose dependency. Without this flag astroquery
                 # uploads a locally extracted source list instead of the FITS file.
@@ -256,14 +301,27 @@ def upload_and_solve(
                 verbose=False,
                 publicly_visible=publicly_visible,
                 allow_commercial_use=allow_commercial_use,
+                # Keep the submission id so a failure can be looked up on nova.
+                return_submission_id=True,
                 **hints,
             )
+    except TimeoutError as exc:
+        # astroquery raises TimeoutError(message, submission_id).
+        sub_id = exc.args[1] if len(exc.args) > 1 else None
+        logger.error(
+            f"Astrometry.net solve timed out after {int(timeout)} s "
+            f"({_submission_url(sub_id)})"
+        )
+        return None
     except Exception as exc:
         logger.error(f"Astrometry.net solve failed: {exc}")
         return None
 
     if not wcs_header:
-        logger.warning("Astrometry.net returned no WCS solution.")
+        logger.warning(
+            "Astrometry.net solver reported failure; no WCS solution "
+            f"({_submission_url(submission_id)})."
+        )
         return None
 
     try:

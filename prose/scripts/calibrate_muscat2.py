@@ -608,15 +608,14 @@ def _calibrate_science_group(
 def _solve_astrometry_net(
     band: str, output_dir: Path, calibrated_paths: list[Path]
 ) -> None:
-    """Solve WCS once via astrometry.net from the first calibrated frame and
-    inject it into every calibrated frame for *band* (pointing is shared
+    """Solve WCS once via astrometry.net (retrying on the middle and last frame
+    if the first fails) and inject it into every calibrated frame for *band* (pointing is shared
     across exposure groups)."""
-    info(f"[{band}] solving WCS on first calibrated frame via astrometry.net")
+    info(f"[{band}] solving WCS via astrometry.net (first, middle, last frame as needed)")
     from prose.scripts.solve_wcs_astrometry import (
         _api_key,
         inject_wcs_into_file,
-        upload_and_solve,
-        validate_wcs,
+        solve_first_valid,
     )
 
     try:
@@ -630,8 +629,8 @@ def _solve_astrometry_net(
         logger.warning(f"[{band}] no calibrated files found; skipping WCS")
         return
 
-    wcs = upload_and_solve(calibrated_files[0], api_key)
-    if wcs is None or not validate_wcs(wcs, "muscat2"):
+    wcs = solve_first_valid(calibrated_files, api_key, "muscat2")
+    if wcs is None:
         info(
             f"[{band}] WCS solving failed via astrometry.net; continuing without astrometry"
         )
