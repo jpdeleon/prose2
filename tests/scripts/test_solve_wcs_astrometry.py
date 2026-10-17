@@ -272,14 +272,15 @@ class TestUploadAndSolve:
     def _mock_an(self, wcs_header):
         """Return a mock AstrometryNet whose solve_from_image returns wcs_header."""
         mock_an = MagicMock()
-        mock_an.return_value.solve_from_image.return_value = wcs_header
+        mock_an.return_value.solve_from_image.return_value = (wcs_header, 123)
         return mock_an
 
     def test_returns_wcs_on_success(self, probe_fits, valid_wcs):
         wcs_header = valid_wcs.to_header()
         with patch("prose.scripts.solve_wcs_astrometry.AstrometryNet") as mock_cls:
             instance = MagicMock()
-            instance.solve_from_image.return_value = wcs_header
+            # return_submission_id=True makes astroquery return (header, id)
+            instance.solve_from_image.return_value = (wcs_header, 123)
             mock_cls.return_value = instance
             result = swa.upload_and_solve(probe_fits, "fake_key")
         assert result is not None
@@ -290,7 +291,7 @@ class TestUploadAndSolve:
     def test_returns_none_on_empty_solution(self, probe_fits):
         with patch("prose.scripts.solve_wcs_astrometry.AstrometryNet") as mock_cls:
             instance = MagicMock()
-            instance.solve_from_image.return_value = {}
+            instance.solve_from_image.return_value = ({}, 123)
             mock_cls.return_value = instance
             result = swa.upload_and_solve(probe_fits, "fake_key")
         assert result is None

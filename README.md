@@ -255,6 +255,10 @@ python -m prose.scripts.run_photometry ... \
   BJD service) is bounded by a wall-clock timeout
   (`prose.utils.NETWORK_TIMEOUT_S`, 30 s) so an unreachable service degrades to
   a cached result or skips astrometry rather than hanging the run.
+- **astrometry.net solves.** The solve log now includes the nova submission id
+  and status URL, and says whether the solver failed or timed out. If the first
+  calibrated frame of a band does not solve, the middle and last frames are
+  tried before the band continues without astrometry.
 - **Comparison-star bounds.** Out-of-range `--cID` values are dropped with a
   warning and fall back to automatic selection rather than crashing.
 - **Avoided stars.** With `--ref_band`, IDs passed to `--avoid_cids` are
