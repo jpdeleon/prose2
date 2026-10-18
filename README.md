@@ -12,6 +12,12 @@ photometry pipeline**: `prose/scripts/run_photometry.py`.
 
 ## `run_photometry`
 
+For reproducible deployments, set `PROSE_CONFIG_FILE` before importing prose to
+load one authoritative, read-only settings/telescope file. See
+[read-only configuration](docs/READONLY_CONFIGURATION.md) for the schema,
+checksum verification and worker-process behavior. Without an explicit file,
+the existing `~/.prose` configuration remains the default.
+
 Given a directory of science frames for a single target, `run_photometry`
 produces calibrated multi-band light curves with a single command:
 
