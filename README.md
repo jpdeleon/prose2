@@ -506,3 +506,70 @@ PROSE_LOCAL_ASTROMETRY_TEST_FITS=/data/example_calibrated.fits \
 PROSE_LOCAL_ASTROMETRY_TEST_CONFIG="$HOME/astrometry/astrometry.cfg" \
 uv run pytest tests/scripts/test_astrometry_local.py -k real_local_solver
 ```
+
+
+### Benchmark local versus online astrometry.net
+
+Run the same explicitly selected calibrated frames through both backends:
+
+```sh
+uv run python -m prose.scripts.benchmark_astrometry \
+  '/data/MuSCAT2/night_calibrated/*_calibrated.fits' \
+  --astrometry-config "$HOME/astrometry/astrometry.cfg" \
+  --index-label '2MASS 4200-4203, all sky tiles' \
+  --limit 3 --repeats 1 --astrometry-timeout 120 \
+  --output-dir "$HOME/temp/astrometry-comparison"
+```
+
+This needs an installed local solver, suitable indexes, and
+`ASTROMETRY_NET_API_KEY` (or astroquery's configured key). It uploads image pixels
+to nova, requesting private visibility by default (`--publicly-visible n`). Public
+visibility can be selected explicitly with `--publicly-visible y`. Original FITS
+files are never edited. The output directory must be new.
+
+The runner extracts the first 2D image HDU, including compressed images, into a
+single-HDU probe with only pointing and pixel-scale hints. Existing WCS/SIP and
+other distortion metadata are excluded so neither backend can reuse an existing
+solution. Both receive the exact same probe. Local and online order alternates
+between pairs. Solves run serially, with a 10-second minimum delay after a nova
+attempt before the next nova attempt (`--online-delay`). Defaults limit the run
+to three frames and one attempt per backend per frame; increase `--limit` or
+`--repeats` explicitly for a larger experiment.
+
+The new experiment directory contains:
+
+- `results.json`: inputs and probe checksums, selected HDUs, settings, source-code
+  hashes, package/solver versions, config checksum, per-attempt status and timing,
+  per-pair WCS differences, and aggregate results.
+- `results.csv`: the paired results flattened into columns for analysis.
+- `inputs/`, `wcs/`, and `logs/`: exact uploaded probes, returned WCS sidecars
+  (including rejected solutions), and individual solver logs.
+
+Timing measures each backend call end to end. Local time includes extraction,
+index loading/search and any lock wait; online time includes upload, queueing,
+solving and polling. Staging copies, benchmark validation and request pacing are
+outside these measurements. Both results undergo the same finite-parameter,
+celestial-axis and header-scale validation. Reports distinguish returned solutions from accepted
+solutions, include failures in overall timing and success rates, and calculate
+the paired nova/local time ratio only where both solutions were accepted.
+Timeouts use the existing backend contracts; nova's timeout does not cancel its
+server job and is not a strict wall limit on every network operation.
+
+WCS comparisons sample a 5-by-5 grid over the full image (`--grid-size`), using
+zero-based pixel centres. They report centre separation and grid median, RMS,
+95th-percentile and maximum angular differences in arcseconds. Pixel differences
+transform local sky positions through the online WCS. This catches orientation
+and distortion differences that a centre-only comparison misses. Aggregate WCS
+agreement statistics appear alongside timing and success counts. Agreement is
+not accuracy against an independent catalog. OS/index caches and nova service
+load are uncontrolled, so repeated timings should not be described as guaranteed
+cold-cache or solver-CPU benchmarks. Record the exact index catalog/release and
+scale/tile coverage with `--index-label`; the config checksum does not checksum
+the index files themselves.
+
+Reports are checkpointed after each attempt, with unavailable metrics as null
+and displayed/serialized numbers limited to six decimal places. A completed
+benchmark exits successfully even if individual solves fail; setup failures exit
+with code 2. Offline tests verify known positional offsets, rotation, distortion,
+compressed-image staging, failure accounting, and request pacing. No measured
+local-versus-online science-frame results are bundled yet.
