@@ -1,4 +1,4 @@
-"""Solve WCS for a FITS image via nova.astrometry.net and apply to science frames.
+"""Solve WCS for a FITS image locally or via nova.astrometry.net and apply to science frames.
 
 Given one representative FITS file (typically the first calibrated science frame),
 this script:
@@ -11,7 +11,12 @@ this script:
    (e.g. ``twirl`` for target and guide-star finding) can use accurate
    astrometry.
 
-The API key is read from the ``ASTROMETRY_NET_API_KEY`` environment variable or
+With ``--backend local``, the installed ``solve-field`` executable and local
+index files replace steps 1-3; no API key or upload is used. Local standalone
+solves write a WCS sidecar only, leaving input images unchanged. Use
+``--astrometry-config`` to select index paths.
+
+The nova API key is read from the ``ASTROMETRY_NET_API_KEY`` environment variable or
 from ``~/.astropy/config/astroquery.cfg`` (the astroquery default location).
 
 Example
@@ -47,12 +52,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
+import shutil
+import signal
+import subprocess
+import tempfile
+import threading
 import sys
+import time
+import warnings
 from pathlib import Path
 from typing import Sequence
-
-import warnings
 
 from astropy.io import fits
 from astropy.utils.decorators import AstropyDeprecationWarning
@@ -115,9 +126,22 @@ _WCS_KEYS = (
 # / ``TIME_KEYS``), so deleting them silently collapses the filename date.
 _PROTECTED_TIME_KEYS = frozenset(
     {
-        "DATE-OBS", "DATE-BEG", "DATE-AVG", "DATE-END", "DATEREF", "DATE",
-        "MJD-OBS", "MJD-BEG", "MJD-AVG", "MJD-END", "MJDREF", "MJD-STRT",
-        "JD", "JD-STRT", "BJD", "TIMESYS",
+        "DATE-OBS",
+        "DATE-BEG",
+        "DATE-AVG",
+        "DATE-END",
+        "DATEREF",
+        "DATE",
+        "MJD-OBS",
+        "MJD-BEG",
+        "MJD-AVG",
+        "MJD-END",
+        "MJDREF",
+        "MJD-STRT",
+        "JD",
+        "JD-STRT",
+        "BJD",
+        "TIMESYS",
     }
 )
 
@@ -166,7 +190,6 @@ def _header_hint(fits_path: Path) -> dict:
         if isinstance(val, (int, float)):
             return float(val)
         val = str(val).strip()
-        parts = val.replace("+", "").replace("-", " ").split()
         sign = -1 if val.startswith("-") else 1
         try:
             if ":" in val:
@@ -175,7 +198,7 @@ def _header_hint(fits_path: Path) -> dict:
                 m = float(segs[1]) if len(segs) > 1 else 0
                 s = float(segs[2]) if len(segs) > 2 else 0
                 return sign * (d + m / 60 + s / 3600)
-            return float(parts[0])
+            return float(val)
         except (ValueError, IndexError):
             return None
 
@@ -188,17 +211,28 @@ def _header_hint(fits_path: Path) -> dict:
     if ra is not None and ra <= 24 and ":" in str(ra_raw):
         ra = ra * 15.0
 
-    if ra is not None:
+    if ra is not None and math.isfinite(ra) and 0 <= ra < 360:
         hints["center_ra"] = float(ra)
-    if dec is not None:
+    if dec is not None and math.isfinite(dec) and -90 <= dec <= 90:
         hints["center_dec"] = float(dec)
-    if ra is not None and dec is not None:
+    if "center_ra" in hints and "center_dec" in hints:
         hints["radius"] = 0.5  # search radius in degrees
 
     instrume = str(hdr.get("INSTRUME", "")).lower()
     from prose.utils import PIXSCALES
 
-    pixscale = PIXSCALES.get(instrume)
+    # Prefer an explicit on-sky header scale (already accounts for binning).
+    pixscale = None
+    for key in ("PIXSCALE", "SECPIX", "CCDSCALE"):
+        try:
+            value = float(hdr[key])
+            if math.isfinite(value) and value > 0:
+                pixscale = value
+                break
+        except (KeyError, TypeError, ValueError):
+            continue
+    if pixscale is None:
+        pixscale = PIXSCALES.get(instrume)
     if pixscale is not None:
         hints["scale_est"] = pixscale
         # Astrometry.net expresses scale_err as a percentage, not a fraction.
@@ -235,7 +269,12 @@ def candidate_frames(files: Sequence[Path], n: int = MAX_SOLVE_FRAMES) -> list[P
 
 
 def solve_first_valid(
-    files: Sequence[Path], api_key: str, instrument: str | None
+    files: Sequence[Path],
+    api_key: str | None,
+    instrument: str | None,
+    *,
+    backend: str = "nova",
+    **local_options,
 ) -> WCS | None:
     """Plate-solve the first of :func:`candidate_frames` that yields a WCS
     passing :func:`validate_wcs`; ``None`` if every attempt fails.
@@ -245,12 +284,258 @@ def solve_first_valid(
     first-frame solution, so a small pointing drift between frames carries
     through the same way.
     """
+    if backend not in ("nova", "local"):
+        raise ValueError(f"Unknown astrometry backend: {backend}")
     for fp in candidate_frames(files):
-        wcs = upload_and_solve(fp, api_key)
-        if wcs is not None and validate_wcs(wcs, instrument):
+        wcs = (
+            solve_local(fp, **local_options)
+            if backend == "local"
+            else upload_and_solve(fp, api_key)
+        )
+        valid = (
+            _validate_local_wcs(wcs, fp, instrument)
+            if backend == "local"
+            else wcs is not None and validate_wcs(wcs, instrument)
+        )
+        if valid:
             return wcs
         logger.warning(f"Plate solve did not succeed on {fp.name}; trying next frame.")
     return None
+
+
+def _positive_timeout(value) -> float:
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("timeout must be finite and positive")
+    return value
+
+
+def add_local_solver_arguments(parser, *, include_timeout=True) -> None:
+    """Shared options for standalone solving, calibration and photometry."""
+    parser.add_argument(
+        "--solve-field",
+        default="solve-field",
+        help="Local solve-field executable (name or path).",
+    )
+    parser.add_argument(
+        "--astrometry-config",
+        type=Path,
+        default=None,
+        help="Local astrometry.net backend config with index paths.",
+    )
+    parser.add_argument(
+        "--astrometry-temp-dir",
+        type=Path,
+        default=None,
+        help="Local solver workspace parent (default: ~/temp).",
+    )
+    if include_timeout:
+        parser.add_argument(
+            "--astrometry-timeout",
+            type=_positive_timeout,
+            default=DEFAULT_TIMEOUT_S,
+            help="Seconds per local attempt, including lock wait (default: %(default)s).",
+        )
+
+
+def local_solver_options(args) -> dict:
+    """Map the common CLI namespace to local solver keyword arguments."""
+    return dict(
+        executable=args.solve_field,
+        config=args.astrometry_config,
+        temp_dir=args.astrometry_temp_dir,
+        timeout=args.astrometry_timeout,
+    )
+
+
+def _validate_local_wcs(wcs, fits_path, instrument) -> bool:
+    if wcs is None or not wcs.has_celestial:
+        return False
+    scale = _header_hint(fits_path).get("scale_est")
+    if scale is None:
+        return validate_wcs(wcs, instrument)
+    from astropy.wcs.utils import proj_plane_pixel_scales
+
+    try:
+        scales = proj_plane_pixel_scales(wcs) * 3600
+        valid = all(
+            math.isfinite(s) and 0.8 * scale <= s <= 1.2 * scale for s in scales
+        )
+    except (ValueError, TypeError):
+        valid = False
+    if not valid:
+        logger.warning("Local WCS rejected: pixel scale inconsistent with input hints.")
+    return valid
+
+
+def solve_local(
+    fits_path: Path,
+    *,
+    executable: str = "solve-field",
+    config: Path | None = None,
+    timeout: float = DEFAULT_TIMEOUT_S,
+    temp_dir: Path | None = None,
+) -> WCS | None:
+    """Run the POSIX astrometry.net solver offline, without editing the input.
+
+    One local solve runs at a time per user/host. The wall deadline includes
+    waiting for that lock and kills the solver process group on expiry. All
+    intermediate products are isolated below *temp_dir* (default ~/temp).
+    PROSE_ASTROMETRY_LOCK can select a shared lock path for service accounts.
+    """
+    timeout = _positive_timeout(timeout)
+    deadline = time.monotonic() + timeout
+    if os.name != "posix":
+        logger.error("Local astrometry.net solving requires a POSIX host.")
+        return None
+    import fcntl
+
+    binary = shutil.which(str(executable))
+    if binary is None:
+        logger.error("Local solve-field executable not found: %s", executable)
+        return None
+    fits_path = Path(fits_path).expanduser().resolve()
+    if not fits_path.is_file():
+        logger.error("Local solver input not found: %s", fits_path)
+        return None
+    if config is not None:
+        config = Path(config).expanduser().resolve()
+        if not config.is_file():
+            logger.error("Local astrometry config not found: %s", config)
+            return None
+    parent = Path(temp_dir or Path.home() / "temp").expanduser().resolve()
+    lock_path = Path(
+        os.environ.get(
+            "PROSE_ASTROMETRY_LOCK", str(Path.home() / "temp/prose-astrometry.lock")
+        )
+    ).expanduser()
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a") as lock:
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        logger.error(
+                            "Local astrometry timeout waiting for solver lock."
+                        )
+                        return None
+                    time.sleep(min(0.1, remaining))
+            with tempfile.TemporaryDirectory(
+                prefix="prose-astrometry-", dir=parent
+            ) as directory:
+                work = Path(directory)
+                wcs_file, solved_file = work / "solution.wcs", work / "solution.solved"
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.error("Local astrometry timeout before solver launch.")
+                    return None
+                command = [
+                    str(Path(binary).resolve()),
+                    "--no-plots",
+                    "--new-fits",
+                    "none",
+                    "--dir",
+                    str(work),
+                    "--temp-dir",
+                    str(work),
+                    "--wcs",
+                    str(wcs_file),
+                    "--solved",
+                    str(solved_file),
+                    "--cpulimit",
+                    str(max(1, math.ceil(remaining))),
+                ]
+                if config is not None:
+                    command.extend(["--backend-config", str(config)])
+                hints = _header_hint(fits_path)
+                if "radius" in hints:
+                    for key, option in (
+                        ("center_ra", "--ra"),
+                        ("center_dec", "--dec"),
+                        ("radius", "--radius"),
+                    ):
+                        command.extend([option, str(hints[key])])
+                if "scale_est" in hints:
+                    scale = hints["scale_est"]
+                    command.extend(
+                        [
+                            "--scale-units",
+                            "arcsecperpix",
+                            "--scale-low",
+                            str(scale * 0.8),
+                            "--scale-high",
+                            str(scale * 1.2),
+                        ]
+                    )
+                command.append(str(fits_path))
+                logger.info(
+                    "Solving %s locally (timeout %.1f s)", fits_path.name, remaining
+                )
+                env = dict(os.environ, TMPDIR=str(work))
+                with (work / "solver.log").open(
+                    "w+", encoding="utf-8", errors="replace"
+                ) as log:
+                    proc = None
+                    timed_out = False
+                    previous_handler = None
+
+                    def interrupted(signum, frame):
+                        raise SystemExit(128 + signum)
+
+                    if threading.current_thread() is threading.main_thread():
+                        previous_handler = signal.signal(signal.SIGTERM, interrupted)
+                    try:
+                        proc = subprocess.Popen(
+                            command,
+                            cwd=work,
+                            env=env,
+                            stdin=subprocess.DEVNULL,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            start_new_session=True,
+                        )
+                        try:
+                            proc.wait(timeout=max(0, deadline - time.monotonic()))
+                        except subprocess.TimeoutExpired:
+                            timed_out = True
+                            logger.error(
+                                "Local astrometry timeout after %.1f s", timeout
+                            )
+                    finally:
+                        if proc is not None:
+                            # Also stop surviving engine/source-extractor descendants.
+                            try:
+                                os.killpg(proc.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            proc.wait()
+                        if previous_handler is not None:
+                            signal.signal(signal.SIGTERM, previous_handler)
+                    log.seek(0, os.SEEK_END)
+                    log.seek(max(0, log.tell() - 8192))
+                    tail = log.read()
+                    if (
+                        timed_out
+                        or proc.returncode
+                        or not solved_file.is_file()
+                        or solved_file.read_bytes() != b"\x01"
+                    ):
+                        logger.warning(
+                            "Local plate solve failed (exit %s): %s",
+                            proc.returncode,
+                            tail,
+                        )
+                        return None
+                    logger.debug("Local solve-field output: %s", tail)
+                return load_wcs_fits(wcs_file)
+    except OSError as exc:
+        logger.error("Cannot run local astrometry.net solver: %s", exc)
+        return None
 
 
 def upload_and_solve(
@@ -483,8 +768,12 @@ def solve_and_apply(
     publicly_visible: str = "y",
     allow_commercial_use: str = "n",
     dry_run: bool = False,
+    backend: str = "nova",
+    executable: str = "solve-field",
+    config: Path | None = None,
+    temp_dir: Path | None = None,
 ) -> WCS | None:
-    """Upload *fits_path*, solve WCS, and optionally inject into science frames.
+    """Solve WCS locally or on nova; optionally inject nova solutions into copies.
 
     Parameters
     ----------
@@ -510,6 +799,11 @@ def solve_and_apply(
         Image visibility on nova.astrometry.net (``"y"`` or ``"n"``).
     allow_commercial_use:
         Commercial-use licensing (``"n"`` or ``"y"``).
+    backend:
+        ``"nova"`` (default) uploads; ``"local"`` runs offline and saves only
+        a sidecar. Local *out_dir* requires *dry_run* to prevent input edits.
+    executable, config, temp_dir:
+        Local solve-field executable, backend configuration and workspace parent.
     dry_run:
         When *True*, only upload/save the solution; do not inject science files.
 
@@ -518,7 +812,19 @@ def solve_and_apply(
     WCS | None
         The solved WCS, or *None* if solving failed.
     """
-    if api_key is None:
+    if backend not in ("nova", "local"):
+        raise ValueError(f"Unknown astrometry backend: {backend}")
+    if backend == "local" and out_dir is not None and not dry_run:
+        raise ValueError(
+            "Local solving writes sidecars only; omit out_dir or use dry_run"
+        )
+    if (
+        backend == "local"
+        and wcs_output is not None
+        and Path(wcs_output).resolve() == Path(fits_path).resolve()
+    ):
+        raise ValueError("Local WCS output must differ from the input FITS file")
+    if backend == "nova" and api_key is None:
         api_key = _api_key()
 
     # Auto-detect instrument if not supplied
@@ -529,18 +835,31 @@ def solve_and_apply(
         except Exception:
             pass
 
-    wcs = upload_and_solve(
-        fits_path,
-        api_key,
-        timeout=timeout,
-        publicly_visible=publicly_visible,
-        allow_commercial_use=allow_commercial_use,
-    )
+    if backend == "local":
+        wcs = solve_local(
+            fits_path,
+            executable=executable,
+            config=config,
+            timeout=timeout,
+            temp_dir=temp_dir,
+        )
+    else:
+        wcs = upload_and_solve(
+            fits_path,
+            api_key,
+            timeout=timeout,
+            publicly_visible=publicly_visible,
+            allow_commercial_use=allow_commercial_use,
+        )
 
     if wcs is None:
         return None
 
-    if not validate_wcs(wcs, instrument):
+    if not (
+        _validate_local_wcs(wcs, fits_path, instrument)
+        if backend == "local"
+        else validate_wcs(wcs, instrument)
+    ):
         logger.warning("WCS solution rejected after validation; aborting.")
         return None
 
@@ -573,6 +892,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    ap.add_argument(
+        "--backend",
+        choices=["nova", "local"],
+        default="nova",
+        help="Astrometry.net backend (default: nova). Local never uploads.",
+    )
+    add_local_solver_arguments(ap, include_timeout=False)
     ap.add_argument(
         "--fits",
         type=Path,
@@ -621,7 +947,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--timeout",
-        type=float,
+        type=_positive_timeout,
         default=DEFAULT_TIMEOUT_S,
         help=f"Max seconds to wait for astrometry.net (default: {DEFAULT_TIMEOUT_S}).",
     )
@@ -667,8 +993,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error(f"FITS file not found: {args.fits}")
         return 1
 
+    if args.backend == "local" and args.out_dir is not None and not args.dry_run:
+        logger.error(
+            "Local solving writes sidecars only; omit --out-dir or use --dry-run."
+        )
+        return 1
     api_key = args.api_key
-    if api_key is None:
+    if args.backend == "nova" and api_key is None:
         try:
             api_key = _api_key()
         except RuntimeError as exc:
@@ -680,6 +1011,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     # artifact that can be reused without another upload.
     wcs_output = args.wcs_output or args.fits.with_name(f"{args.fits.stem}_wcs.fits")
 
+    if args.backend == "local" and wcs_output.resolve() == args.fits.resolve():
+        logger.error("Local WCS output must differ from the input FITS file.")
+        return 1
     wcs = solve_and_apply(
         args.fits,
         api_key=api_key,
@@ -691,6 +1025,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         publicly_visible=args.publicly_visible,
         allow_commercial_use=args.allow_commercial_use,
         dry_run=args.dry_run,
+        backend=args.backend,
+        executable=args.solve_field,
+        config=args.astrometry_config,
+        temp_dir=args.astrometry_temp_dir,
     )
 
     if wcs is None:

@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "created_utc": "2026-10-18T03:47:31.018118+00:00",
+  "metadata": {
+    "benchmark_sha256": "3f3b2c391699dd4790dac854274006ba22a7b641101e58967a483435693a28df",
+    "solver_module_sha256": "8e8f6dc44f7c2d04260e956a11dfa50d47111da98aabda47752e092868904818",
+    "command": [
+      "/raid_ut2/home/jerome/miniconda3/envs/prose/bin/python3",
+      "-m",
+      "prose.scripts.benchmark_astrometry",
+      "/data/MuSCAT2/260310_calibrated/MCT20_2603100239_calibrated.fits",
+      "/data/MuSCAT2/260310_calibrated/MCT21_2603100357_calibrated.fits",
+      "/data/MuSCAT2/260310_calibrated/MCT22_2603100239_calibrated.fits",
+      "/data/MuSCAT2/260310_calibrated/MCT23_2603100239_calibrated.fits",
+      "--astrometry-config",
+      "/raid_ut2/home/jerome/astrometry/gaia-field.cfg",
+      "--index-label",
+      "Tycho-2 + Gaia-DR2 5200-5203 LIGHT, HEALPix XY 26, nside=2",
+      "--limit",
+      "4",
+      "--astrometry-timeout",
+      "120",
+      "--output-dir",
+      "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia"
+    ],
+    "python": "3.10.15",
+    "platform": "Linux-7.0.0-14-generic-x86_64-with-glibc2.43",
+    "prose": "3.3.4",
+    "numpy": "1.26.4",
+    "astropy": "5.3.4",
+    "astroquery": "0.4.7",
+    "local_executable": "/raid_ut2/home/jerome/.local/bin/solve-field",
+    "local_version": "0.98",
+    "local_version_exit_code": 0,
+    "config": "/raid_ut2/home/jerome/astrometry/gaia-field.cfg",
+    "config_sha256": "3777bf61e7795bb65ec29abf0292cc6dd822d5f29de86371ad6b5ff3eee0466f",
+    "index_label": "Tycho-2 + Gaia-DR2 5200-5203 LIGHT, HEALPix XY 26, nside=2",
+    "nova_url": "https://nova.astrometry.net",
+    "local_options": {
+      "executable": "solve-field",
+      "config": "/raid_ut2/home/jerome/astrometry/gaia-field.cfg",
+      "temp_dir": null,
+      "timeout": 120.0
+    }
+  },
+  "settings": {
+    "timeout_s": 120.0,
+    "repeats": 1,
+    "grid_size": 5,
+    "online_delay_s": 10,
+    "publicly_visible": "n",
+    "validation": "identical finite-parameter, celestial-axis and header-scale checks for both backends",
+    "timing": "end-to-end backend wall time; excludes benchmark staging, validation and pacing",
+    "pixel_offsets": "local sky positions transformed to nova pixels; zero-based image grid",
+    "accuracy": "pairwise WCS agreement, not independent astrometric truth"
+  },
+  "inputs": [
+    {
+      "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT20_2603100239_calibrated.fits",
+      "sha256": "2c35846c64c07a4daed3efada1fb9249635fb879a71085cb2ae6a2467227f2b8",
+      "source_hdu": 0,
+      "shape": [
+        1024,
+        1024
+      ],
+      "probe": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/inputs/000.fits",
+      "probe_sha256": "0b138d9086484cc4513e13a2f0867e918c7b00c05380b95cea08ff6e54012c42",
+      "hints": {
+        "center_ra": 182.0375,
+        "center_dec": 0.099444,
+        "radius": 0.5,
+        "scale_est": 0.44,
+        "scale_err": 20.0,
+        "scale_units": "arcsecperpix"
+      }
+    },
+    {
+      "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT21_2603100357_calibrated.fits",
+      "sha256": "56f424289155f97c8dc4ec6b7f4cc2388b000e799b97b787b043a9782a9e2869",
+      "source_hdu": 0,
+      "shape": [
+        1024,
+        1024
+      ],
+      "probe": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/inputs/001.fits",
+      "probe_sha256": "b99491b3a027f19712b4d51a6f89dcb395194f9b36ba637de3eb26b5e2139594",
+      "hints": {
+        "center_ra": 182.0375,
+        "center_dec": 0.099444,
+        "radius": 0.5,
+        "scale_est": 0.44,
+        "scale_err": 20.0,
+        "scale_units": "arcsecperpix"
+      }
+    },
+    {
+      "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT22_2603100239_calibrated.fits",
+      "sha256": "d367f87400c1dc1c080244f9649c54be6357d639803247fdfe177f2841c8d9e1",
+      "source_hdu": 0,
+      "shape": [
+        1024,
+        1024
+      ],
+      "probe": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/inputs/002.fits",
+      "probe_sha256": "e16d9ed9d17b3b4e7306db58907f4494f5bf7bb53d35ac7beeaa0d3344e40a51",
+      "hints": {
+        "center_ra": 182.0375,
+        "center_dec": 0.099444,
+        "radius": 0.5,
+        "scale_est": 0.44,
+        "scale_err": 20.0,
+        "scale_units": "arcsecperpix"
+      }
+    },
+    {
+      "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT23_2603100239_calibrated.fits",
+      "sha256": "72b621dc1ef90b27d48338779a218ab0eabfa0b20d1672e94de271b92f5fd83c",
+      "source_hdu": 0,
+      "shape": [
+        1024,
+        1024
+      ],
+      "probe": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/inputs/003.fits",
+      "probe_sha256": "1bcf674c5726f2777f90cf7b1a0b03400cd279472d444c12173bae68465a0d18",
+      "hints": {
+        "center_ra": 182.0375,
+        "center_dec": 0.099444,
+        "radius": 0.5,
+        "scale_est": 0.44,
+        "scale_err": 20.0,
+        "scale_units": "arcsecperpix"
+      }
+    }
+  ],
+  "results": [
+    {
+      "frame": 0,
+      "input": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT20_2603100239_calibrated.fits",
+      "repeat": 0,
+      "local": {
+        "elapsed_s": 120.00831,
+        "started_utc": "2026-10-18T03:47:31.329480+00:00",
+        "solved": false,
+        "status": "no_solution",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/logs/000-r000-local.log",
+        "wcs": null,
+        "scale_x_arcsec": null,
+        "scale_y_arcsec": null
+      },
+      "nova": {
+        "elapsed_s": 10.640337,
+        "started_utc": "2026-10-18T03:49:31.341314+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/logs/000-r000-nova.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/wcs/000-r000-nova.fits",
+        "scale_x_arcsec": 0.434245,
+        "scale_y_arcsec": 0.434759
+      },
+      "agreement": null,
+      "comparison_error": null,
+      "order": [
+        "local",
+        "nova"
+      ]
+    },
+    {
+      "frame": 1,
+      "input": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT21_2603100357_calibrated.fits",
+      "repeat": 0,
+      "local": {
+        "elapsed_s": 15.122743,
+        "started_utc": "2026-10-18T03:50:08.607015+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/logs/001-r000-local.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/wcs/001-r000-local.fits",
+        "scale_x_arcsec": 0.429078,
+        "scale_y_arcsec": 0.430542
+      },
+      "nova": {
+        "elapsed_s": 16.583816,
+        "started_utc": "2026-10-18T03:49:52.007716+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/logs/001-r000-nova.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/wcs/001-r000-nova.fits",
+        "scale_x_arcsec": 0.434865,
+        "scale_y_arcsec": 0.43441
+      },
+      "agreement": {
+        "grid_samples": 25,
+        "center_arcsec": 0.859174,
+        "sky_median_arcsec": 2.001655,
+        "sky_rms_arcsec": 3.145713,
+        "sky_p95_arcsec": 6.636373,
+        "sky_max_arcsec": 7.497302,
+        "pixel_median": 4.618096,
+        "pixel_rms": 7.239937,
+        "pixel_max": 17.1037
+      },
+      "comparison_error": null,
+      "order": [
+        "nova",
+        "local"
+      ]
+    },
+    {
+      "frame": 2,
+      "input": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT22_2603100239_calibrated.fits",
+      "repeat": 0,
+      "local": {
+        "elapsed_s": 2.198807,
+        "started_utc": "2026-10-18T03:50:23.755307+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/logs/002-r000-local.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/wcs/002-r000-local.fits",
+        "scale_x_arcsec": 0.436218,
+        "scale_y_arcsec": 0.43647
+      },
+      "nova": {
+        "elapsed_s": 10.091006,
+        "started_utc": "2026-10-18T03:50:25.976479+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/logs/002-r000-nova.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/wcs/002-r000-nova.fits",
+        "scale_x_arcsec": 0.437106,
+        "scale_y_arcsec": 0.436119
+      },
+      "agreement": {
+        "grid_samples": 25,
+        "center_arcsec": 0.393217,
+        "sky_median_arcsec": 0.303263,
+        "sky_rms_arcsec": 0.455363,
+        "sky_p95_arcsec": 0.808987,
+        "sky_max_arcsec": 1.236114,
+        "pixel_median": 0.695114,
+        "pixel_rms": 1.047028,
+        "pixel_max": 2.85706
+      },
+      "comparison_error": null,
+      "order": [
+        "local",
+        "nova"
+      ]
+    },
+    {
+      "frame": 3,
+      "input": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT23_2603100239_calibrated.fits",
+      "repeat": 0,
+      "local": {
+        "elapsed_s": 1.899213,
+        "started_utc": "2026-10-18T03:50:58.142254+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/logs/003-r000-local.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/wcs/003-r000-local.fits",
+        "scale_x_arcsec": 0.438129,
+        "scale_y_arcsec": 0.437097
+      },
+      "nova": {
+        "elapsed_s": 12.033138,
+        "started_utc": "2026-10-18T03:50:46.087723+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/logs/003-r000-nova.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-benchmark-20261018-gaia/wcs/003-r000-nova.fits",
+        "scale_x_arcsec": 0.438379,
+        "scale_y_arcsec": 0.436297
+      },
+      "agreement": {
+        "grid_samples": 25,
+        "center_arcsec": 0.864302,
+        "sky_median_arcsec": 0.512318,
+        "sky_rms_arcsec": 0.772442,
+        "sky_p95_arcsec": 1.727183,
+        "sky_max_arcsec": 2.091911,
+        "pixel_median": 1.179586,
+        "pixel_rms": 1.764069,
+        "pixel_max": 4.779857
+      },
+      "comparison_error": null,
+      "order": [
+        "nova",
+        "local"
+      ]
+    }
+  ],
+  "summary": {
+    "local": {
+      "attempts": 4,
+      "solved": 3,
+      "valid": 3,
+      "valid_fraction": 0.75,
+      "median_elapsed_s": 8.660775,
+      "p95_elapsed_s": 104.275475,
+      "median_valid_elapsed_s": 2.198807
+    },
+    "nova": {
+      "attempts": 4,
+      "solved": 4,
+      "valid": 4,
+      "valid_fraction": 1.0,
+      "median_elapsed_s": 11.336738,
+      "p95_elapsed_s": 15.901214,
+      "median_valid_elapsed_s": 11.336738
+    },
+    "paired_valid": 3,
+    "paired_median_nova_over_local": 4.589309,
+    "agreement": {
+      "pairs": 3,
+      "median_center_arcsec": 0.859174,
+      "median_frame_rms_arcsec": 0.772442,
+      "max_grid_arcsec": 7.497302,
+      "median_frame_pixel_rms": 1.764069,
+      "max_grid_pixels": 17.1037
+    }
+  }
+}

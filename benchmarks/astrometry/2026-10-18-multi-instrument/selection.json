@@ -1,0 +1,337 @@
+[
+  {
+    "instrument": "MuSCAT",
+    "frames": [
+      {
+        "path": "/data/MuSCAT/260123_calibrated/MSCT0_2601230001_calibrated.fits",
+        "object": "HAT-P-32b",
+        "filter": "g",
+        "instrument_header": "MuSCAT",
+        "shape": [
+          1024,
+          1024
+        ],
+        "exposure_s": 10.0,
+        "rlevel": null,
+        "ra_deg": 31.0185,
+        "dec_deg": 46.737806,
+        "tiles": [
+          1
+        ]
+      },
+      {
+        "path": "/data/MuSCAT/260123_calibrated/MSCT1_2601230001_calibrated.fits",
+        "object": "HAT-P-32b",
+        "filter": "r",
+        "instrument_header": "MuSCAT",
+        "shape": [
+          1024,
+          1024
+        ],
+        "exposure_s": 5.0,
+        "rlevel": null,
+        "ra_deg": 31.018542,
+        "dec_deg": 46.737806,
+        "tiles": [
+          1
+        ]
+      }
+    ],
+    "tiles": [
+      1
+    ],
+    "config": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/MuSCAT.cfg"
+  },
+  {
+    "instrument": "MuSCAT2",
+    "frames": [
+      {
+        "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT20_2603100239_calibrated.fits",
+        "object": "TOI07475.01",
+        "filter": "g",
+        "instrument_header": "MuSCAT2",
+        "shape": [
+          1024,
+          1024
+        ],
+        "exposure_s": 0.5,
+        "rlevel": null,
+        "ra_deg": 182.0375,
+        "dec_deg": 0.099444,
+        "tiles": [
+          26
+        ]
+      },
+      {
+        "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT21_2603100357_calibrated.fits",
+        "object": "TOI07475.01",
+        "filter": "r",
+        "instrument_header": "MuSCAT2",
+        "shape": [
+          1024,
+          1024
+        ],
+        "exposure_s": 0.5,
+        "rlevel": null,
+        "ra_deg": 182.0375,
+        "dec_deg": 0.099444,
+        "tiles": [
+          26
+        ]
+      },
+      {
+        "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT22_2603100239_calibrated.fits",
+        "object": "TOI07475.01",
+        "filter": "i",
+        "instrument_header": "MuSCAT2",
+        "shape": [
+          1024,
+          1024
+        ],
+        "exposure_s": 0.5,
+        "rlevel": null,
+        "ra_deg": 182.0375,
+        "dec_deg": 0.099444,
+        "tiles": [
+          26
+        ]
+      },
+      {
+        "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT23_2603100239_calibrated.fits",
+        "object": "TOI07475.01",
+        "filter": "z_s",
+        "instrument_header": "MuSCAT2",
+        "shape": [
+          1024,
+          1024
+        ],
+        "exposure_s": 0.5,
+        "rlevel": null,
+        "ra_deg": 182.0375,
+        "dec_deg": 0.099444,
+        "tiles": [
+          26
+        ]
+      }
+    ],
+    "tiles": [
+      26
+    ],
+    "config": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/MuSCAT2.cfg"
+  },
+  {
+    "instrument": "MuSCAT3",
+    "frames": [
+      {
+        "path": "/data/MuSCAT3/260730/ogg2m001-ep02-20260730-0056-e91.fits",
+        "object": "V2104 Aql",
+        "filter": "rp",
+        "instrument_header": "ep02",
+        "shape": [
+          2048,
+          2048
+        ],
+        "exposure_s": 2.0,
+        "rlevel": 91,
+        "ra_deg": 288.63356,
+        "dec_deg": 12.063556,
+        "tiles": [
+          30
+        ]
+      },
+      {
+        "path": "/data/MuSCAT3/260730/ogg2m001-ep03-20260730-0057-e91.fits",
+        "object": "V2104 Aql",
+        "filter": "ip",
+        "instrument_header": "ep03",
+        "shape": [
+          2048,
+          2048
+        ],
+        "exposure_s": 2.0,
+        "rlevel": 91,
+        "ra_deg": 288.632472,
+        "dec_deg": 12.063857,
+        "tiles": [
+          30
+        ]
+      }
+    ],
+    "tiles": [
+      30
+    ],
+    "config": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/MuSCAT3.cfg"
+  },
+  {
+    "instrument": "MuSCAT4",
+    "frames": [
+      {
+        "path": "/data/MuSCAT4/260927/coj2m002-ep06-20260927-0057-e91.fits",
+        "object": "TOI-1224 b",
+        "filter": "gp",
+        "instrument_header": "ep06",
+        "shape": [
+          2048,
+          2048
+        ],
+        "exposure_s": 80.0,
+        "rlevel": 91,
+        "ra_deg": 37.192623,
+        "dec_deg": -80.897371,
+        "tiles": [
+          32
+        ]
+      },
+      {
+        "path": "/data/MuSCAT4/260927/coj2m002-ep07-20260927-0058-e91.fits",
+        "object": "TOI-1224 b",
+        "filter": "rp",
+        "instrument_header": "ep07",
+        "shape": [
+          2048,
+          2048
+        ],
+        "exposure_s": 20.0,
+        "rlevel": 91,
+        "ra_deg": 37.193108,
+        "dec_deg": -80.899153,
+        "tiles": [
+          32
+        ]
+      }
+    ],
+    "tiles": [
+      32
+    ],
+    "config": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/MuSCAT4.cfg"
+  },
+  {
+    "instrument": "QHY600CMOS",
+    "frames": [
+      {
+        "path": "/data/QHY600CMOS/261008/coj0m416-sq36-20261008-0094-e91.fits",
+        "object": "AU Mic c",
+        "filter": "ip",
+        "instrument_header": "sq36",
+        "shape": [
+          2400,
+          2400
+        ],
+        "exposure_s": 3.5,
+        "rlevel": 91,
+        "ra_deg": 311.298207,
+        "dec_deg": -31.343742,
+        "tiles": [
+          47
+        ]
+      },
+      {
+        "path": "/data/QHY600CMOS/261008/coj0m416-sq36-20261008-1322-e91.fits",
+        "object": "AU Mic c",
+        "filter": "ip",
+        "instrument_header": "sq36",
+        "shape": [
+          2400,
+          2400
+        ],
+        "exposure_s": 3.5,
+        "rlevel": 91,
+        "ra_deg": 311.298279,
+        "dec_deg": -31.343632,
+        "tiles": [
+          47
+        ]
+      }
+    ],
+    "tiles": [
+      47
+    ],
+    "config": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS.cfg"
+  },
+  {
+    "instrument": "SBIGSTL6303",
+    "frames": [
+      {
+        "path": "/data/SBIGSTL6303/221107/tfn0m410-kb24-20221107-0103-e91.fits",
+        "object": "V 1298 Tau",
+        "filter": "rp",
+        "instrument_header": "kb24",
+        "shape": [
+          2042,
+          3054
+        ],
+        "exposure_s": 90.232,
+        "rlevel": 91,
+        "ra_deg": 61.33897,
+        "dec_deg": 20.158848,
+        "tiles": [
+          0
+        ]
+      },
+      {
+        "path": "/data/SBIGSTL6303/221107/tfn0m414-kb95-20221107-0123-e91.fits",
+        "object": "V 1298 Tau",
+        "filter": "rp",
+        "instrument_header": "kb95",
+        "shape": [
+          2042,
+          3054
+        ],
+        "exposure_s": 90.27,
+        "rlevel": 91,
+        "ra_deg": 61.331629,
+        "dec_deg": 20.156997,
+        "tiles": [
+          0
+        ]
+      }
+    ],
+    "tiles": [
+      0
+    ],
+    "config": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/SBIGSTL6303.cfg"
+  },
+  {
+    "instrument": "Sinistro",
+    "frames": [
+      {
+        "path": "/data/Sinistro/261016/lsc1m009-fa04-20261016-0090-e91.fits",
+        "object": "V1298Tau",
+        "filter": "gp",
+        "instrument_header": "fa04",
+        "shape": [
+          4096,
+          4096
+        ],
+        "exposure_s": 5.001,
+        "rlevel": 91,
+        "ra_deg": 61.394897,
+        "dec_deg": 20.075065,
+        "tiles": [
+          0
+        ]
+      },
+      {
+        "path": "/data/Sinistro/261016/cpt1m010-fa14-20261016-0180-e91.fits",
+        "object": "V1298Tau",
+        "filter": "gp",
+        "instrument_header": "fa14",
+        "shape": [
+          4096,
+          4096
+        ],
+        "exposure_s": 4.999,
+        "rlevel": 91,
+        "ra_deg": 61.39668,
+        "dec_deg": 20.086522,
+        "tiles": [
+          0
+        ]
+      }
+    ],
+    "tiles": [
+      0
+    ],
+    "config": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/Sinistro.cfg"
+  }
+]

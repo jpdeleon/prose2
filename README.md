@@ -429,3 +429,215 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+
+### Local astrometry.net plate solving
+
+An optional local backend runs `solve-field` offline. It needs no nova API key
+and never falls back to an upload. Existing `astrometry.net`/nova and `twirl`
+methods and defaults remain available. This backend requires a POSIX host.
+
+Install [astrometry.net](https://astrometrynet.readthedocs.io/en/latest/build.html)
+separately and make `solve-field` available on PATH (or pass `--solve-field`).
+Download [prebuilt reference indexes](https://data.astrometry.net/)
+covering the field sizes and sky regions you observe. The project currently
+recommends Tycho-2 + Gaia-DR2 5200-series LIGHT indexes for fields below one
+degree; the older 4200 series uses 2MASS. Index scale numbers describe
+star-pattern diameters, not image widths. For typical full-frame MuSCAT/MuSCAT2
+images, scales 0–3 (2–8 arcminute patterns), such as 5200–5203, are a starting
+range to benchmark;
+check the actual dimensions, binning and pixel scale before selecting indexes.
+Include every required sky tile at each chosen scale. No indexes are downloaded
+automatically. [Building custom indexes](https://astrometrynet.readthedocs.io/en/latest/build-index.html)
+is optional.
+
+Create a backend configuration with absolute paths, for example
+`$HOME/astrometry/astrometry.cfg`:
+
+```text
+add_path /absolute/path/to/astrometry/indexes
+autoindex
+```
+
+Solve one calibrated image and save a sidecar without changing the image:
+
+```sh
+solve-wcs --fits /data/example_calibrated.fits --backend local \
+  --astrometry-config "$HOME/astrometry/astrometry.cfg" \
+  --wcs-output /data/example.wcs.fits --timeout 120 --verbose
+```
+
+Without `--wcs-output`, the sidecar is `<input_stem>_wcs.fits` beside the input.
+Local standalone solving rejects `--out-dir` unless `--dry-run` is given, and
+rejects an output path equal to the input. The nova path retains its existing
+explicit directory-injection behavior.
+
+For MuSCAT/MuSCAT2 calibration, use `--solve-wcs astrometry-local` on either
+`prose.scripts.calibrate_muscat` or `prose.scripts.calibrate_muscat2`. Photometry
+forwards the local options to calibration:
+
+```sh
+photometry --data_dir /data/MuSCAT2/night --target_name TARGET \
+  --wcs-method astrometry-local \
+  --astrometry-config "$HOME/astrometry/astrometry.cfg" \
+  --astrometry-timeout 120
+```
+
+Calibration tries the first, middle and last generated calibrated frames until
+one yields a valid solution. It applies that solution only to this band's
+generated calibrated files and caches `.wcs/<band>_astrometry-local.wcs.fits`.
+Raw frames remain unchanged. BANZAI instruments retain their existing header WCS.
+Header pointing and pixel-scale hints constrain the search; positive `PIXSCALE`,
+`SECPIX` or `CCDSCALE` values precede instrument scale defaults. The local result
+must have celestial axes and a pixel scale within 20% of that hint.
+
+Each local attempt has a CPU limit and a wall deadline (300 seconds by default,
+including lock wait). The backend configuration can impose a lower CPU limit.
+Only one local solve runs per user/host at a time, even across photometry jobs.
+The default lock is `~/temp/prose-astrometry.lock`; service accounts can share an
+absolute `PROSE_ASTROMETRY_LOCK` path. The lock file persists and is released by
+the OS when the process exits. Workspaces and child-process temporary files live
+under `~/temp` or `--astrometry-temp-dir` and are cleaned after each attempt.
+Timeouts, interrupts and SIGTERM cancellation of the main solving thread stop
+the solver's process group. Failures log the solver output tail and return no WCS.
+
+Offline tests exercise a real fake-executable subprocess, without indexes or
+network access. To run the optional real-frame check after installing indexes:
+
+```sh
+PROSE_LOCAL_ASTROMETRY_TEST_FITS=/data/example_calibrated.fits \
+PROSE_LOCAL_ASTROMETRY_TEST_CONFIG="$HOME/astrometry/astrometry.cfg" \
+uv run pytest tests/scripts/test_astrometry_local.py -k real_local_solver
+```
+
+
+### Benchmark local versus online astrometry.net
+
+Run the same explicitly selected calibrated frames through both backends:
+
+```sh
+uv run python -m prose.scripts.benchmark_astrometry \
+  '/data/MuSCAT2/night_calibrated/*_calibrated.fits' \
+  --astrometry-config "$HOME/astrometry/astrometry.cfg" \
+  --index-label 'Tycho-2 + Gaia-DR2 5200-5203 LIGHT, chosen sky tiles' \
+  --limit 3 --repeats 1 --astrometry-timeout 120 \
+  --output-dir "$HOME/temp/astrometry-comparison"
+```
+
+This needs an installed local solver, suitable indexes, and
+`ASTROMETRY_NET_API_KEY` (or astroquery's configured key). It uploads image pixels
+to nova, requesting private visibility by default (`--publicly-visible n`). Public
+visibility can be selected explicitly with `--publicly-visible y`. Original FITS
+files are never edited. The output directory must be new.
+
+The runner extracts the first 2D image HDU, including compressed images, into a
+single-HDU probe with only pointing and pixel-scale hints. Existing WCS/SIP and
+other distortion metadata are excluded so neither backend can reuse an existing
+solution. Both receive the exact same probe. Local and online order alternates
+between pairs. Solves run serially, with a 10-second minimum delay after a nova
+attempt before the next nova attempt (`--online-delay`). Defaults limit the run
+to three frames and one attempt per backend per frame; increase `--limit` or
+`--repeats` explicitly for a larger experiment.
+
+The new experiment directory contains:
+
+- `results.json`: inputs and probe checksums, selected HDUs, settings, source-code
+  hashes, package/solver versions, config checksum, per-attempt status and timing,
+  per-pair WCS differences, and aggregate results.
+- `results.csv`: the paired results flattened into columns for analysis.
+- `inputs/`, `wcs/`, and `logs/`: exact uploaded probes, returned WCS sidecars
+  (including rejected solutions), and individual solver logs.
+
+Timing measures each backend call end to end. Local time includes extraction,
+index loading/search and any lock wait; online time includes upload, queueing,
+solving and polling. Staging copies, benchmark validation and request pacing are
+outside these measurements. Both results undergo the same finite-parameter,
+celestial-axis and header-scale validation. Reports distinguish returned solutions from accepted
+solutions, include failures in overall timing and success rates, and calculate
+the paired nova/local time ratio only where both solutions were accepted.
+Timeouts use the existing backend contracts; nova's timeout does not cancel its
+server job and is not a strict wall limit on every network operation.
+
+WCS comparisons sample a 5-by-5 grid over the full image (`--grid-size`), using
+zero-based pixel centres. They report centre separation and grid median, RMS,
+95th-percentile and maximum angular differences in arcseconds. Pixel differences
+transform local sky positions through the online WCS. This catches orientation
+and distortion differences that a centre-only comparison misses. Aggregate WCS
+agreement statistics appear alongside timing and success counts. Agreement is
+not accuracy against an independent catalog. OS/index caches and nova service
+load are uncontrolled, so repeated timings should not be described as guaranteed
+cold-cache or solver-CPU benchmarks. Record the exact index catalog/release and
+scale/tile coverage with `--index-label`; the config checksum does not checksum
+the index files themselves.
+
+Reports are checkpointed after each attempt, with unavailable metrics as null
+and displayed/serialized numbers limited to six decimal places. A completed
+benchmark exits successfully even if individual solves fail; setup failures exit
+with code 2. Offline tests verify known positional offsets, rotation, distortion,
+compressed-image staging, failure accounting, and request pacing.
+
+
+#### Recorded MuSCAT2 comparison (2026-10-18)
+
+The [JSON report](benchmarks/astrometry/2026-10-18-muscat2/results.json) and
+[paired CSV](benchmarks/astrometry/2026-10-18-muscat2/results.csv) record one
+calibrated TOI07475.01 frame per band from 2026-03-10 (1024 × 1024 pixels,
+0.5-second exposures). Both backends received identical WCS-free copies and the
+same pointing/scale hints. Original FITS checksums were unchanged after the run.
+Local astrometry.net 0.98 used Tycho-2 + Gaia-DR2 5200–5203 LIGHT, XY HEALPix 26
+at nside 2. Both backends received a 120-second timeout setting; local enforces a
+wall deadline, whereas nova's network operations can extend beyond its solve
+budget. Upload visibility was private.
+
+| Band | Local wall time (s) | Nova wall time (s) | Grid RMS difference (arcsec) | Grid RMS difference (pixels) |
+| --- | ---: | ---: | ---: | ---: |
+| g | timeout at 120.01 | 10.64 | unavailable | unavailable |
+| r | 15.12 | 16.58 | 3.146 | 7.240 |
+| i | 2.20 | 10.09 | 0.455 | 1.047 |
+| z_s | 1.90 | 12.03 | 0.772 | 1.764 |
+
+Local returned a WCS passing the basic sanity checks in 3/4 attempts; nova did
+so in 4/4. Timing comparisons among the three paired successes exclude the
+local g timeout. This small, single-target run does not establish a general
+speedup or a default replacement for nova. The r solutions disagree by up to
+7.497 arcsec on the grid, despite passing the celestial/scale checks; neither
+solution was validated against an independent truth catalog. The g source list
+also differed between local and nova extraction (943 versus 270 sources); the
+cause of its local timeout has not been isolated.
+
+This was one repetition per frame with uncontrolled OS/server caches. The g
+frame had earlier local and nova verification attempts. Bulk index downloads
+finished before the recorded benchmark began. WCS differences use a 5-by-5 grid
+covering the image, rather than just the field centre.
+
+The host installation is user-local: `~/.local/bin/solve-field` wraps Ubuntu's
+`0.98+dfsg-1build1` binaries under `~/.local/opt/astrometry-0.98`, without changing
+system packages or prose conda dependencies. `~/astrometry/astrometry.cfg`
+selects the installed directories. The initial installation included full-sky
+2MASS 4200–4203
+(192 checksum-verified files, 29.014 GiB) plus the four regional Gaia LIGHT
+files used here (approximately 646 MiB); the Gaia coverage is not all sky.
+The original `~/astrometry/gaia-field.cfg` used autoindex with those four Gaia
+files; later downloads expanded that directory. To reproduce this initial run,
+select only the four 5200–5203 tile-26 files explicitly.
+Package/index checksum manifests and installation details are retained beside
+the installed tools and indexes. The packaged solver's Python helpers use their
+private Ubuntu dependencies; the benchmark itself runs in the prose conda env.
+
+#### Seven-instrument comparison (2026-10-18)
+
+A [second recorded run](benchmarks/astrometry/2026-10-18-multi-instrument/README.md)
+compares 16 calibrated frames across MuSCAT, MuSCAT2, MuSCAT3, MuSCAT4, Sinistro,
+SBIG, and QHY600, using Gaia LIGHT scales 5200–5206 with verified regional sky
+coverage. Both backends returned WCS solutions passing the basic checks in 14/16
+attempts. Local timed out on MuSCAT2 g and finished without solving one SBIG frame;
+nova's two missing WCS results were connection failures. Local SBIG wall times
+were 87–102 seconds versus 13–16 seconds online. MuSCAT2 r solutions disagreed by
+3.146 arcsec RMS. The report includes per-instrument timings, every attempt,
+logs, generated WCS metadata, exact configs, index checksums, and source-integrity
+checks. Pairwise WCS agreement is not independent astrometric accuracy.
+
+The host now has 42 regional Gaia LIGHT index files (4.279 GiB), covering XY tiles
+0, 1, 26, 30, 32, and 47 at nside 2 and scales 5200–5206. This is not all-sky Gaia
+coverage. The new report archives explicit per-instrument configs so subsequent
+index downloads do not change their selections.

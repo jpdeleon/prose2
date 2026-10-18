@@ -46,6 +46,10 @@ from prose.scripts.calibration_fallback import (
     find_frames_in_other_nights,
     night_distance_days,
 )
+from prose.scripts.solve_wcs_astrometry import (
+    add_local_solver_arguments,
+    local_solver_options,
+)
 from prose.utils import frames_from_obslog, scan_fits_headers
 
 logger = logging.getLogger("calibrate_muscat")
@@ -569,13 +573,11 @@ def _calibrate_science_group(
         seq.run(group_sciences)
         return wcs, []
 
-    if solve_wcs == "astrometry.net":
+    if solve_wcs in ("astrometry.net", "astrometry-local"):
         seq = SequenceParallel(
             [
                 calib,
-                SaveCalibratedFITS(
-                    output_dir, wcs_method="astrometry.net", site=MUSCAT_SITE
-                ),
+                SaveCalibratedFITS(output_dir, wcs_method=solve_wcs, site=MUSCAT_SITE),
             ],
             name=f"[{band}] calibrating",
         )
@@ -594,44 +596,57 @@ def _calibrate_science_group(
 
 
 def _solve_astrometry_net(
-    band: str, output_dir: Path, calibrated_paths: list[Path]
+    band: str,
+    output_dir: Path,
+    calibrated_paths: list[Path],
+    *,
+    method: str = "astrometry.net",
+    **local_options,
 ) -> None:
     """Solve WCS once via astrometry.net (retrying on the middle and last frame
     if the first fails) and inject it into every calibrated frame for *band* (pointing is shared
     across exposure groups)."""
-    info(f"[{band}] solving WCS via astrometry.net (first, middle, last frame as needed)")
+    info(f"[{band}] solving WCS via {method} (first, middle, last frame as needed)")
     from prose.scripts.solve_wcs_astrometry import (
         _api_key,
         inject_wcs_into_file,
         solve_first_valid,
     )
 
-    try:
-        api_key = _api_key()
-    except RuntimeError as e:
-        logger.warning(f"[{band}] {e}; skipping WCS")
-        return
+    api_key = None
+    if method == "astrometry.net":
+        try:
+            api_key = _api_key()
+        except RuntimeError as e:
+            logger.warning(f"[{band}] {e}; skipping WCS")
+            return
 
     calibrated_files = [fp for fp in calibrated_paths if fp.is_file()]
     if not calibrated_files:
         logger.warning(f"[{band}] no calibrated files found; skipping WCS")
         return
 
-    wcs = solve_first_valid(calibrated_files, api_key, "muscat")
-    if wcs is None:
-        info(
-            f"[{band}] WCS solving failed via astrometry.net; continuing without astrometry"
+    if method == "astrometry-local":
+        wcs = solve_first_valid(
+            calibrated_files, None, "muscat", backend="local", **local_options
         )
+    else:
+        wcs = solve_first_valid(calibrated_files, api_key, "muscat")
+    if wcs is None:
+        info(f"[{band}] WCS solving failed via {method}; continuing without astrometry")
         return
 
     for fp in calibrated_files:
-        inject_wcs_into_file(fp, wcs)
-    sp = _wcs_sidecar_path(output_dir, band, "astrometry.net")
+        if method == "astrometry-local":
+            inject_wcs_into_file(fp, wcs, method=method)
+        else:
+            inject_wcs_into_file(fp, wcs)
+    sp = _wcs_sidecar_path(output_dir, band, method)
     hdu = fits.PrimaryHDU()
     hdu.header.update(wcs.to_header(relax=True))
     hdu.writeto(str(sp), overwrite=True)
     info(
-        f"[{band}] WCS solved via astrometry.net and "
+        f"[{band}] WCS solved via {method} and "
         f"injected into {len(calibrated_files)} files"
     )
 
@@ -646,6 +661,7 @@ def calibrate_band(
     test_run: bool = False,
     data_dir: Path | None = None,
     fallback_calib_days: int = 30,
+    local_astrometry: dict | None = None,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Build master dark + flat and calibrate all science frames for one band.
 
@@ -658,7 +674,9 @@ def calibrate_band(
     Parameters
     ----------
     solve_wcs:
-        ``None`` = no WCS solving, ``"twirl"`` = twirl+Gaia, ``"astrometry.net"`` = astrometry.net.
+        ``None`` = no WCS solving, ``"twirl"`` = twirl+Gaia, ``"astrometry.net"`` = nova, ``"astrometry-local"`` = offline solve-field.
+    local_astrometry:
+        Local executable/config/timeout/temp_dir keyword arguments for solve_local.
     data_dir:
         This band's raw night directory. Required (together with
         *fallback_calib_days* > 0) to borrow darks/flats from a nearby night
@@ -742,8 +760,14 @@ def calibrate_band(
         finally:
             calib.cleanup_shared()
 
-    if solve_wcs == "astrometry.net" and calibrated_paths:
-        _solve_astrometry_net(band, output_dir, calibrated_paths)
+    if solve_wcs in ("astrometry.net", "astrometry-local") and calibrated_paths:
+        _solve_astrometry_net(
+            band,
+            output_dir,
+            calibrated_paths,
+            method=solve_wcs,
+            **(local_astrometry or {}),
+        )
 
     info(f"[{band}] done  ({len(sciences)} frames -> {output_dir})")
 
@@ -791,11 +815,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--solve-wcs",
         nargs="?",
         const="twirl",
-        choices=["twirl", "astrometry.net"],
+        choices=["twirl", "astrometry.net", "astrometry-local"],
         default=None,
         help="Solve WCS astrometry: 'twirl' (twirl+Gaia, default when flag is given "
         "without a value) or 'astrometry.net' (nova.astrometry.net, requires API key in "
-        "$ASTROMETRY_NET_API_KEY). The WCS is solved once per band and applied "
+        "$ASTROMETRY_NET_API_KEY), or astrometry-local (offline solve-field). "
+        "The WCS is solved once per band and applied "
         "to all calibrated frames. Omit the flag entirely to skip WCS solving.",
     )
     ap.add_argument(
@@ -810,6 +835,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "model and the same exposure-mismatch failure mode). Pass 0 to disable "
         "cross-night fallback and keep the pre-fallback behavior.",
     )
+    add_local_solver_arguments(ap)
     args = ap.parse_args(argv)
     if args.fallback_calib_days < 0:
         ap.error("--fallback_calib_days must be >= 0 (0 disables cross-night fallback)")
@@ -853,6 +879,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output_dir,
             band,
             solve_wcs=args.solve_wcs,
+            local_astrometry=local_solver_options(args),
             test_run=args.test_run,
             data_dir=args.data_dir,
             fallback_calib_days=args.fallback_calib_days,

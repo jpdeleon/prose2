@@ -1,0 +1,3 @@
+Uploading 001.fits to nova.astrometry.net …
+  hints: {'center_ra': 61.39489708333333, 'center_dec': 20.075065277777778, 'radius': 0.5, 'scale_est': 0.389, 'scale_err': 20.0, 'scale_units': 'arcsecperpix'}
+Plate solve succeeded.

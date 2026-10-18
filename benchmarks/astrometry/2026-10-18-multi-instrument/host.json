@@ -1,0 +1,15 @@
+{
+  "commit": "97de72945cedfe35115e2d3395de52920144f489",
+  "cpu_model": "Intel(R) Xeon(R) Gold 5120 CPU @ 2.20GHz",
+  "logical_cpus": 28,
+  "memory_total": "46889812 kB",
+  "platform": "Linux-7.0.0-14-generic-x86_64-with-glibc2.43",
+  "load_at_capture": [
+    1.726074,
+    1.519043,
+    1.51416
+  ],
+  "selection": "Most recent available numeric observing night (calibrated directory for MuSCAT); first two camera prefixes in lexical order, or first and midpoint frame for the single QHY600 camera. MuSCAT2 reuses the previous four-band sample. Prefer uncompressed copies to avoid duplicate products. Selection fixed before solving.",
+  "index_selection": "5200 LIGHT scales 0-6 for every XY/nside2 tile within one degree of each pointing; 42 files covering six tiles, explicit per-instrument configs. Downloads complete before any recorded solves.",
+  "sampling": "One repetition per frame. Serial local and online calls; alternate backend order within each instrument. Private nova uploads; ten-second minimum pacing between completed online attempt and next submission in each instrument batch. Caches not controlled; shared host."
+}

@@ -1,0 +1,338 @@
+[
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5200-00.fits",
+    "bytes": 331254720,
+    "sha256": "6b7d92cd818847642080c50b905b6690209e33c787053f28d3b2803ab8826aac",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5200-00.fits",
+    "tile": 0,
+    "scale": 5200
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5201-00.fits",
+    "bytes": 193930560,
+    "sha256": "49b4bb9e0af312b7e26a3b93f3390437b2a4998317aa5cfd80157b5cbbca0792",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5201-00.fits",
+    "tile": 0,
+    "scale": 5201
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5202-00.fits",
+    "bytes": 101157120,
+    "sha256": "91a3ce19a95fa29d2f0e052e27766ec74adbc021674659884e551d18992f16c6",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5202-00.fits",
+    "tile": 0,
+    "scale": 5202
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5203-00.fits",
+    "bytes": 51027840,
+    "sha256": "344263d748faa040646359d7a4386b65f1bdc5222b56c97042b5c11dc5b30495",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5203-00.fits",
+    "tile": 0,
+    "scale": 5203
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5204-00.fits",
+    "bytes": 25413120,
+    "sha256": "8625fc012677b6824b28a0e48975ffed76829fec1ae2962f40f90c19ef8b001e",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5204-00.fits",
+    "tile": 0,
+    "scale": 5204
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5205-00.fits",
+    "bytes": 12810240,
+    "sha256": "2b1732c0d80ff0fd871c83f102ea8c0ce7edea69e117c90c0864d50dd0e631bf",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5205-00.fits",
+    "tile": 0,
+    "scale": 5205
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5206-00.fits",
+    "bytes": 6410880,
+    "sha256": "f991118d9f9f53c71c6f62b5eda3ae14fec75e6e2d635b425ae48fb9af1f4d1e",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5206-00.fits",
+    "tile": 0,
+    "scale": 5206
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5200-01.fits",
+    "bytes": 390939840,
+    "sha256": "f76bf7cc53ed07c92b4f0b43d1296564a019fdce56d6eae0827aa7145935da97",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5200-01.fits",
+    "tile": 1,
+    "scale": 5200
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5201-01.fits",
+    "bytes": 202158720,
+    "sha256": "d223e4c466232dab136cdce708b9da1ac5e9da44e3772f3fbf6cc4533c07841f",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5201-01.fits",
+    "tile": 1,
+    "scale": 5201
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5202-01.fits",
+    "bytes": 101419200,
+    "sha256": "bf7daff2784bd6078bcd78cf30e8b7063098dfe61882ea4f2a3a0d9d99a9fcf8",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5202-01.fits",
+    "tile": 1,
+    "scale": 5202
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5203-01.fits",
+    "bytes": 51027840,
+    "sha256": "8245c023b4bc824de4e6b22678030da3b7464258ab262c446c7bd3b038a2e9b7",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5203-01.fits",
+    "tile": 1,
+    "scale": 5203
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5204-01.fits",
+    "bytes": 25413120,
+    "sha256": "b9e23565981878a7d60616ec5140dde93677ae7c45879d5cc4c20ef192d2f35d",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5204-01.fits",
+    "tile": 1,
+    "scale": 5204
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5205-01.fits",
+    "bytes": 12810240,
+    "sha256": "47eccac746f74f41dc8dbac3ac5ceecf1cc483e39df944700bab218368ebbc8e",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5205-01.fits",
+    "tile": 1,
+    "scale": 5205
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5206-01.fits",
+    "bytes": 6410880,
+    "sha256": "830a9cf3ada603e929a7bd24ee9617cd7b3ebcca865e3f4907dc545b836cf339",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5206-01.fits",
+    "tile": 1,
+    "scale": 5206
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5200-26.fits",
+    "bytes": 331217280,
+    "sha256": "9e877514f0d365e38a35fa0bd1861c93537f3edf24954276dbd4718d9b331b71",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5200-26.fits",
+    "tile": 26,
+    "scale": 5200
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5201-26.fits",
+    "bytes": 193628160,
+    "sha256": "18aec47bf9b9b32ecd2ff0fceb4c8ed0105744d7747f7bf5bfd02b15ebdd72eb",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5201-26.fits",
+    "tile": 26,
+    "scale": 5201
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5202-26.fits",
+    "bytes": 101289600,
+    "sha256": "3b0f813cc5091c0a42b6741bd3297d99a757aa9898201e6aec27600186cf552e",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5202-26.fits",
+    "tile": 26,
+    "scale": 5202
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5203-26.fits",
+    "bytes": 51027840,
+    "sha256": "3ef078e9f2f0357d686d630619fd8042831a908d96e90ea9a03cbd0f81d857bd",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5203-26.fits",
+    "tile": 26,
+    "scale": 5203
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5204-26.fits",
+    "bytes": 25413120,
+    "sha256": "2cb7218d43d25cb93b45526a6e6d93d8792a57cfed415d9966cd956087827dcc",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5204-26.fits",
+    "tile": 26,
+    "scale": 5204
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5205-26.fits",
+    "bytes": 12810240,
+    "sha256": "8e141f768dc851838c4f1f0f93f62681b442e2b4fd6e8d043bb1d83e84546d33",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5205-26.fits",
+    "tile": 26,
+    "scale": 5205
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5206-26.fits",
+    "bytes": 6410880,
+    "sha256": "d0ee0f37bf6c4d929c948fbcd714b57393a7c8800777d0e33bcd874b57105e4f",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5206-26.fits",
+    "tile": 26,
+    "scale": 5206
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5200-30.fits",
+    "bytes": 405123840,
+    "sha256": "fd829300a8bdfd31e5b3b66ddc5e38cdd0a9dacb9195bb6fa7c6b3b36f8ee0cc",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5200-30.fits",
+    "tile": 30,
+    "scale": 5200
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5201-30.fits",
+    "bytes": 203181120,
+    "sha256": "05fadb5dc814ecc7bdb81d74141e292c220542c29df3c3fd80ad4326f1e8dee1",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5201-30.fits",
+    "tile": 30,
+    "scale": 5201
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5202-30.fits",
+    "bytes": 101419200,
+    "sha256": "8b478ddab462aaa74153e176dfbede7622adfa937c0ab7ee65cedf5a31ae2343",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5202-30.fits",
+    "tile": 30,
+    "scale": 5202
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5203-30.fits",
+    "bytes": 51027840,
+    "sha256": "f1ebee93b0c8754e1fb72df725dee9ac054341947bf5d7a0bd8b5456f2bb73ea",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5203-30.fits",
+    "tile": 30,
+    "scale": 5203
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5204-30.fits",
+    "bytes": 25413120,
+    "sha256": "74a9465402679b6173124ec962bc187c029ce58d9e1eb02c4f52c499c01b1960",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5204-30.fits",
+    "tile": 30,
+    "scale": 5204
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5205-30.fits",
+    "bytes": 12810240,
+    "sha256": "24247ba11e47f0e5a92af63eaab63c1e9be557e09495b567edc29398f9176ed7",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5205-30.fits",
+    "tile": 30,
+    "scale": 5205
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5206-30.fits",
+    "bytes": 6410880,
+    "sha256": "166468c97bbf5f6256d7fcfec750c9bf13c776ec2220d74bd6787126d118dabf",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5206-30.fits",
+    "tile": 30,
+    "scale": 5206
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5200-32.fits",
+    "bytes": 364734720,
+    "sha256": "af8fbfcfc7090603e7e840b9e0057faaae86443473ae6189f09cc1cd7d5ad8ad",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5200-32.fits",
+    "tile": 32,
+    "scale": 5200
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5201-32.fits",
+    "bytes": 199247040,
+    "sha256": "b840f42e673d7ee275ec65f50a504ac0e1786f312ccbd8d96c7ff8d373b0971f",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5201-32.fits",
+    "tile": 32,
+    "scale": 5201
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5202-32.fits",
+    "bytes": 101370240,
+    "sha256": "2ff1c36f06884847be80b2b34111a6536ab085283f354d288677c7abb9aaae7e",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5202-32.fits",
+    "tile": 32,
+    "scale": 5202
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5203-32.fits",
+    "bytes": 51027840,
+    "sha256": "efe94da8799cdd148c78e6241715f8cb01ea74adde63757f4269b1c8579d5784",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5203-32.fits",
+    "tile": 32,
+    "scale": 5203
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5204-32.fits",
+    "bytes": 25413120,
+    "sha256": "bae3bb4148eff61b67451d812a3e6d7be86977c01b74e630db150cbb0470c8bb",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5204-32.fits",
+    "tile": 32,
+    "scale": 5204
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5205-32.fits",
+    "bytes": 12810240,
+    "sha256": "60dd71e2fb64a9050da6c9e2430b7f0619c71f6440ffd6bd86b7ad2aa6399cc1",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5205-32.fits",
+    "tile": 32,
+    "scale": 5205
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5206-32.fits",
+    "bytes": 6410880,
+    "sha256": "24e2f04920ffbe526ec52e49f27cbd796d70d5611ef43b03b0d5764c49b9cf76",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5206-32.fits",
+    "tile": 32,
+    "scale": 5206
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5200-47.fits",
+    "bytes": 394099200,
+    "sha256": "8899cb737f05c85bcb8b2341395498139d305740642c06f3c5bbf084f2f324e4",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5200-47.fits",
+    "tile": 47,
+    "scale": 5200
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5201-47.fits",
+    "bytes": 202803840,
+    "sha256": "9d28b60d9d62eb926fd013e168b9afa33c502325cba49b34134b47181a114ae9",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5201-47.fits",
+    "tile": 47,
+    "scale": 5201
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5202-47.fits",
+    "bytes": 101424960,
+    "sha256": "0e31c8b20cdff2e13b1798520e9f2f6f2f008d1109f7718f67dfef8e0140a896",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5202-47.fits",
+    "tile": 47,
+    "scale": 5202
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5203-47.fits",
+    "bytes": 51027840,
+    "sha256": "344c8a5039a398096ee180938ad81bf52303c7af0a6eabc4da2871a11b29925f",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5203-47.fits",
+    "tile": 47,
+    "scale": 5203
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5204-47.fits",
+    "bytes": 25413120,
+    "sha256": "1a76686e5b203e1f16b9e4cd675ac2abc46d1f535d213bb900debec972514ce3",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5204-47.fits",
+    "tile": 47,
+    "scale": 5204
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5205-47.fits",
+    "bytes": 12810240,
+    "sha256": "9e1983bcf90eaa4d1541a31526db8cfe639d74b4bfec7c5f3ff87e393ef8dce5",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5205-47.fits",
+    "tile": 47,
+    "scale": 5205
+  },
+  {
+    "file": "/raid_ut2/home/jerome/astrometry/gaia-lite/index-5206-47.fits",
+    "bytes": 6410880,
+    "sha256": "19ed0d2e4cadceda60ebad283c231b55d0bcf77833e6b64b259bcdd970eb5668",
+    "url": "https://portal.nersc.gov/project/cosmo/temp/dstn/index-5200/LITE/index-5206-47.fits",
+    "tile": 47,
+    "scale": 5206
+  }
+]
