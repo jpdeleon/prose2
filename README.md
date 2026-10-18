@@ -439,10 +439,13 @@ methods and defaults remain available. This backend requires a POSIX host.
 
 Install [astrometry.net](https://astrometrynet.readthedocs.io/en/latest/build.html)
 separately and make `solve-field` available on PATH (or pass `--solve-field`).
-Download [prebuilt reference indexes](https://astrometrynet.readthedocs.io/en/latest/readme.html#getting-index-files)
-covering the field sizes and sky regions you observe. Index scale numbers describe
+Download [prebuilt reference indexes](https://data.astrometry.net/)
+covering the field sizes and sky regions you observe. The project currently
+recommends Tycho-2 + Gaia-DR2 5200-series LIGHT indexes for fields below one
+degree; the older 4200 series uses 2MASS. Index scale numbers describe
 star-pattern diameters, not image widths. For typical full-frame MuSCAT/MuSCAT2
-images, 4200–4203 (2–8 arcminute patterns) are a starting range to benchmark;
+images, scales 0–3 (2–8 arcminute patterns), such as 5200–5203, are a starting
+range to benchmark;
 check the actual dimensions, binning and pixel scale before selecting indexes.
 Include every required sky tile at each chosen scale. No indexes are downloaded
 automatically. [Building custom indexes](https://astrometrynet.readthedocs.io/en/latest/build-index.html)
@@ -516,7 +519,7 @@ Run the same explicitly selected calibrated frames through both backends:
 uv run python -m prose.scripts.benchmark_astrometry \
   '/data/MuSCAT2/night_calibrated/*_calibrated.fits' \
   --astrometry-config "$HOME/astrometry/astrometry.cfg" \
-  --index-label '2MASS 4200-4203, all sky tiles' \
+  --index-label 'Tycho-2 + Gaia-DR2 5200-5203 LIGHT, chosen sky tiles' \
   --limit 3 --repeats 1 --astrometry-timeout 120 \
   --output-dir "$HOME/temp/astrometry-comparison"
 ```
@@ -571,5 +574,49 @@ Reports are checkpointed after each attempt, with unavailable metrics as null
 and displayed/serialized numbers limited to six decimal places. A completed
 benchmark exits successfully even if individual solves fail; setup failures exit
 with code 2. Offline tests verify known positional offsets, rotation, distortion,
-compressed-image staging, failure accounting, and request pacing. No measured
-local-versus-online science-frame results are bundled yet.
+compressed-image staging, failure accounting, and request pacing.
+
+
+#### Recorded MuSCAT2 comparison (2026-10-18)
+
+The [JSON report](benchmarks/astrometry/2026-10-18-muscat2/results.json) and
+[paired CSV](benchmarks/astrometry/2026-10-18-muscat2/results.csv) record one
+calibrated TOI07475.01 frame per band from 2026-03-10 (1024 × 1024 pixels,
+0.5-second exposures). Both backends received identical WCS-free copies and the
+same pointing/scale hints. Original FITS checksums were unchanged after the run.
+Local astrometry.net 0.98 used Tycho-2 + Gaia-DR2 5200–5203 LIGHT, XY HEALPix 26
+at nside 2. Both backends received a 120-second timeout setting; local enforces a
+wall deadline, whereas nova's network operations can extend beyond its solve
+budget. Upload visibility was private.
+
+| Band | Local wall time (s) | Nova wall time (s) | Grid RMS difference (arcsec) | Grid RMS difference (pixels) |
+| --- | ---: | ---: | ---: | ---: |
+| g | timeout at 120.01 | 10.64 | unavailable | unavailable |
+| r | 15.12 | 16.58 | 3.146 | 7.240 |
+| i | 2.20 | 10.09 | 0.455 | 1.047 |
+| z_s | 1.90 | 12.03 | 0.772 | 1.764 |
+
+Local returned a WCS passing the basic sanity checks in 3/4 attempts; nova did
+so in 4/4. Timing comparisons among the three paired successes exclude the
+local g timeout. This small, single-target run does not establish a general
+speedup or a default replacement for nova. The r solutions disagree by up to
+7.497 arcsec on the grid, despite passing the celestial/scale checks; neither
+solution was validated against an independent truth catalog. The g source list
+also differed between local and nova extraction (943 versus 270 sources); the
+cause of its local timeout has not been isolated.
+
+This was one repetition per frame with uncontrolled OS/server caches. The g
+frame had earlier local and nova verification attempts. Bulk index downloads
+finished before the recorded benchmark began. WCS differences use a 5-by-5 grid
+covering the image, rather than just the field centre.
+
+The host installation is user-local: `~/.local/bin/solve-field` wraps Ubuntu's
+`0.98+dfsg-1build1` binaries under `~/.local/opt/astrometry-0.98`, without changing
+system packages or prose conda dependencies. `~/astrometry/astrometry.cfg`
+selects the installed directories. The host has full-sky 2MASS 4200–4203
+(192 checksum-verified files, 29.014 GiB) plus the four regional Gaia LIGHT
+files used here (approximately 646 MiB); the Gaia coverage is not all sky.
+`~/astrometry/gaia-field.cfg` reproduces the benchmark's index selection.
+Package/index checksum manifests and installation details are retained beside
+the installed tools and indexes. The packaged solver's Python helpers use their
+private Ubuntu dependencies; the benchmark itself runs in the prose conda env.
