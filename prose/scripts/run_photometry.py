@@ -93,7 +93,11 @@ from prose.core.source import PointSource, Sources
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
-from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
+from prose.scripts.solve_wcs_astrometry import (
+    inject_wcs_into_file,
+    load_wcs_fits,
+    add_local_solver_arguments,
+)
 from prose.utils import (
     LCO_SITES,
     PIXSCALES,
@@ -3121,9 +3125,7 @@ def differential_photometry(
         # will itself select (stddiff); the mask applies to all stars/frames.
         try:
             fluxes.estimate_best_aperture()
-            fluxes = fluxes.sigma_clip_flux_poly(
-                sigma=SIGMA_FLUX, degree=POLY_DEG
-            )
+            fluxes = fluxes.sigma_clip_flux_poly(sigma=SIGMA_FLUX, degree=POLY_DEG)
         except (ValueError, np.linalg.LinAlgError):
             logger.warning(
                 f"!!! FLUX POLY SIGMA CLIPPING: could not fit degree-{POLY_DEG} "
@@ -4741,6 +4743,16 @@ def _calibration_args(
     if bands:
         calib_args.extend(["--bands", *bands])
     calib_args.extend(["--solve_wcs", args.wcs_method])
+    if args.wcs_method == "astrometry-local":
+        for attribute, flag in (
+            ("astrometry_config", "--astrometry-config"),
+            ("astrometry_temp_dir", "--astrometry-temp-dir"),
+            ("solve_field", "--solve-field"),
+            ("astrometry_timeout", "--astrometry-timeout"),
+        ):
+            value = getattr(args, attribute, None)
+            if value is not None:
+                calib_args.extend([flag, str(value)])
     if args.test_run:
         calib_args.append("--test_run")
     if args.verbose:
@@ -5050,15 +5062,16 @@ def parse_args(argv=None) -> argparse.Namespace:
         action="store_true",
         help="Use barycorrpy for BJD-TDB (default: astropy light-travel).",
     )
+    add_local_solver_arguments(ap)
     ap.add_argument(
         "--wcs_method",
         "--wcs-method",
         dest="wcs_method",
-        choices=["twirl", "astrometry.net"],
+        choices=["twirl", "astrometry.net", "astrometry-local"],
         default="astrometry.net",
         help="WCS solving method for calibration: 'twirl' (twirl+Gaia, no API key "
         "needed) or 'astrometry.net' (nova.astrometry.net, requires ASTROMETRY_NET_API_KEY). "
-        "Default: %(default)s.",
+        "Use astrometry-local for offline solve-field. Default: %(default)s.",
     )
     ap.add_argument(
         "--test_run",

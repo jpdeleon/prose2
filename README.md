@@ -429,3 +429,80 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+
+### Local astrometry.net plate solving
+
+An optional local backend runs `solve-field` offline. It needs no nova API key
+and never falls back to an upload. Existing `astrometry.net`/nova and `twirl`
+methods and defaults remain available. This backend requires a POSIX host.
+
+Install [astrometry.net](https://astrometrynet.readthedocs.io/en/latest/build.html)
+separately and make `solve-field` available on PATH (or pass `--solve-field`).
+Download [prebuilt reference indexes](https://astrometrynet.readthedocs.io/en/latest/readme.html#getting-index-files)
+covering the field sizes and sky regions you observe. Index scale numbers describe
+star-pattern diameters, not image widths. For typical full-frame MuSCAT/MuSCAT2
+images, 4200–4203 (2–8 arcminute patterns) are a starting range to benchmark;
+check the actual dimensions, binning and pixel scale before selecting indexes.
+Include every required sky tile at each chosen scale. No indexes are downloaded
+automatically. [Building custom indexes](https://astrometrynet.readthedocs.io/en/latest/build-index.html)
+is optional.
+
+Create a backend configuration with absolute paths, for example
+`$HOME/astrometry/astrometry.cfg`:
+
+```text
+add_path /absolute/path/to/astrometry/indexes
+autoindex
+```
+
+Solve one calibrated image and save a sidecar without changing the image:
+
+```sh
+solve-wcs --fits /data/example_calibrated.fits --backend local \
+  --astrometry-config "$HOME/astrometry/astrometry.cfg" \
+  --wcs-output /data/example.wcs.fits --timeout 120 --verbose
+```
+
+Without `--wcs-output`, the sidecar is `<input_stem>_wcs.fits` beside the input.
+Local standalone solving rejects `--out-dir` unless `--dry-run` is given, and
+rejects an output path equal to the input. The nova path retains its existing
+explicit directory-injection behavior.
+
+For MuSCAT/MuSCAT2 calibration, use `--solve-wcs astrometry-local` on either
+`prose.scripts.calibrate_muscat` or `prose.scripts.calibrate_muscat2`. Photometry
+forwards the local options to calibration:
+
+```sh
+photometry --data_dir /data/MuSCAT2/night --target_name TARGET \
+  --wcs-method astrometry-local \
+  --astrometry-config "$HOME/astrometry/astrometry.cfg" \
+  --astrometry-timeout 120
+```
+
+Calibration tries the first, middle and last generated calibrated frames until
+one yields a valid solution. It applies that solution only to this band's
+generated calibrated files and caches `.wcs/<band>_astrometry-local.wcs.fits`.
+Raw frames remain unchanged. BANZAI instruments retain their existing header WCS.
+Header pointing and pixel-scale hints constrain the search; positive `PIXSCALE`,
+`SECPIX` or `CCDSCALE` values precede instrument scale defaults. The local result
+must have celestial axes and a pixel scale within 20% of that hint.
+
+Each local attempt has a CPU limit and a wall deadline (300 seconds by default,
+including lock wait). The backend configuration can impose a lower CPU limit.
+Only one local solve runs per user/host at a time, even across photometry jobs.
+The default lock is `~/temp/prose-astrometry.lock`; service accounts can share an
+absolute `PROSE_ASTROMETRY_LOCK` path. The lock file persists and is released by
+the OS when the process exits. Workspaces and child-process temporary files live
+under `~/temp` or `--astrometry-temp-dir` and are cleaned after each attempt.
+Timeouts, interrupts and SIGTERM cancellation of the main solving thread stop
+the solver's process group. Failures log the solver output tail and return no WCS.
+
+Offline tests exercise a real fake-executable subprocess, without indexes or
+network access. To run the optional real-frame check after installing indexes:
+
+```sh
+PROSE_LOCAL_ASTROMETRY_TEST_FITS=/data/example_calibrated.fits \
+PROSE_LOCAL_ASTROMETRY_TEST_CONFIG="$HOME/astrometry/astrometry.cfg" \
+uv run pytest tests/scripts/test_astrometry_local.py -k real_local_solver
+```
