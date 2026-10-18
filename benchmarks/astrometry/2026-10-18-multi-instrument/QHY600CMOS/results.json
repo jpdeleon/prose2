@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "created_utc": "2026-10-18T04:19:13.834918+00:00",
+  "metadata": {
+    "benchmark_sha256": "3f3b2c391699dd4790dac854274006ba22a7b641101e58967a483435693a28df",
+    "solver_module_sha256": "8e8f6dc44f7c2d04260e956a11dfa50d47111da98aabda47752e092868904818",
+    "command": [
+      "/raid_ut2/home/jerome/miniconda3/envs/prose/bin/python3",
+      "-m",
+      "prose.scripts.benchmark_astrometry",
+      "/data/QHY600CMOS/261008/coj0m416-sq36-20261008-0094-e91.fits",
+      "/data/QHY600CMOS/261008/coj0m416-sq36-20261008-1322-e91.fits",
+      "--output-dir",
+      "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS",
+      "--limit",
+      "2",
+      "--repeats",
+      "1",
+      "--astrometry-timeout",
+      "120",
+      "--astrometry-config",
+      "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS.cfg",
+      "--index-label",
+      "Tycho-2 + Gaia-DR2 5200 LIGHT, scales 5200-5206, XY HEALPix nside2 tiles [47]; index-manifest.json SHA256"
+    ],
+    "python": "3.10.15",
+    "platform": "Linux-7.0.0-14-generic-x86_64-with-glibc2.43",
+    "prose": "3.3.4",
+    "numpy": "1.26.4",
+    "astropy": "5.3.4",
+    "astroquery": "0.4.7",
+    "local_executable": "/raid_ut2/home/jerome/.local/bin/solve-field",
+    "local_version": "0.98",
+    "local_version_exit_code": 0,
+    "config": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS.cfg",
+    "config_sha256": "d4c21e332ee610d44b0eec5b3878378e6400a3df7bbaa00a91b022658ce95977",
+    "index_label": "Tycho-2 + Gaia-DR2 5200 LIGHT, scales 5200-5206, XY HEALPix nside2 tiles [47]; index-manifest.json SHA256",
+    "nova_url": "https://nova.astrometry.net",
+    "local_options": {
+      "executable": "solve-field",
+      "config": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS.cfg",
+      "temp_dir": null,
+      "timeout": 120.0
+    }
+  },
+  "settings": {
+    "timeout_s": 120.0,
+    "repeats": 1,
+    "grid_size": 5,
+    "online_delay_s": 10,
+    "publicly_visible": "n",
+    "validation": "identical finite-parameter, celestial-axis and header-scale checks for both backends",
+    "timing": "end-to-end backend wall time; excludes benchmark staging, validation and pacing",
+    "pixel_offsets": "local sky positions transformed to nova pixels; zero-based image grid",
+    "accuracy": "pairwise WCS agreement, not independent astrometric truth"
+  },
+  "inputs": [
+    {
+      "path": "/mnt_ut3/raid_ut3/data/QHY600CMOS/261008/coj0m416-sq36-20261008-0094-e91.fits",
+      "sha256": "78d1c3a71d1f1585b05b87bbd14dae43b5e0382217155a33feb06a623b0a82ae",
+      "source_hdu": 0,
+      "shape": [
+        2400,
+        2400
+      ],
+      "probe": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/inputs/000.fits",
+      "probe_sha256": "b45993ef9dbc0236c58e5817d6764ba463fb1e81edb4b4b16816afac8d652722",
+      "hints": {
+        "center_ra": 311.298207,
+        "center_dec": -31.343742,
+        "radius": 0.5,
+        "scale_est": 0.74,
+        "scale_err": 20.0,
+        "scale_units": "arcsecperpix"
+      }
+    },
+    {
+      "path": "/mnt_ut3/raid_ut3/data/QHY600CMOS/261008/coj0m416-sq36-20261008-1322-e91.fits",
+      "sha256": "021599dc451a8a8b699061999e7dfbee445ebc9ae66de94ef50684d24c8a5206",
+      "source_hdu": 0,
+      "shape": [
+        2400,
+        2400
+      ],
+      "probe": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/inputs/001.fits",
+      "probe_sha256": "4fe450b1dad795e5cee084d03b025f65c1fd40dee8a18c17967da2fd35f0f414",
+      "hints": {
+        "center_ra": 311.298279,
+        "center_dec": -31.343632,
+        "radius": 0.5,
+        "scale_est": 0.74,
+        "scale_err": 20.0,
+        "scale_units": "arcsecperpix"
+      }
+    }
+  ],
+  "results": [
+    {
+      "frame": 0,
+      "input": "/mnt_ut3/raid_ut3/data/QHY600CMOS/261008/coj0m416-sq36-20261008-0094-e91.fits",
+      "repeat": 0,
+      "local": {
+        "elapsed_s": 5.960403,
+        "started_utc": "2026-10-18T04:19:14.876193+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/logs/000-r000-local.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/wcs/000-r000-local.fits",
+        "scale_x_arcsec": 0.743567,
+        "scale_y_arcsec": 0.743571
+      },
+      "nova": {
+        "elapsed_s": 14.137769,
+        "started_utc": "2026-10-18T04:19:20.857200+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/logs/000-r000-nova.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/wcs/000-r000-nova.fits",
+        "scale_x_arcsec": 0.743359,
+        "scale_y_arcsec": 0.743524
+      },
+      "agreement": {
+        "grid_samples": 25,
+        "center_arcsec": 0.047111,
+        "sky_median_arcsec": 0.042522,
+        "sky_rms_arcsec": 0.051605,
+        "sky_p95_arcsec": 0.084026,
+        "sky_max_arcsec": 0.088859,
+        "pixel_median": 0.057185,
+        "pixel_rms": 0.069421,
+        "pixel_max": 0.119587
+      },
+      "comparison_error": null,
+      "order": [
+        "local",
+        "nova"
+      ]
+    },
+    {
+      "frame": 1,
+      "input": "/mnt_ut3/raid_ut3/data/QHY600CMOS/261008/coj0m416-sq36-20261008-1322-e91.fits",
+      "repeat": 0,
+      "local": {
+        "elapsed_s": 6.660533,
+        "started_utc": "2026-10-18T04:20:02.602702+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/logs/001-r000-local.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/wcs/001-r000-local.fits",
+        "scale_x_arcsec": 0.743606,
+        "scale_y_arcsec": 0.743582
+      },
+      "nova": {
+        "elapsed_s": 17.561955,
+        "started_utc": "2026-10-18T04:19:45.019666+00:00",
+        "solved": true,
+        "status": "valid",
+        "error": null,
+        "log": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/logs/001-r000-nova.log",
+        "wcs": "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/QHY600CMOS/wcs/001-r000-nova.fits",
+        "scale_x_arcsec": 0.743413,
+        "scale_y_arcsec": 0.743561
+      },
+      "agreement": {
+        "grid_samples": 25,
+        "center_arcsec": 0.021597,
+        "sky_median_arcsec": 0.024537,
+        "sky_rms_arcsec": 0.044425,
+        "sky_p95_arcsec": 0.083679,
+        "sky_max_arcsec": 0.109807,
+        "pixel_median": 0.033005,
+        "pixel_rms": 0.059739,
+        "pixel_max": 0.147595
+      },
+      "comparison_error": null,
+      "order": [
+        "nova",
+        "local"
+      ]
+    }
+  ],
+  "summary": {
+    "local": {
+      "attempts": 2,
+      "solved": 2,
+      "valid": 2,
+      "valid_fraction": 1.0,
+      "median_elapsed_s": 6.310468,
+      "p95_elapsed_s": 6.625527,
+      "median_valid_elapsed_s": 6.310468
+    },
+    "nova": {
+      "attempts": 2,
+      "solved": 2,
+      "valid": 2,
+      "valid_fraction": 1.0,
+      "median_elapsed_s": 15.849862,
+      "p95_elapsed_s": 17.390746,
+      "median_valid_elapsed_s": 15.849862
+    },
+    "paired_valid": 2,
+    "paired_median_nova_over_local": 2.504334,
+    "agreement": {
+      "pairs": 2,
+      "median_center_arcsec": 0.034354,
+      "median_frame_rms_arcsec": 0.048015,
+      "max_grid_arcsec": 0.109807,
+      "median_frame_pixel_rms": 0.06458,
+      "max_grid_pixels": 0.147595
+    }
+  }
+}

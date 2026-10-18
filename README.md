@@ -613,10 +613,31 @@ covering the image, rather than just the field centre.
 The host installation is user-local: `~/.local/bin/solve-field` wraps Ubuntu's
 `0.98+dfsg-1build1` binaries under `~/.local/opt/astrometry-0.98`, without changing
 system packages or prose conda dependencies. `~/astrometry/astrometry.cfg`
-selects the installed directories. The host has full-sky 2MASS 4200–4203
+selects the installed directories. The initial installation included full-sky
+2MASS 4200–4203
 (192 checksum-verified files, 29.014 GiB) plus the four regional Gaia LIGHT
 files used here (approximately 646 MiB); the Gaia coverage is not all sky.
-`~/astrometry/gaia-field.cfg` reproduces the benchmark's index selection.
+The original `~/astrometry/gaia-field.cfg` used autoindex with those four Gaia
+files; later downloads expanded that directory. To reproduce this initial run,
+select only the four 5200–5203 tile-26 files explicitly.
 Package/index checksum manifests and installation details are retained beside
 the installed tools and indexes. The packaged solver's Python helpers use their
 private Ubuntu dependencies; the benchmark itself runs in the prose conda env.
+
+#### Seven-instrument comparison (2026-10-18)
+
+A [second recorded run](benchmarks/astrometry/2026-10-18-multi-instrument/README.md)
+compares 16 calibrated frames across MuSCAT, MuSCAT2, MuSCAT3, MuSCAT4, Sinistro,
+SBIG, and QHY600, using Gaia LIGHT scales 5200–5206 with verified regional sky
+coverage. Both backends returned WCS solutions passing the basic checks in 14/16
+attempts. Local timed out on MuSCAT2 g and finished without solving one SBIG frame;
+nova's two missing WCS results were connection failures. Local SBIG wall times
+were 87–102 seconds versus 13–16 seconds online. MuSCAT2 r solutions disagreed by
+3.146 arcsec RMS. The report includes per-instrument timings, every attempt,
+logs, generated WCS metadata, exact configs, index checksums, and source-integrity
+checks. Pairwise WCS agreement is not independent astrometric accuracy.
+
+The host now has 42 regional Gaia LIGHT index files (4.279 GiB), covering XY tiles
+0, 1, 26, 30, 32, and 47 at nside 2 and scales 5200–5206. This is not all-sky Gaia
+coverage. The new report archives explicit per-instrument configs so subsequent
+index downloads do not change their selections.

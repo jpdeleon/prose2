@@ -1,0 +1,98 @@
+[
+  {
+    "instrument": "MuSCAT",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT/260123_calibrated/MSCT0_2601230001_calibrated.fits",
+    "sha256": "9317fd69cac4919e2aef44f193d78d95d5cdfa1015bf4bd9674c942ef4e07249",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "MuSCAT",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT/260123_calibrated/MSCT1_2601230001_calibrated.fits",
+    "sha256": "45ce93bb5d7e85ce0b88024b14924df091e1191b9fd98d47f40dbdcd712089c4",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "MuSCAT2",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT20_2603100239_calibrated.fits",
+    "sha256": "2c35846c64c07a4daed3efada1fb9249635fb879a71085cb2ae6a2467227f2b8",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "MuSCAT2",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT21_2603100357_calibrated.fits",
+    "sha256": "56f424289155f97c8dc4ec6b7f4cc2388b000e799b97b787b043a9782a9e2869",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "MuSCAT2",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT22_2603100239_calibrated.fits",
+    "sha256": "d367f87400c1dc1c080244f9649c54be6357d639803247fdfe177f2841c8d9e1",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "MuSCAT2",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT2/260310_calibrated/MCT23_2603100239_calibrated.fits",
+    "sha256": "72b621dc1ef90b27d48338779a218ab0eabfa0b20d1672e94de271b92f5fd83c",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "MuSCAT3",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT3/260730/ogg2m001-ep02-20260730-0056-e91.fits",
+    "sha256": "e6acafb96ea59984f09c83120ceb40d23df4f0617f600ae1384bc71c40aa5d86",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "MuSCAT3",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT3/260730/ogg2m001-ep03-20260730-0057-e91.fits",
+    "sha256": "4956c7fdcbfe0831ca02f3297d1f654b0be46db3b331a55dfa851303949ebff4",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "MuSCAT4",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT4/260927/coj2m002-ep06-20260927-0057-e91.fits",
+    "sha256": "b6ca41a97d65d513a7e70ffa087ac0b2a15586ffed8f1ca9e9173f9c99be3040",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "MuSCAT4",
+    "path": "/mnt_ut3/raid_ut3/data/MuSCAT4/260927/coj2m002-ep07-20260927-0058-e91.fits",
+    "sha256": "fbb99f507ba35983065eff3b8d6225ac7ceacde51e88c15deab762b0224ee941",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "QHY600CMOS",
+    "path": "/mnt_ut3/raid_ut3/data/QHY600CMOS/261008/coj0m416-sq36-20261008-0094-e91.fits",
+    "sha256": "78d1c3a71d1f1585b05b87bbd14dae43b5e0382217155a33feb06a623b0a82ae",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "QHY600CMOS",
+    "path": "/mnt_ut3/raid_ut3/data/QHY600CMOS/261008/coj0m416-sq36-20261008-1322-e91.fits",
+    "sha256": "021599dc451a8a8b699061999e7dfbee445ebc9ae66de94ef50684d24c8a5206",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "SBIGSTL6303",
+    "path": "/mnt_ut3/raid_ut3/data/SBIGSTL6303/221107/tfn0m410-kb24-20221107-0103-e91.fits",
+    "sha256": "56cd4b6065f49c49b090b5de0200515f34fbd508fd04103d0349571e814a2461",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "SBIGSTL6303",
+    "path": "/mnt_ut3/raid_ut3/data/SBIGSTL6303/221107/tfn0m414-kb95-20221107-0123-e91.fits",
+    "sha256": "435c3204bc931f7fd3eb58e0ea8862a5b7a0b9c658b733fe358a7a03e7981ed6",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "Sinistro",
+    "path": "/mnt_ut3/raid_ut3/data/Sinistro/261016/cpt1m010-fa14-20261016-0180-e91.fits",
+    "sha256": "b0247b3a77385e6b1ba79c9b683ad2a9b7ad1415a907338880b31f2fe11deec3",
+    "unchanged_after_run": true
+  },
+  {
+    "instrument": "Sinistro",
+    "path": "/mnt_ut3/raid_ut3/data/Sinistro/261016/lsc1m009-fa04-20261016-0090-e91.fits",
+    "sha256": "6477e932df06941b536f8efff533284adc742426128ad285234d4b7472b4aa86",
+    "unchanged_after_run": true
+  }
+]

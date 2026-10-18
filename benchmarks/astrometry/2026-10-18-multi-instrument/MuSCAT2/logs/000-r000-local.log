@@ -1,0 +1,103 @@
+Solving 000.fits locally (timeout 120.0 s)
+Local astrometry timeout after 120.0 s
+Local plate solve failed (exit -9): Reading input file 1 of 1: "/raid_ut2/home/jerome/temp/astrometry-multi-20261018/MuSCAT2/inputs/000.fits"...
+Running command: /usr/bin/python3 -m astrometry.util.image2pnm --infile /raid_ut2/home/jerome/temp/astrometry-multi-20261018/MuSCAT2/inputs/000.fits --uncompressed-outfile /raid_ut2/home/jerome/temp/prose-astrometry-vg39iabd/tmp.uncompressed.mUTGO1 --outfile /raid_ut2/home/jerome/temp/prose-astrometry-vg39iabd/tmp.ppm.JRoq3O --ppm --mydir /raid_ut2/home/jerome/.local/opt/astrometry-0.98/usr/bin/solve-field
+Extracting sources...
+simplexy: found 943 sources.
+Solving...
+Reading file "/raid_ut2/home/jerome/temp/prose-astrometry-vg39iabd/000.axy"...
+Only searching for solutions within 0.5 degrees of RA,Dec (182.037,0.0994444)
+Field 1 did not solve (index index-5200-26.fits, field objects 1-10).
+Field 1 did not solve (index index-5201-26.fits, field objects 1-10).
+Field 1 did not solve (index index-5202-26.fits, field objects 1-10).
+Field 1 did not solve (index index-5203-26.fits, field objects 1-10).
+Field 1 did not solve (index index-5204-26.fits, field objects 1-10).
+Field 1 did not solve (index index-5205-26.fits, field objects 1-10).
+Field 1 did not solve (index index-5200-26.fits, field objects 11-20).
+Field 1 did not solve (index index-5201-26.fits, field objects 11-20).
+Field 1 did not solve (index index-5202-26.fits, field objects 11-20).
+Field 1 did not solve (index index-5203-26.fits, field objects 11-20).
+Field 1 did not solve (index index-5204-26.fits, field objects 11-20).
+Field 1 did not solve (index index-5205-26.fits, field objects 11-20).
+Field 1 did not solve (index index-5200-26.fits, field objects 21-30).
+Field 1 did not solve (index index-5201-26.fits, field objects 21-30).
+Field 1 did not solve (index index-5202-26.fits, field objects 21-30).
+Field 1 did not solve (index index-5203-26.fits, field objects 21-30).
+Field 1 did not solve (index index-5204-26.fits, field objects 21-30).
+Field 1 did not solve (index index-5205-26.fits, field objects 21-30).
+Field 1 did not solve (index index-5200-26.fits, field objects 31-40).
+Field 1 did not solve (index index-5201-26.fits, field objects 31-40).
+Field 1 did not solve (index index-5202-26.fits, field objects 31-40).
+Field 1 did not solve (index index-5203-26.fits, field objects 31-40).
+Field 1 did not solve (index index-5204-26.fits, field objects 31-40).
+Field 1 did not solve (index index-5205-26.fits, field objects 31-40).
+Field 1 did not solve (index index-5200-26.fits, field objects 41-50).
+Field 1 did not solve (index index-5201-26.fits, field objects 41-50).
+  log-odds ratio 20.4214 (7.39405e+08), 8 match, 0 conflict, 20 distractors, 36 index.
+  RA,Dec = (181.727,0.236087), pixel scale 0.434055 arcsec/pix.
+Field 1 did not solve (index index-5202-26.fits, field objects 41-50).
+  log-odds ratio 17.008 (2.4349e+07), 8 match, 0 conflict, 20 distractors, 22 index.
+  RA,Dec = (181.727,0.2361), pixel scale 0.434765 arcsec/pix.
+  log-odds ratio 17.1513 (2.81007e+07), 8 match, 0 conflict, 20 distractors, 22 index.
+  RA,Dec = (181.727,0.236191), pixel scale 0.434765 arcsec/pix.
+Field 1 did not solve (index index-5203-26.fits, field objects 41-50).
+Field 1 did not solve (index index-5204-26.fits, field objects 41-50).
+Field 1 did not solve (index index-5205-26.fits, field objects 41-50).
+Field 1 did not solve (index index-5200-26.fits, field objects 51-60).
+Field 1 did not solve (index index-5201-26.fits, field objects 51-60).
+Field 1 did not solve (index index-5202-26.fits, field objects 51-60).
+Field 1 did not solve (index index-5203-26.fits, field objects 51-60).
+Field 1 did not solve (index index-5204-26.fits, field objects 51-60).
+Field 1 did not solve (index index-5205-26.fits, field objects 51-60).
+Field 1 did not solve (index index-5200-26.fits, field objects 61-70).
+Field 1 did not solve (index index-5201-26.fits, field objects 61-70).
+Field 1 did not solve (index index-5202-26.fits, field objects 61-70).
+Field 1 did not solve (index index-5203-26.fits, field objects 61-70).
+Field 1 did not solve (index index-5204-26.fits, field objects 61-70).
+Field 1 did not solve (index index-5205-26.fits, field objects 61-70).
+Field 1 did not solve (index index-5200-26.fits, field objects 71-80).
+Field 1 did not solve (index index-5201-26.fits, field objects 71-80).
+Field 1 did not solve (index index-5202-26.fits, field objects 71-80).
+Field 1 did not solve (index index-5203-26.fits, field objects 71-80).
+Field 1 did not solve (index index-5204-26.fits, field objects 71-80).
+Field 1 did not solve (index index-5205-26.fits, field objects 71-80).
+Field 1 did not solve (index index-5200-26.fits, field objects 81-90).
+Field 1 did not solve (index index-5201-26.fits, field objects 81-90).
+Field 1 did not solve (index index-5202-26.fits, field objects 81-90).
+Field 1 did not solve (index index-5203-26.fits, field objects 81-90).
+Field 1 did not solve (index index-5204-26.fits, field objects 81-90).
+Field 1 did not solve (index index-5205-26.fits, field objects 81-90).
+Field 1 did not solve (index index-5200-26.fits, field objects 91-100).
+Field 1 did not solve (index index-5201-26.fits, field objects 91-100).
+Field 1 did not solve (index index-5202-26.fits, field objects 91-100).
+Field 1 did not solve (index index-5203-26.fits, field objects 91-100).
+Field 1 did not solve (index index-5204-26.fits, field objects 91-100).
+Field 1 did not solve (index index-5205-26.fits, field objects 91-100).
+Field 1 did not solve (index index-5200-26.fits, field objects 101-110).
+Field 1 did not solve (index index-5201-26.fits, field objects 101-110).
+Field 1 did not solve (index index-5202-26.fits, field objects 101-110).
+Field 1 did not solve (index index-5203-26.fits, field objects 101-110).
+Field 1 did not solve (index index-5204-26.fits, field objects 101-110).
+Field 1 did not solve (index index-5205-26.fits, field objects 101-110).
+Field 1 did not solve (index index-5200-26.fits, field objects 111-120).
+Field 1 did not solve (index index-5201-26.fits, field objects 111-120).
+Field 1 did not solve (index index-5202-26.fits, field objects 111-120).
+Field 1 did not solve (index index-5203-26.fits, field objects 111-120).
+Field 1 did not solve (index index-5204-26.fits, field objects 111-120).
+Field 1 did not solve (index index-5205-26.fits, field objects 111-120).
+Field 1 did not solve (index index-5200-26.fits, field objects 121-130).
+Field 1 did not solve (index index-5201-26.fits, field objects 121-130).
+Field 1 did not solve (index index-5202-26.fits, field objects 121-130).
+Field 1 did not solve (index index-5203-26.fits, field objects 121-130).
+Field 1 did not solve (index index-5204-26.fits, field objects 121-130).
+Field 1 did not solve (index index-5205-26.fits, field objects 121-130).
+Field 1 did not solve (index index-5200-26.fits, field objects 131-140).
+Field 1 did not solve (index index-5201-26.fits, field objects 131-140).
+Field 1 did not solve (index index-5202-26.fits, field objects 131-140).
+Field 1 did not solve (index index-5203-26.fits, field objects 131-140).
+Field 1 did not solve (index index-5204-26.fits, field objects 131-140).
+Field 1 did not solve (index index-5205-26.fits, field objects 131-140).
+Field 1 did not solve (index index-5200-26.fits, field objects 141-150).
+Field 1 did not solve (index index-5201-26.fits, field objects 141-150).
+Field 1 did not solve (index index-5202-26.fits, field objects 141-150).
+Field 1 did not solve (index index-5203-26.fits, field objects 141-150).
