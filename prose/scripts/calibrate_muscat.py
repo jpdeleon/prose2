@@ -46,6 +46,10 @@ from prose.scripts.calibration_fallback import (
     find_frames_in_other_nights,
     night_distance_days,
 )
+from prose.scripts.test_window import (
+    DEFAULT_TEST_RUN_FRAMES,
+    select_test_run_frames,
+)
 from prose.utils import frames_from_obslog, scan_fits_headers
 
 logger = logging.getLogger("calibrate_muscat")
@@ -644,6 +648,8 @@ def calibrate_band(
     band: str,
     solve_wcs: str | bool | None = None,
     test_run: bool = False,
+    test_run_frames: int = DEFAULT_TEST_RUN_FRAMES,
+    test_run_center: int | None = None,
     data_dir: Path | None = None,
     fallback_calib_days: int = 30,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -680,7 +686,7 @@ def calibrate_band(
     if solve_wcs is True:  # backward compat: old bool True -> astrometry.net
         solve_wcs = "astrometry.net"
     if test_run:
-        sciences = sciences[:10]
+        sciences = select_test_run_frames(sciences, test_run_frames, test_run_center)
 
     darks = _fill_missing_calibration(
         darks, "DARK", band, data_dir, fallback_calib_days
@@ -776,7 +782,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--test_run",
         "--test-run",
         action="store_true",
-        help="Run on first 10 frames (darks, flats, sciences) per band for quick validation",
+        help="Run on a small subset of science frames per band for quick validation "
+        "(the first --test_run_frames, or a window around --test_run_center)",
+    )
+    ap.add_argument(
+        "--test_run_frames",
+        "--test-run-frames",
+        type=int,
+        default=DEFAULT_TEST_RUN_FRAMES,
+        help="Frames per band calibrated under --test_run (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--test_run_center",
+        "--test-run-center",
+        type=int,
+        default=None,
+        help="Under --test_run, centre the frame window on this FITS frame "
+        "number instead of taking the first frames; errors if the frame is absent",
     )
     ap.add_argument("--verbose", action="store_true", help="Log to console")
     ap.add_argument(
@@ -854,6 +876,8 @@ def main(argv: list[str] | None = None) -> int:
             band,
             solve_wcs=args.solve_wcs,
             test_run=args.test_run,
+            test_run_frames=args.test_run_frames,
+            test_run_center=args.test_run_center,
             data_dir=args.data_dir,
             fallback_calib_days=args.fallback_calib_days,
         )

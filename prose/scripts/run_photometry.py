@@ -4742,10 +4742,28 @@ def _calibration_args(
         calib_args.extend(["--bands", *bands])
     calib_args.extend(["--solve_wcs", args.wcs_method])
     if args.test_run:
-        calib_args.append("--test_run")
+        calib_args.extend(["--test_run", "--test_run_frames", str(args.test_run_frames)])
+        if args.refid is not None:
+            calib_args.extend(["--test_run_center", str(args.refid)])
     if args.verbose:
         calib_args.append("--verbose")
     return calib_args
+
+
+def _calibrated_cache_has_frame(calibrated_files: list[Path], number: int) -> bool:
+    """True when every camera in *calibrated_files* has the frame numbered
+    exactly *number*.
+
+    A ``--test_run`` calibrates only a window of frames, so a cache left by an
+    earlier test run elsewhere in the night does not contain a newly requested
+    ``--refid``; without this check the run would silently fall back to the
+    nearest cached frame.
+    """
+    cameras: dict[str, set[int | None]] = {}
+    for fp in calibrated_files:
+        camera = re.sub(r"_\d+(?:_calibrated)?\.fits$", "", Path(fp).name)
+        cameras.setdefault(camera, set()).add(_fits_file_number(fp))
+    return bool(cameras) and all(number in nums for nums in cameras.values())
 
 
 def _multisite_modes_from_headers(
@@ -5721,6 +5739,14 @@ def main(argv=None) -> int:
         calibrated_files = good_files
         need_calib = not calibrated_files
 
+        if args.test_run and args.refid is not None and not need_calib:
+            if not _calibrated_cache_has_frame(calibrated_files, args.refid):
+                logger.info(
+                    f"{calib_label}: calibrated frames do not include "
+                    f"--refid {args.refid}; re-calibrating"
+                )
+                need_calib = True
+
         if not args.test_run and not need_calib:
             raw_count = sum(len(fs) for fs in sciences.values())
             if len(calibrated_files) < raw_count:
@@ -5813,7 +5839,11 @@ def main(argv=None) -> int:
                 if isinstance(h, logging.FileHandler):
                     calib_mod.logger.addHandler(h)
                     _wcs_logger.addHandler(h)
-            ret = calib_mod.main(calib_args)
+            try:
+                ret = calib_mod.main(calib_args)
+            except ValueError as e:  # e.g. --refid absent from the raw frames
+                logger.error(f"{calib_label} calibration failed: {e}")
+                return 1
             if ret != 0:
                 logger.error(f"{calib_label} calibration failed")
                 return 1
