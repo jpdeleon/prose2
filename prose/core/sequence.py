@@ -5,6 +5,7 @@ from pathlib import Path
 
 import multiprocess as mp
 import numpy as np
+from multiprocess.reduction import ForkingPickler
 import yaml
 from tabulate import tabulate
 
@@ -291,14 +292,15 @@ class SequenceParallel(Sequence):
 
         self.n_processed_images = 0
         n = len(self.images)
-        processed_blocks = self.blocks
         images_i = list(enumerate(self.images))
+        # Serialize the blocks once here rather than once per image: they can
+        # hold a full reference image, and re-pickling them for every task
+        # made the parent process the bottleneck however many workers ran.
+        payload = bytes(ForkingPickler.dumps((self.blocks, loader)))
 
-        with mp.Pool() as pool:
+        with mp.Pool(initializer=_init_worker, initargs=(payload,)) as pool:
             for image in self.progress(
-                pool.imap(
-                    partial(_run_all, blocks=processed_blocks, loader=loader), images_i
-                ),
+                pool.imap(_run_all_in_worker, images_i),
                 total=n,
             ):
                 if not image.discard:
@@ -311,6 +313,21 @@ class SequenceParallel(Sequence):
         super().terminate()
         if self._has_data:
             self.data.terminate()
+
+
+_worker_payload = None
+
+
+def _init_worker(payload):
+    global _worker_payload
+    _worker_payload = payload
+
+
+def _run_all_in_worker(image_i):
+    # Unpickled per image so every image starts from fresh block state, as
+    # it did when the blocks were sent along with each task.
+    blocks, loader = ForkingPickler.loads(_worker_payload)
+    return _run_all(image_i, blocks=blocks, loader=loader)
 
 
 def _run_all(image_i, blocks=None, loader=None):
