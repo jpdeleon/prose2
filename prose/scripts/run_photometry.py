@@ -156,6 +156,9 @@ DEFAULT_GIF_STRIDE = 10
 TEST_RUN_FRAMES = 10  # frames per band used by --test_run
 FPS = 5
 GIF_MAX_PX = 512  # max GIF frame dimension [pix]; larger frames are downsampled
+CURVE_LABEL_PERCENTILE = 99  # stacked-curve label anchor: robust top of each curve
+CURVE_LABEL_OFFSET_PT = 2  # gap between curve top and its label [pt]
+CURVE_LABEL_HEADROOM_FRAC = 0.06  # y-range fraction reserved above top label
 
 # reference-image / detection defaults (mirror the template notebook)
 MAX_NUM_STARS = 20  # nth brightest stars to keep
@@ -3734,6 +3737,32 @@ def plot_lightcurves(
     _savefig(fig, path)
 
 
+def _label_curve(ax, t, y, text) -> float:
+    """Label a stacked curve just above its robust upper envelope.
+
+    The anchor ignores isolated outliers, and the fixed offset in points keeps
+    the label's distance from the curve independent of how many curves share
+    the panel. Returns the anchor y for ``_reserve_label_headroom``.
+    """
+    label_y = float(np.nanpercentile(y, CURVE_LABEL_PERCENTILE))
+    ax.annotate(
+        text,
+        xy=(t.max(), label_y),
+        xytext=(0, CURVE_LABEL_OFFSET_PT),
+        textcoords="offset points",
+        ha="right",
+        va="bottom",
+    )
+    return label_y
+
+
+def _reserve_label_headroom(ax, label_tops) -> None:
+    """Raise the y-limit so the top label fits (text is not autoscaled)."""
+    ymin, ymax = ax.get_ylim()
+    headroom = CURVE_LABEL_HEADROOM_FRAC * (ymax - ymin)
+    ax.set_ylim(ymin, max(ymax, max(label_tops) + headroom))
+
+
 def plot_raw_flux(
     band_results,
     path: Path,
@@ -3770,6 +3799,7 @@ def plot_raw_flux(
 
         ref_band_star_ids = band_results[band].get("ref_band_star_ids")
 
+        label_tops = []
         for j, i in enumerate(stars):
             y = fluxes.fluxes[diff.aperture, i][mask].copy()
             std_val = np.std(y)
@@ -3782,13 +3812,12 @@ def plot_raw_flux(
                 if mapped_id != -1:
                     label_id = mapped_id
 
-            ax.text(
-                t.max(),
-                np.mean(y) + 4,
-                label_id if i != diff.target else "target",
-                ha="right",
+            label_tops.append(
+                _label_curve(ax, t, y, label_id if i != diff.target else "target")
             )
             ax.plot(t, y, ".", c="0.8" if i != diff.target else band_color(band))
+
+        _reserve_label_headroom(ax, label_tops)
 
         ax.set_title(band)
         ax.set_xlabel(f"time (JD) - {t0}")
@@ -3830,13 +3859,17 @@ def plot_covariates(
         t = np.asarray(diff.time)
         t0 = int(t[0])
         t = t - t0
+        label_tops = []
         for i, name in enumerate(signals):
             raw = np.asarray(diff.df[name], dtype=float).copy()
             std_val = np.std(raw)
             denom = std_val or 1e-12
             y = (raw - np.mean(raw)) / denom + 8 * i
-            ax.text(t.max(), np.mean(y) + 4, f"{name} (std: {std_val:.2f})", ha="right")
+            label_tops.append(_label_curve(ax, t, y, f"{name} (std: {std_val:.2f})"))
             ax.plot(t, y, ".", c=bc if name == "flux" else "0.8")
+        # sharey=True: the limit only ever grows, so the last panel's call
+        # leaves room for every panel's top label.
+        _reserve_label_headroom(ax, label_tops)
         ax.set_xlabel(f"time (JD) - {t0}")
         ax.set_title(band)
         ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6))
