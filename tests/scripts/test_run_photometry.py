@@ -2672,6 +2672,99 @@ def test_plot_raw_flux_adds_utc_secondary_axis(tmp_path, monkeypatch):
     assert from_jd(t0) == pytest.approx(0.0)
 
 
+def _raw_flux_band_results(tmp_path, fluxes):
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from prose import FITSImage
+    from prose.core.source import Sources
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    hdr = w.to_header()
+    hdr["TELESCOP"] = "2m0a"
+    hdr["INSTRUME"] = "ep09"
+    hdr["SITEID"] = "coj"
+    hdr["OBJECT"] = "test"
+    hdr["EXPTIME"] = 1
+    hdr["FILTER"] = "gp"
+    hdr["AIRMASS"] = 1.0
+    hdr["JD"] = 2460000.0
+    hdr["DATE-OBS"] = "2025-04-16T00:00:00"
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, np.ones((20, 20)), header=hdr)
+
+    n_stars, n = fluxes.shape
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10 - k, 10 - k] for k in range(n_stars)]))
+    ref.telescope.jd_scale = "jd"
+    time = 2460000.0 + np.linspace(0.0, 0.1, n)
+
+    diff = SimpleNamespace(
+        time=time, target=0, comparisons=list(range(1, n_stars)), aperture=0
+    )
+    flux_obj = SimpleNamespace(time=time, fluxes=fluxes[None, :, :])
+    return {"gp": {"ref": ref, "diff": diff, "fluxes": flux_obj}}
+
+
+@pytest.mark.parametrize("outlier", [False, True])
+def test_plot_raw_flux_labels_stay_inside_axes(tmp_path, monkeypatch, outlier):
+    """Star ID labels must stay inside the panel for few, low-dispersion curves."""
+    rng = np.random.default_rng(1)
+    n = 200
+    # Uniform noise spans only ~±1.7 sigma, so mean + 4 sigma falls above
+    # the top curve's data range and used to push the label out of the axes.
+    fluxes = rng.uniform(990.0, 1010.0, size=(3, n))
+    if outlier:
+        fluxes[2, 5] = 1500.0
+    band_results = _raw_flux_band_results(tmp_path, fluxes)
+
+    captured = {}
+    monkeypatch.setattr(rp, "_savefig", lambda fig, path: captured.update(fig=fig))
+    rp.plot_raw_flux(band_results, tmp_path / "raw.png", "T", "inst", "d", 0)
+
+    _assert_labels_inside_axes(captured["fig"], n_axes=1, n_labels=3)
+
+
+def _assert_labels_inside_axes(fig, n_axes, n_labels):
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    # Secondary x-axes are also in fig.axes; keep only the panels with labels.
+    panels = [ax for ax in fig.axes if ax.texts]
+    assert len(panels) == n_axes
+    for ax in panels:
+        ax_box = ax.get_window_extent(renderer)
+        labels = [t for t in ax.texts if t.get_text()]
+        assert len(labels) == n_labels
+        for text in labels:
+            box = text.get_window_extent(renderer)
+            assert box.y1 <= ax_box.y1 + 0.5, text.get_text()
+            assert box.y0 >= ax_box.y0 - 0.5, text.get_text()
+
+
+def test_plot_covariates_labels_stay_inside_shared_axes(tmp_path, monkeypatch):
+    """With sharey=True, every panel's top label must fit the shared y-limit."""
+    rng = np.random.default_rng(2)
+    n = 200
+    signals = ["flux", "fwhm", "peak", "airmass", "bkg", "dx", "dy"]
+    band_results = _raw_flux_band_results(tmp_path, rng.normal(size=(2, n)))
+    ref = band_results["gp"]["ref"]
+    time = band_results["gp"]["diff"].time
+    results = {}
+    for band in ("gp", "ip"):
+        # Uniform noise keeps each curve within ~±1.7 sigma of its mean.
+        df = pd.DataFrame({s: rng.uniform(0.0, 1.0, n) for s in signals})
+        results[band] = {"ref": ref, "diff": SimpleNamespace(df=df, time=time)}
+
+    captured = {}
+    monkeypatch.setattr(rp, "_savefig", lambda fig, path: captured.update(fig=fig))
+    rp.plot_covariates(results, tmp_path / "cov.png", "T", "inst", "d", 0)
+
+    _assert_labels_inside_axes(captured["fig"], n_axes=2, n_labels=len(signals))
+
+
 def test_plot_stacks_draws_saturation_axhline(tmp_path, monkeypatch):
     from astropy.io import fits
     from astropy.wcs import WCS
