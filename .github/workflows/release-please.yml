@@ -1,0 +1,24 @@
+name: prose/release-please
+
+# On every push to main, release-please reads the conventional commits since
+# the last release and keeps a release PR open that bumps the version in
+# pyproject.toml and updates CHANGELOG.md. Merging that PR tags vX.Y.Z and
+# creates the GitHub release.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
