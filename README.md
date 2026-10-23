@@ -322,6 +322,25 @@ or the latest development version:
 pip install 'prose @ git+https://github.com/lgrcia/prose'
 ```
 
+## Versioning and releases
+
+prose2 versions are bumped automatically by
+[release-please](https://github.com/googleapis/release-please) from
+[conventional commit](https://www.conventionalcommits.org/) messages:
+`fix:` bumps the patch version, `feat:` the minor version, and `feat!:` or a
+`BREAKING CHANGE:` footer the major version. Other types (`chore:`, `docs:`,
+`test:`, `ci:`, ...) do not trigger a release.
+
+After each merge to `main`, the `prose/release-please` workflow opens or
+updates a release PR that bumps `version` in both `[project]` and
+`[tool.poetry]` of `pyproject.toml` and updates `CHANGELOG.md`. Merging that
+PR tags `vX.Y.Z` and publishes a GitHub release. Never edit the version by
+hand; `.release-please-manifest.json` records the last released version.
+
+An editable install (`pip install -e .`) keeps the version it had when it was
+installed, so reinstall it after a release if you need `prose.__version__` to
+match.
+
 ## Attribution
 
 ### Ballet centroiding
