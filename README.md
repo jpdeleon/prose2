@@ -307,6 +307,12 @@ they are unaffected.
 ## Note
 Note: The gain and saturation limit are reflected in the FITS header keywords GAIN and and SATURATE, respectively, and those are set for each individual camera in the network. The units of the saturation limit will be ADU for raw images, and electrons for BANZAI-processed images.
 
+Per-band telescope files (`MuSCAT2_g`, `MuSCAT2_r`, …) share the same
+aliases (`MuSCAT2`, `TCS`). Each frame is matched to the file for its own
+`FILTER`, by first letter (`z_s`, `zs` and `z` are one channel), so it gets
+that channel's gain and read noise. If no single file matches the band (e.g.
+`Na_D`), the plain alias match is kept.
+
 ## Installation
 
 prose2 builds on prose (Python 3). Install prose from

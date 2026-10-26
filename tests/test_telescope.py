@@ -192,3 +192,64 @@ def test_header_positive_float_rejects_nan_and_inf():
     assert _header_positive_float({"RDNOISE": float("inf")}, "RDNOISE", 6.0) == 6.0
     assert _header_positive_float({"RDNOISE": 7.8}, "RDNOISE", 6.0) == 7.8
     assert _header_positive_float({"RDNOISE": 7.8}, None, 6.0) == 6.0
+
+
+def _write_muscat2_frame(tmp_path, band):
+    header = Header()
+    header["INSTRUME"] = "MuSCAT2"
+    header["TELESCOP"] = "TCS 1.52m tel."
+    header["FILTER"] = band
+    path = tmp_path / f"frame_{band}.fits"
+    fits.writeto(path, np.zeros((4, 4)), header=header)
+    return path
+
+
+@pytest.fixture
+def muscat2_config(monkeypatch):
+    """Band telescopes sharing aliases; the alias keys point at the i band."""
+    import prose.telescope as telescope_module
+
+    variants = {
+        band: {
+            "name": f"MuSCAT2_{band}",
+            "names": ["MuSCAT2", "muscat2", "TCS"],
+            "gain": gain,
+            "read_noise": rn,
+        }
+        for band, gain, rn in (
+            ("g", 1.04, 4.08),
+            ("r", 0.96, 3.96),
+            ("i", 1.03, 4.02),
+            ("zs", 1.02, 4.48),
+        )
+    }
+    telescopes = {f"muscat2_{b}": t for b, t in variants.items()}
+    telescopes.update(muscat2=variants["i"], tcs=variants["i"])
+    fake = type(CONFIG).__new__(type(CONFIG))
+    fake.telescopes_dict = telescopes
+    monkeypatch.setattr(telescope_module, "CONFIG", fake)
+    return variants
+
+
+@pytest.mark.parametrize(
+    "band, expected, gain, read_noise",
+    [
+        ("g", "MuSCAT2_g", 1.04, 4.08),
+        ("r", "MuSCAT2_r", 0.96, 3.96),
+        ("i", "MuSCAT2_i", 1.03, 4.02),
+        ("z_s", "MuSCAT2_zs", 1.02, 4.48),
+    ],
+)
+def test_fitsimage_uses_the_band_specific_telescope(
+    tmp_path, muscat2_config, band, expected, gain, read_noise
+):
+    im = FITSImage(_write_muscat2_frame(tmp_path, band), load_data=False)
+
+    assert im.telescope.name == expected
+    assert im.gain == gain
+    assert im.read_noise == read_noise
+
+
+def test_fitsimage_keeps_alias_match_when_band_is_unknown(tmp_path, muscat2_config):
+    im = FITSImage(_write_muscat2_frame(tmp_path, "Na_D"), load_data=False)
+    assert im.telescope.name == "MuSCAT2_i"

@@ -226,12 +226,22 @@ class Telescope:
         return telescope
 
     @staticmethod
-    def from_names(instrument_name, telescope_name, verbose=True, strict=True):
+    def from_names(
+        instrument_name, telescope_name, verbose=True, strict=True, band=None
+    ):
         # we first check by instrument name
         telescope = Telescope.from_name(instrument_name, verbose=False, strict=True)
+        matched_name = instrument_name
         # if not found we check telescope name
         if telescope is None:
             telescope = Telescope.from_name(telescope_name, verbose=verbose)
+            matched_name = telescope_name
+
+        # Per-band files share aliases; prefer the one for this frame's band.
+        if telescope is not None and band:
+            variant = CONFIG.match_telescope_variant(matched_name, band)
+            if variant is not None and variant.get("name") != telescope.name:
+                telescope = Telescope.from_dict(variant)
 
         if telescope is None:
             if not strict:
