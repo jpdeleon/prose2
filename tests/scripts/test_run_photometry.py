@@ -4390,3 +4390,63 @@ def test_plot_stacks_defaults_to_adu_without_saturation(monkeypatch, tmp_path):
     assert "aperture r = 6 px" in legend
     assert not any(label.startswith("saturation") for label in legend)
     assert [t.get_text() for t in ax.texts] == ["peak 1,100 ADU"]
+
+
+# ----------------------------- resolve_saturation -----------------------------
+
+_MUSCAT2_HEADER = {"TELESCOP": "TCS 1.52m tel.", "INSTRUME": "MuSCAT2", "FILTER": "g"}
+
+
+@pytest.mark.parametrize(
+    "header, instrument, telescope, expected",
+    [
+        # MuSCAT2: no GAIN/SATURATE -> the matched telescope file's limit.
+        (
+            _MUSCAT2_HEADER,
+            "muscat2",
+            SimpleNamespace(name="MuSCAT2_i", saturation=62000),
+            (62000.0, "MuSCAT2_i telescope file"),
+        ),
+        (
+            {"INSTRUME": "MuSCAT", "FILTER": "g"},
+            "muscat",
+            SimpleNamespace(name="MuSCAT_g", saturation=55000),
+            (55000.0, "MuSCAT_g telescope file"),
+        ),
+        # "muscat" must not borrow a MuSCAT2 file (prefix match is exact).
+        (
+            {"INSTRUME": "MuSCAT", "FILTER": "g"},
+            "muscat",
+            SimpleNamespace(name="MuSCAT2_g", saturation=62000),
+            (None, "unknown"),
+        ),
+        # Unmatched camera: Telescope()'s generic 55000 is not a real limit.
+        (
+            _MUSCAT2_HEADER,
+            "muscat2",
+            SimpleNamespace(name="default_TCS 1.52m tel.", saturation=55000),
+            (None, "unknown"),
+        ),
+        # Other instruments without a header limit get no fallback.
+        (
+            {"FILTER": "gp"},
+            "unknown",
+            SimpleNamespace(name="Unknown_x", saturation=55000),
+            (None, "unknown"),
+        ),
+    ],
+    ids=["muscat2", "muscat", "muscat-vs-muscat2-file", "unmatched", "other"],
+)
+def test_resolve_saturation_falls_back_to_telescope_file_for_muscat(
+    header, instrument, telescope, expected
+):
+    assert rp.resolve_saturation(header, instrument, telescope) == expected
+
+
+def test_resolve_saturation_prefers_header_value(monkeypatch):
+    monkeypatch.setattr(rp, "get_saturation_from_header", lambda h: {"g": 50000})
+    telescope = SimpleNamespace(name="MuSCAT2_g", saturation=62000)
+    assert rp.resolve_saturation({"FILTER": "g"}, "muscat2", telescope) == (
+        50000,
+        "header",
+    )

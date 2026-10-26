@@ -436,6 +436,39 @@ def setup_logger(outdir: Path, verbose: bool = False) -> Path:
     return log_path
 
 
+# Instruments whose headers carry no saturation keyword but whose .telescope
+# file states a real per-instrument limit (ADU): MuSCAT 55000, MuSCAT2 62000.
+TELESCOPE_FILE_SATURATION_INSTRUMENTS = ("muscat", "muscat2")
+
+
+def resolve_saturation(header, instrument: str, telescope) -> tuple[float | None, str]:
+    """Saturation limit for a frame, and where it came from.
+
+    LCO headers are read via :func:`get_saturation_from_header`. MuSCAT and
+    MuSCAT2 headers have no gain/saturation keywords, so they fall back to the
+    matched ``.telescope`` file's ``saturation``. The fallback is limited to
+    those instruments and to a telescope actually matched for them: an
+    unmatched camera gets ``Telescope``'s generic 55000 default, which is not a
+    measured limit. Returns ``(None, "unknown")`` when neither applies.
+    """
+    try:
+        sat_all = get_saturation_from_header(header)
+        band = header.get("FILTER", "")
+        saturation = sat_all.get(band) if isinstance(sat_all, dict) else None
+    except Exception:  # noqa: BLE001 - non-LCO headers lack TELID/GAIN
+        saturation = None
+    if saturation is not None:
+        return saturation, "header"
+    name = str(getattr(telescope, "name", "") or "").lower()
+    if (
+        instrument in TELESCOPE_FILE_SATURATION_INSTRUMENTS
+        and name.split("_")[0] == instrument
+        and getattr(telescope, "saturation", None) is not None
+    ):
+        return float(telescope.saturation), f"{telescope.name} telescope file"
+    return None, "unknown"
+
+
 def get_instrument(header) -> str:
     """Derive a short instrument label from a FITS header."""
     instrume = str(header.get("INSTRUME", "")).lower()
@@ -2200,17 +2233,14 @@ def build_reference(
     else:
         pix_key = instrument
     pixel_scale = float(ref.header.get("PIXSCALE", PIXSCALES.get(pix_key, 0.267)))
-    band_key = ref.header.get("FILTER", "")
-    try:
-        sat_all = get_saturation_from_header(ref.header)
-        saturation = sat_all.get(band_key) if isinstance(sat_all, dict) else None
-    except Exception:  # noqa: BLE001
-        saturation = None
+    saturation, saturation_source = resolve_saturation(
+        ref.header, instrument, ref.telescope
+    )
     ref.telescope.saturation = saturation
     ref.telescope.pixel_scale = pixel_scale
     logger.info(
         f"{Path(ref_file).name}: PIXSCALE={pixel_scale} "
-        f"saturation={saturation} instrument={instrument}"
+        f"saturation={saturation} ({saturation_source}) instrument={instrument}"
     )
     reference_sequence(
         ccd_trim_size_yx=ccd_trim_size_yx,

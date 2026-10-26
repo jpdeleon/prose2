@@ -178,7 +178,9 @@ How to read `…_stacks.png` (one row per band):
 - **nearest Gaia star** (cyan dash-dot line): distance and ΔG of the closest
   Gaia neighbour, in the same cyan as the `+` markers on the cutout. With
   `--plot_gaia_sources` off, only that neighbour gets a `+`.
-- **saturation**: the per-frame limit from the header. When a row shows a
+- **saturation**: the per-frame limit from the header. MuSCAT and MuSCAT2
+  headers carry none, so their limit comes from the matched `.telescope` file
+  (55,000 and 62,000 ADU); the log says which source was used. When a row shows a
   stack, its title says so (`radial profile (median of N aligned frames)`);
   a stacked peak under the line does not rule out a saturated single frame. The peak note (`% sat.`) uses only pixels inside the aperture.
 - **aperture r / sky annulus**: radii in pixels (arcsec too when the pixel
