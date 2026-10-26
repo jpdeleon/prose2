@@ -4228,20 +4228,41 @@ def test_enclosed_flux_profile_returns_none_for_flat_sky():
 @pytest.mark.parametrize(
     "display, expected",
     [
-        (None, "reference frame"),
-        (SimpleNamespace(computed={"n_stacked": 1}), "1 aligned frame"),
-        (SimpleNamespace(computed={"n_stacked": 7}), "median of 7 aligned frames"),
+        (None, "radial profile"),
+        (SimpleNamespace(computed={"n_stacked": 1}), "radial profile (1 aligned frame)"),
+        (
+            SimpleNamespace(computed={"n_stacked": 7}),
+            "radial profile (median of 7 aligned frames)",
+        ),
     ],
 )
-def test_stacks_pixel_source_describes_display_reference(display, expected):
-    assert rp._stacks_pixel_source({"display_ref": display}) == expected
+def test_stacks_profile_title_names_stack_depth(display, expected):
+    assert rp._stacks_profile_title({"display_ref": display}) == expected
 
 
-def _stacks_result(header, saturation, pixel_scale=None):
+def _cutout_wcs(shape=(60, 60), arcsec_per_pix=1.0):
+    w = WCS(naxis=2)
+    w.wcs.crpix = [shape[1] / 2 + 1, shape[0] / 2 + 1]  # FITS 1-based -> centre
+    w.wcs.cdelt = [-arcsec_per_pix / 3600, arcsec_per_pix / 3600]
+    w.wcs.crval = [150.0, 20.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    return w
+
+
+def _gaia_at_offsets(offsets_pix, mags, w):
+    """Gaia-like table placing sources at pixel offsets from the cutout centre."""
+    xy = np.array([[30.0 + dx, 30.0 + dy] for dx, dy in offsets_pix])
+    sky = w.pixel_to_world(xy[:, 0], xy[:, 1])
+    return pd.DataFrame(
+        {"ra": sky.ra.deg, "dec": sky.dec.deg, "phot_g_mean_mag": mags}
+    )
+
+
+def _stacks_result(header, saturation, pixel_scale=None, wcs=None, gaia_df=None):
     class FakeCutout:
         def __init__(self):
             self.data = _gaussian_star()
-            self.wcs = None
+            self.wcs = wcs
 
     class FakeImg:
         def __init__(self):
@@ -4262,19 +4283,84 @@ def _stacks_result(header, saturation, pixel_scale=None):
         rin=15.0,
         rout=25.0,
         scale=False,
-        gaia_df=None,
+        gaia_df=gaia_df,
         display_ref=None,
     )
 
 
-def _render_stacks(monkeypatch, tmp_path, result):
+def _render_stacks(monkeypatch, tmp_path, result, **kwargs):
     captured = {}
     monkeypatch.setattr(rp, "_savefig", lambda fig, path: captured.update(fig=fig))
-    rp.plot_stacks({"gp": result}, tmp_path / "s.png", "T", "inst", "d", 0)
-    profile_ax = captured["fig"].axes[1]
-    twin_ax = captured["fig"].axes[-1]
-    legend = [t.get_text() for t in profile_ax.get_legend().get_texts()]
+    rp.plot_stacks({"gp": result}, tmp_path / "s.png", "T", "inst", "d", 0, **kwargs)
+    (subfig,) = captured["fig"].subfigs
+    img_ax, profile_ax, twin_ax = subfig.axes
+    assert profile_ax.get_legend() is None  # legend is shared by the whole row
+    (row_legend,) = subfig.legends
+    legend = [t.get_text() for t in row_legend.get_texts()]
     return profile_ax, twin_ax, legend
+
+
+def test_nearest_gaia_neighbour_skips_target_and_picks_closest():
+    w = _cutout_wcs()
+    gaia = _gaia_at_offsets([(0, 0), (12, 5), (-3, 4), (20, 0)], [10, 11, 13.5, 9], w)
+    cutout = SimpleNamespace(data=np.zeros((60, 60)), wcs=w)
+    target = w.pixel_to_world(30.0, 30.0)
+
+    nn = rp._nearest_gaia_neighbour(cutout, gaia, target_coord=target)
+
+    assert nn.dist == pytest.approx(5.0, abs=1e-3)
+    assert nn.dmag == pytest.approx(3.5)
+    assert (nn.x, nn.y) == pytest.approx((27.0, 34.0), abs=1e-3)
+
+
+def test_nearest_gaia_neighbour_without_target_coord_uses_centre_source():
+    w = _cutout_wcs()
+    gaia = _gaia_at_offsets([(0.5, 0), (8, 0)], [12, 14], w)
+    cutout = SimpleNamespace(data=np.zeros((60, 60)), wcs=w)
+
+    nn = rp._nearest_gaia_neighbour(cutout, gaia)
+
+    assert nn.dist == pytest.approx(8.0, abs=1e-3)
+    assert nn.dmag == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize(
+    "gaia_offsets, wcs",
+    [([(0, 0)], _cutout_wcs()), ([(0, 0), (5, 0)], None)],
+    ids=["target-only", "no-wcs"],
+)
+def test_nearest_gaia_neighbour_returns_none_without_a_neighbour(gaia_offsets, wcs):
+    gaia = _gaia_at_offsets(gaia_offsets, [10] * len(gaia_offsets), _cutout_wcs())
+    cutout = SimpleNamespace(data=np.zeros((60, 60)), wcs=wcs)
+    assert rp._nearest_gaia_neighbour(cutout, gaia) is None
+
+
+def test_plot_stacks_marks_nearest_gaia_star_in_gaia_marker_colour(
+    monkeypatch, tmp_path
+):
+    w = _cutout_wcs()
+    gaia = _gaia_at_offsets([(0, 0), (0, 18)], [11.0, 12.5], w)
+    result = _stacks_result({}, None, pixel_scale=0.5, wcs=w, gaia_df=gaia)
+    ax, twin, legend = _render_stacks(monkeypatch, tmp_path, result)
+
+    label = "nearest Gaia star 18 px (9.0″), ΔG = +1.5"
+    assert label in legend
+    (line,) = [ln for ln in ax.get_lines() if ln.get_label() == label]
+    assert line.get_xdata()[0] == pytest.approx(18.0, abs=1e-3)
+    assert line.get_color() == rp.COLOR_GAIA
+    # Overlay off: the neighbour still gets its own "+" on the cutout.
+    img_ax = ax.figure.axes[0]
+    (marker,) = img_ax.collections
+    assert tuple(marker.get_offsets()[0]) == pytest.approx((30.0, 48.0), abs=1e-3)
+
+
+def test_plot_stacks_enclosed_flux_uses_its_own_colour(monkeypatch, tmp_path):
+    result = _stacks_result({}, None)
+    _, twin, _ = _render_stacks(monkeypatch, tmp_path, result)
+    (curve,) = twin.get_lines()
+    assert curve.get_color() == rp.COLOR_ENCLOSED_FLUX
+    assert rp.COLOR_ENCLOSED_FLUX not in set(rp.BAND_COLORS.values())
+    assert rp.COLOR_ENCLOSED_FLUX not in set(rp.get_plot_colors().values())
 
 
 def test_plot_stacks_labels_pixels_in_electrons_for_banzai_frames(
@@ -4291,7 +4377,7 @@ def test_plot_stacks_labels_pixels_in_electrons_for_banzai_frames(
     assert "enclosed flux (sky-sub.)" in legend
     assert twin.get_ylabel() == "enclosed flux / flux(<r_in)"
     assert "flux" not in ax.get_ylabel()
-    assert ax.get_title() == "reference frame"
+    assert ax.get_title() == "radial profile"
     peak_texts = [t.get_text() for t in ax.texts]
     assert peak_texts == ["peak 1,100 e- (1% sat.)"]
 

@@ -171,15 +171,19 @@ How to read `…_stacks.png` (one row per band):
 - **max pixel in ring / mean pixel in ring** (left axis): the brightest and
   the average pixel in each 1-px ring around the target, sky included. These
   are pixel values, not flux.
-- **enclosed flux** (right axis): sky-subtracted flux within radius r,
-  normalized to 1 at the inner sky radius. A good aperture sits where this
-  curve levels off.
-- **saturation**: the per-frame limit from the header. The panel title says
-  whether the pixels come from the reference frame or a median of N aligned
-  frames, so a stacked peak under the line does not rule out a saturated
-  single frame. The peak note (`% sat.`) uses only pixels inside the aperture.
+- **enclosed flux** (right axis, sienna): sky-subtracted flux within radius
+  r, normalized to 1 at the inner sky radius. A good aperture sits at the
+  knee where this curve starts to level off (typically 0.9–0.98), not
+  necessarily at 1.
+- **nearest Gaia star** (cyan dash-dot line): distance and ΔG of the closest
+  Gaia neighbour, in the same cyan as the `+` markers on the cutout. With
+  `--plot_gaia_sources` off, only that neighbour gets a `+`.
+- **saturation**: the per-frame limit from the header. When a row shows a
+  stack, its title says so (`radial profile (median of N aligned frames)`);
+  a stacked peak under the line does not rule out a saturated single frame. The peak note (`% sat.`) uses only pixels inside the aperture.
 - **aperture r / sky annulus**: radii in pixels (arcsec too when the pixel
   scale is known). Colours match the circles in the target cutout.
+- **Legend**: one legend per band row, below both panels.
 
 ### Options
 
