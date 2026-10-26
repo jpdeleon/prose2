@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 import requests
 import yaml
-from yaml import Loader
 
 from prose.builtins import built_in_telescopes
 
@@ -180,7 +179,7 @@ class ConfigManager:
         if self.config_file.exists():
             with self.config_file.open(mode="r") as file:
                 if load:
-                    self.config = yaml.load(file.read(), Loader=Loader)
+                    self.config = yaml.load(file.read(), Loader=_ConfigurationLoader)
         else:
             info(f"A config file as been created in {self.folder_path}")
             self.config = {"color": "blue"}
@@ -217,7 +216,7 @@ class ConfigManager:
             telescope_file_name = path.join(self.folder_path, f"{name}.telescope")
             if path.exists(telescope_file_name):
                 with open(telescope_file_name, mode="r") as f:
-                    existing_telescope = yaml.load(f, Loader=yaml.FullLoader)
+                    existing_telescope = yaml.load(f, Loader=_ConfigurationLoader)
                     if existing_telescope != telescope:
                         info(
                             f"{Path(telescope_file_name).name} differs from builtins (use prose.CONFIG.update_builtins() to update)"
@@ -236,7 +235,7 @@ class ConfigManager:
 
         for telescope_file in telescope_files:
             with telescope_file.open(mode="r") as f:
-                telescope = yaml.load(f, Loader=yaml.FullLoader)
+                telescope = yaml.load(f, Loader=_ConfigurationLoader)
             telescope_dict[telescope["name"].lower()] = telescope
             if "names" in telescope:
                 for name in telescope["names"]:

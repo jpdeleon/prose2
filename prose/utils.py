@@ -1,4 +1,5 @@
 import csv
+import pickle
 import inspect
 import urllib
 from datetime import datetime, timedelta
@@ -1083,3 +1084,62 @@ def binned_nanstd(x, bins: int = 12):
         )
 
     return compute
+
+
+# Globals a saved Image or Fluxes pickle may reference. Everything else (os,
+# subprocess, eval, __import__, ...) is refused, so a crafted file cannot run code.
+_PICKLE_CLASS_MODULES = (
+    "numpy",
+    "astropy",
+    "pandas",
+    "collections",
+    "datetime",
+    "prose",
+)
+_PICKLE_FUNCTIONS = frozenset(
+    {
+        ("numpy.core.multiarray", "_reconstruct"),
+        ("numpy._core.multiarray", "_reconstruct"),
+        ("numpy.core.multiarray", "scalar"),
+        ("numpy._core.multiarray", "scalar"),
+        ("copyreg", "_reconstructor"),
+    }
+)
+# Builtin *types* only (e.g. defaultdict(list) references builtins.list). The
+# callable builtins (eval, exec, getattr, __import__, ...) are not listed.
+_PICKLE_BUILTINS = frozenset(
+    {
+        "list",
+        "dict",
+        "tuple",
+        "set",
+        "frozenset",
+        "int",
+        "float",
+        "complex",
+        "bool",
+        "str",
+        "bytes",
+        "bytearray",
+        "range",
+        "slice",
+    }
+)
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == "builtins" and name in _PICKLE_BUILTINS:
+            return super().find_class(module, name)
+        if (module, name) in _PICKLE_FUNCTIONS:
+            return super().find_class(module, name)
+        if module.split(".")[0] in _PICKLE_CLASS_MODULES:
+            obj = super().find_class(module, name)
+            if isinstance(obj, type):
+                return obj
+        raise pickle.UnpicklingError(f"refusing to unpickle {module}.{name}")
+
+
+def safe_pickle_load(file):
+    """``pickle.load`` for saved frames and fluxes, refusing non-data globals."""
+    return _RestrictedUnpickler(file).load()

@@ -26,6 +26,30 @@ def progress(name, x, **kwargs):
     )
 
 
+_BLOCK_NAME_PREFIX = "blocks."
+
+
+def _resolve_block_class(name):
+    """The ``prose.blocks`` class named by a ``"blocks.<Class>"`` string.
+
+    Looked up by attribute, never evaluated: anything that is not a Block
+    subclass in ``prose.blocks`` is rejected.
+    """
+    from prose import blocks as block_module
+    from prose.core.block import Block
+
+    text = str(name)
+    class_name = text[len(_BLOCK_NAME_PREFIX) :]
+    block_class = (
+        getattr(block_module, class_name, None)
+        if text.startswith(_BLOCK_NAME_PREFIX)
+        else None
+    )
+    if not (isinstance(block_class, type) and issubclass(block_class, Block)):
+        raise ValueError(f"unknown block {text!r}; expected 'blocks.<ClassName>'")
+    return block_class
+
+
 class Sequence:
     def __init__(self, blocks, name=None):
         """A sequence of :py:class:`Block` objects to sequentially process images
@@ -199,10 +223,9 @@ class Sequence:
 
         blocks = []
         for block_dict in args:
-            block_class = block_dict["block"]
-            del block_dict["block"]
-            block = eval(block_class).from_args(block_dict)
-            blocks.append(block)
+            options = dict(block_dict)
+            block_class = _resolve_block_class(options.pop("block"))
+            blocks.append(block_class(**options))
 
         return cls(blocks)
 

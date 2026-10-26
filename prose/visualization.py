@@ -173,7 +173,7 @@ def _plot_star_cutout(subfig, image, star_id):
     corner_text(f"dx: {dx:.2f}\ndy: {dy:.2f}", c="w")
 
     # Set title with date
-    ax.set_title(image.date.isoformat())
+    ax.set_title(image.date.isoformat() if image.date is not None else "no date")
 
 
 def _plot_psf_analysis(subfig, image):

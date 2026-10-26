@@ -754,7 +754,7 @@ class Fluxes:
     def load(path: Union[str, Path]):
         """Load fluxes from file"""
         with open(path, "rb") as f:
-            return Fluxes(**pickle.load(f))
+            return Fluxes(**utils.safe_pickle_load(f))
 
     def copy(self):
         """Deep copy of the object"""

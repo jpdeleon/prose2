@@ -1,3 +1,4 @@
+import logging
 import pickle
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -23,6 +24,8 @@ from matplotlib import gridspec
 from prose import utils, viz
 from prose.core.source import Sources
 from prose.telescope import Telescope
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -282,7 +285,8 @@ class Image:
         -------
         datetime.datetime
         """
-        return dparser.parse(self.metadata["date"])
+        date = self.metadata["date"]
+        return dparser.parse(date) if date is not None else None
 
     @property
     def night_date(self):
@@ -569,7 +573,8 @@ class Image:
             The loaded image.
         """
 
-        return cls(**pickle.load(open(filepath, "rb")))
+        with open(filepath, "rb") as f:
+            return cls(**utils.safe_pickle_load(f))
 
     def _symetric_profile(self, source, binn=1.0):
         x, y = source.coords
@@ -758,13 +763,14 @@ def FITSImage(
             header.get("INSTRUME", ""), header.get("TELESCOP", ""), verbose=verbose
         )
 
+    obs_date = telescope.date(header)
     metadata = {
         "telescope": telescope.name,
         "exposure": header.get(telescope.keyword_exposure_time, None),
         "ra": header.get(telescope.keyword_ra, None),
         "dec": header.get(telescope.keyword_dec, None),
         "filter": header.get(telescope.keyword_filter, None),
-        "date": telescope.date(header).isoformat(),
+        "date": obs_date.isoformat() if obs_date is not None else None,
         "jd": header.get(telescope.keyword_jd, None),
         "object": header.get(telescope.keyword_object, None),
         "pixel_scale": telescope.pixel_scale,
@@ -791,7 +797,13 @@ def FITSImage(
 
     image = Image(values, metadata, {})
     if image.metadata["jd"] is None:
-        image.metadata["jd"] = Time(image.date).jd
+        if obs_date is None:
+            logger.warning(
+                f"{path or 'frame'}: no usable DATE-OBS and no JD keyword; "
+                "the frame has no JD"
+            )
+        else:
+            image.metadata["jd"] = Time(obs_date).jd
     image.header = header
     if not skip_wcs:
         image.wcs = WCS(header)

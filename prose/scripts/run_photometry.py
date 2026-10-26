@@ -3173,12 +3173,12 @@ def normalize_time_to_jd(time: np.ndarray, jd_scale: str | None) -> np.ndarray:
     before any JD-based time handling (BJD correction, CSV export, plots).
     """
     t = np.asarray(time, dtype=float)
-    if jd_scale is not None and jd_scale.lower() == "mjd":
-        finite = t[np.isfinite(t)]
-        if len(finite) and np.nanmedian(finite) > MJD_TO_JD:
-            return t
-        return t + MJD_TO_JD
-    return t
+    if jd_scale is None or jd_scale.lower() != "mjd":
+        return t
+    # Decided per value: a series can mix MJD-keyword frames with frames whose
+    # time came from DATE-OBS (already JD). Deciding from the median converted
+    # the JD frames as well and shifted them by 2400000.5 days.
+    return np.where(t < MJD_TO_JD, t + MJD_TO_JD, t)
 
 
 def compute_bjd_tdb(
