@@ -218,13 +218,20 @@ def fits_to_df(
         df.date = pd.to_datetime(df.date)
         df["filter"] = df["filter"].str.replace("'", "p")
 
+        # Frames without a usable DATE-OBS have no date (NaT) and no JD (NaN).
+        dated = df.date.notna()
         if (df.jd == "").all():  # jd empty then convert from date
-            df.jd = Time(df.date, scale="utc").to_value("jd") + _telescope.mjd
+            jd = pd.Series(np.nan, index=df.index)
+            if dated.any():
+                jd[dated] = (
+                    Time(df.date[dated], scale="utc").to_value("jd") + _telescope.mjd
+                )
+            df.jd = jd
 
         # We want dates that correspond to same observations but night might be over 2 days (before and after midnight)
         # So we remove 15 hours to be sure the date year-month-day are consistent with single observations
         df.date = (df.date - timedelta(hours=15)).apply(
-            lambda x: x.strftime("%Y-%m-%d")
+            lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else ""
         )
 
     return df

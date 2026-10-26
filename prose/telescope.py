@@ -251,14 +251,17 @@ class Telescope:
         return telescope
 
     def date(self, header):
+        """Observation datetime from the header, or ``None`` when it has none.
+
+        A missing date used to become 1800-01-02, which turned into a bogus JD
+        downstream without any warning.
+        """
         header_date_str = header.get(self.keyword_observation_date, None)
-        if header_date_str is not None:
-            if self.date_string_format is not None:
-                return datetime.strptime(header_date_str, self.date_string_format)
-            else:
-                return dparser.parse(header_date_str)
-        else:
-            return datetime(1800, 1, 2)
+        if header_date_str is None:
+            return None
+        if self.date_string_format is not None:
+            return datetime.strptime(header_date_str, self.date_string_format)
+        return dparser.parse(header_date_str)
 
     def image_type(self, header):
         return header.get(self.keyword_image_type, "").lower()
