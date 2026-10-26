@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -253,3 +254,83 @@ def test_fitsimage_uses_the_band_specific_telescope(
 def test_fitsimage_keeps_alias_match_when_band_is_unknown(tmp_path, muscat2_config):
     im = FITSImage(_write_muscat2_frame(tmp_path, "Na_D"), load_data=False)
     assert im.telescope.name == "MuSCAT2_i"
+
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+
+
+@pytest.fixture
+def repo_telescopes_config(monkeypatch):
+    """CONFIG built from the repository's data/*.telescope files, alias keys
+    resolved last-writer-wins like ConfigManager.build_telescopes_dict."""
+    import yaml
+
+    import prose.telescope as telescope_module
+
+    telescopes = {}
+    for path in sorted(DATA_DIR.glob("*.telescope")):
+        definition = yaml.safe_load(path.read_text())
+        telescopes[definition["name"].lower()] = definition
+        for alias in definition.get("names") or ():
+            telescopes[str(alias).lower()] = definition
+    fake = type(CONFIG).__new__(type(CONFIG))
+    fake.telescopes_dict = telescopes
+    monkeypatch.setattr(telescope_module, "CONFIG", fake)
+
+
+# Camera IDs observed in MuSCAT3 (ogg 2m0-01) and MuSCAT4 (coj 2m0-02) BANZAI
+# headers; narrowband filters sit on the same channel as their broadband one.
+@pytest.mark.parametrize(
+    "instrume, telescop, band, expected",
+    [
+        ("ep04", "2m0-01", "gp", "LCO-2m/MuSCAT3_gp"),
+        ("ep02", "2m0-01", "rp", "LCO-2m/MuSCAT3_rp"),
+        ("ep03", "2m0-01", "ip", "LCO-2m/MuSCAT3_ip"),
+        ("ep05", "2m0-01", "zs", "LCO-2m/MuSCAT3_zs"),
+        ("ep04", "2m0-01", "g_narrow", "LCO-2m/MuSCAT3_gp"),
+        ("ep02", "2m0-01", "Na_D", "LCO-2m/MuSCAT3_rp"),
+        ("ep03", "2m0-01", "i_narrow", "LCO-2m/MuSCAT3_ip"),
+        ("ep05", "2m0-01", "z_narrow", "LCO-2m/MuSCAT3_zs"),
+        ("ep06", "2m0-02", "gp", "LCO-2m/MuSCAT4_gp"),
+        ("ep07", "2m0-02", "rp", "LCO-2m/MuSCAT4_rp"),
+        ("ep08", "2m0-02", "ip", "LCO-2m/MuSCAT4_ip"),
+        ("ep09", "2m0-02", "zs", "LCO-2m/MuSCAT4_zs"),
+    ],
+)
+def test_muscat3_4_camera_ids_match_their_channel_file(
+    tmp_path, repo_telescopes_config, instrume, telescop, band, expected
+):
+    header = Header()
+    header["INSTRUME"] = instrume
+    header["TELESCOP"] = telescop
+    header["FILTER"] = band
+    header["GAIN"] = 1.0
+    header["RDNOISE"] = 13.8
+    path = tmp_path / f"{instrume}_{band}.fits"
+    fits.writeto(path, np.zeros((4, 4)), header=header)
+
+    im = FITSImage(path, load_data=False)
+
+    assert im.telescope.name == expected
+    # The matched file opts into per-frame header gain and read noise.
+    assert (im.gain, im.read_noise) == (1.0, 13.8)
+
+
+def test_each_camera_id_is_listed_by_exactly_one_telescope_file():
+    import yaml
+
+    owners = {}
+    for path in sorted(DATA_DIR.glob("*.telescope")):
+        for alias in yaml.safe_load(path.read_text()).get("names") or ():
+            if str(alias).lower().startswith("ep0"):
+                owners.setdefault(str(alias).lower(), []).append(path.stem)
+    assert owners == {
+        "ep02": ["muscat3_rp"],
+        "ep03": ["muscat3_ip"],
+        "ep04": ["muscat3_gp"],
+        "ep05": ["muscat3_zs"],
+        "ep06": ["muscat4_gp"],
+        "ep07": ["muscat4_rp"],
+        "ep08": ["muscat4_ip"],
+        "ep09": ["muscat4_zs"],
+    }

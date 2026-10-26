@@ -3,6 +3,7 @@ names:
 - FTS/MuSCAT4
 - MuSCAT4
 - muscat4
+- ep07
 keyword_telescope: TELESCOP
 keyword_object: OBJECT
 keyword_image_type: IMAGETYP

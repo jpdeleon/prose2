@@ -313,6 +313,13 @@ aliases (`MuSCAT2`, `TCS`). Each frame is matched to the file for its own
 that channel's gain and read noise. If no single file matches the band (e.g.
 `Na_D`), the plain alias match is kept.
 
+MuSCAT3/MuSCAT4 BANZAI headers identify each channel's camera in `INSTRUME`
+(MuSCAT3: `ep04` g, `ep02` r, `ep03` i, `ep05` z; MuSCAT4: `ep06` g, `ep07`
+r, `ep08` i, `ep09` z), and narrowband filters use the same cameras. Each
+`muscat3_*`/`muscat4_*` file lists its camera ID as an alias, so these frames
+match their channel's file and read gain and read noise from the header
+(`GAIN`, `RDNOISE`).
+
 ## Installation
 
 prose2 builds on prose (Python 3). Install prose from
