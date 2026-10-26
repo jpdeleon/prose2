@@ -42,6 +42,12 @@ _ConfigurationLoader.add_constructor(
 )
 
 
+def _band_letter(band) -> str:
+    """First letter of a filter name, lower-cased (``"z_s"`` -> ``"z"``)."""
+    text = str(band or "").strip().strip("'\"").strip()
+    return text[0].lower() if text[:1].isalpha() else ""
+
+
 class ConfigManager:
     """
     A class for managing configuration settings for the package.
@@ -283,6 +289,28 @@ class ConfigManager:
             return self.telescopes_dict[available_telescopes_names[has_telescope[i]]]
         else:
             return None
+
+    def match_telescope_variant(self, name, band):
+        """The telescope answering to *name* whose own name ends in *band*.
+
+        Per-band telescope files (``MuSCAT2_g``, ``MuSCAT2_r``, ...) share the
+        same aliases, so :meth:`match_telescope_name` returns whichever was
+        registered last. Bands are compared by their first letter, which is
+        what distinguishes MuSCAT-family channels (``z_s``, ``zs`` and ``z``
+        are one channel). Returns ``None`` unless exactly one variant matches.
+        """
+        letter = _band_letter(band)
+        if not letter or not name:
+            return None
+        target = name.lower()
+        matches = {}
+        for telescope in self.telescopes_dict.values():
+            own = str(telescope.get("name", ""))
+            aliases = {own.lower(), *(str(n).lower() for n in telescope.get("names") or ())}
+            if target in aliases and "_" in own:
+                if _band_letter(own.rsplit("_", 1)[1]) == letter:
+                    matches[own] = telescope
+        return next(iter(matches.values())) if len(matches) == 1 else None
 
     def check_ballet(self):
         self._require_writable()

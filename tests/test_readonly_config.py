@@ -329,3 +329,56 @@ if __name__ == '__main__':
             "gain": 1.8,
         }
     assert not (tmp_path / "unused-home/.prose").exists()
+
+
+def _muscat2_variants():
+    """Band files that all answer to the same instrument aliases, as in
+    muscat-db's configuration (the alias keys point at the last band)."""
+    variants = {}
+    for band, gain in (("g", 1.04), ("r", 0.96), ("i", 1.03), ("zs", 1.02)):
+        variants[f"muscat2_{band}"] = {
+            "name": f"MuSCAT2_{band}",
+            "names": ["MuSCAT2", "muscat2", "TCS"],
+            "gain": gain,
+        }
+    telescopes = dict(variants)
+    for alias in ("muscat2", "tcs"):
+        telescopes[alias] = variants["muscat2_i"]
+    return telescopes
+
+
+@pytest.mark.parametrize(
+    "alias, band, expected",
+    [
+        ("MuSCAT2", "g", "MuSCAT2_g"),
+        ("muscat2", "r", "MuSCAT2_r"),
+        ("TCS", "i", "MuSCAT2_i"),
+        ("MuSCAT2", "z_s", "MuSCAT2_zs"),
+        ("MuSCAT2", "zs", "MuSCAT2_zs"),
+        ("MuSCAT2", " 'g' ", "MuSCAT2_g"),
+    ],
+)
+def test_match_telescope_variant_picks_the_frames_band(
+    config_module, tmp_path, alias, band, expected
+):
+    path = tmp_path / "config.yaml"
+    payload = {"schema": 1, "settings": {}, "telescopes": _muscat2_variants()}
+    path.write_text(yaml.dump(payload))
+    config = config_module.ConfigManager(path)
+
+    assert config.match_telescope_variant(alias, band)["name"] == expected
+
+
+@pytest.mark.parametrize(
+    "alias, band",
+    [("MuSCAT2", "Na_D"), ("MuSCAT2", ""), ("MuSCAT2", None), ("Unknown", "g")],
+)
+def test_match_telescope_variant_returns_none_without_a_unique_band_match(
+    config_module, tmp_path, alias, band
+):
+    path = tmp_path / "config.yaml"
+    payload = {"schema": 1, "settings": {}, "telescopes": _muscat2_variants()}
+    path.write_text(yaml.dump(payload))
+    config = config_module.ConfigManager(path)
+
+    assert config.match_telescope_variant(alias, band) is None

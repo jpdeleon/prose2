@@ -3,6 +3,7 @@ names:
 - FTN/MuSCAT3
 - MuSCAT3
 - muscat3
+- ep03
 keyword_telescope: TELESCOP
 keyword_object: OBJECT
 keyword_image_type: IMAGETYP

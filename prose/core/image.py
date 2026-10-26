@@ -755,7 +755,10 @@ def FITSImage(
 
     if telescope is None:
         telescope = Telescope.from_names(
-            header.get("INSTRUME", ""), header.get("TELESCOP", ""), verbose=verbose
+            header.get("INSTRUME", ""),
+            header.get("TELESCOP", ""),
+            verbose=verbose,
+            band=header.get("FILTER"),
         )
 
     metadata = {
