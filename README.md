@@ -162,6 +162,25 @@ Everything is written to `--results_dir`:
   `…_stacks.png`
 - a single `….npz` archive and a timestamped `.log`
 
+How to read `…_stacks.png` (one row per band):
+
+- **Pixel units.** No gain is applied, so pixels keep the unit of the input
+  FITS. The unit comes from `BUNIT`, or is `e-` for BANZAI-reduced frames
+  (`GAIN=1` with `SATURATE`), and `ADU` otherwise. Every axis and label in
+  a row uses that unit.
+- **max pixel in ring / mean pixel in ring** (left axis): the brightest and
+  the average pixel in each 1-px ring around the target, sky included. These
+  are pixel values, not flux.
+- **enclosed flux** (right axis): sky-subtracted flux within radius r,
+  normalized to 1 at the inner sky radius. A good aperture sits where this
+  curve levels off.
+- **saturation**: the per-frame limit from the header. The panel title says
+  whether the pixels come from the reference frame or a median of N aligned
+  frames, so a stacked peak under the line does not rule out a saturated
+  single frame. The peak note (`% sat.`) uses only pixels inside the aperture.
+- **aperture r / sky annulus**: radii in pixels (arcsec too when the pixel
+  scale is known). Colours match the circles in the target cutout.
+
 ### Options
 
 | Group | Options |
@@ -305,7 +324,7 @@ they are unaffected.
 * muscat4: 240128 (supply `--tID` manually)
 
 ## Note
-Note: The gain and saturation limit are reflected in the FITS header keywords GAIN and and SATURATE, respectively, and those are set for each individual camera in the network. The units of the saturation limit will be ADU for raw images, and electrons for BANZAI-processed images.
+Note: The gain and saturation limit are reflected in the FITS header keywords GAIN and and SATURATE, respectively, and those are set for each individual camera in the network. The units of the saturation limit will be ADU for raw images, and electrons for BANZAI-processed images. prose2 never applies gain, so the `_stacks` plot labels its axes with this same unit (see *Output products*).
 
 ## Installation
 

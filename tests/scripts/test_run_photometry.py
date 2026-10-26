@@ -4199,3 +4199,108 @@ def test_test_run_window_by_time_centres_each_band_on_matching_time(tmp_path):
     assert gp[5] in windows["gp"]
     assert ip[10] in windows["ip"]
     assert all(len(v) == 4 for v in windows.values())
+
+
+# ------------------------- _stacks plot labels/units -------------------------
+
+
+def _gaussian_star(shape=(60, 60), amp=1000.0, sigma=2.0, sky=100.0):
+    y, x = np.indices(shape)
+    cy, cx = shape[0] / 2, shape[1] / 2
+    return sky + amp * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
+
+
+def test_enclosed_flux_profile_levels_off_at_one_by_inner_annulus():
+    data = _gaussian_star()
+    center = np.array(data.shape)[::-1] / 2
+    enclosed = rp._enclosed_flux_profile(data, center, rin=15.0, rout=25.0)
+    assert enclosed is not None
+    assert enclosed[14] == pytest.approx(1.0)
+    assert enclosed[2] < 0.9  # still rising inside ~1.5 sigma
+    assert np.all(np.diff(enclosed[:15]) >= -1e-9)
+
+
+def test_enclosed_flux_profile_returns_none_for_flat_sky():
+    data = np.full((40, 40), 50.0)
+    assert rp._enclosed_flux_profile(data, np.array([20.0, 20.0]), 8, 12) is None
+
+
+@pytest.mark.parametrize(
+    "display, expected",
+    [
+        (None, "reference frame"),
+        (SimpleNamespace(computed={"n_stacked": 1}), "1 aligned frame"),
+        (SimpleNamespace(computed={"n_stacked": 7}), "median of 7 aligned frames"),
+    ],
+)
+def test_stacks_pixel_source_describes_display_reference(display, expected):
+    assert rp._stacks_pixel_source({"display_ref": display}) == expected
+
+
+def _stacks_result(header, saturation, pixel_scale=None):
+    class FakeCutout:
+        def __init__(self):
+            self.data = _gaussian_star()
+            self.wcs = None
+
+    class FakeImg:
+        def __init__(self):
+            self.header = header
+            self.telescope = SimpleNamespace(
+                saturation=saturation, pixel_scale=pixel_scale
+            )
+            self.sources = _fake_sources([[30.0, 30.0]])
+
+        def cutout(self, coords, shape, reset_index=False):
+            return FakeCutout()
+
+    return dict(
+        ref=FakeImg(),
+        diff=SimpleNamespace(aperture=0),
+        target_index=0,
+        aper_radii=np.array([6.0]),
+        rin=15.0,
+        rout=25.0,
+        scale=False,
+        gaia_df=None,
+        display_ref=None,
+    )
+
+
+def _render_stacks(monkeypatch, tmp_path, result):
+    captured = {}
+    monkeypatch.setattr(rp, "_savefig", lambda fig, path: captured.update(fig=fig))
+    rp.plot_stacks({"gp": result}, tmp_path / "s.png", "T", "inst", "d", 0)
+    profile_ax = captured["fig"].axes[1]
+    twin_ax = captured["fig"].axes[-1]
+    legend = [t.get_text() for t in profile_ax.get_legend().get_texts()]
+    return profile_ax, twin_ax, legend
+
+
+def test_plot_stacks_labels_pixels_in_electrons_for_banzai_frames(
+    monkeypatch, tmp_path
+):
+    result = _stacks_result({"GAIN": 1.0, "SATURATE": 120000.0}, 120000.0, 0.27)
+    ax, twin, legend = _render_stacks(monkeypatch, tmp_path, result)
+
+    assert ax.get_ylabel() == "pixel value (e-)"
+    assert "saturation 120,000 e- (single frame)" in legend
+    assert "aperture r = 6 px (1.6″)" in legend
+    assert "sky annulus 15–25 px" in legend
+    assert {"max pixel in ring", "mean pixel in ring"} <= set(legend)
+    assert "enclosed flux (sky-sub.)" in legend
+    assert twin.get_ylabel() == "enclosed flux / flux(<r_in)"
+    assert "flux" not in ax.get_ylabel()
+    assert ax.get_title() == "reference frame"
+    peak_texts = [t.get_text() for t in ax.texts]
+    assert peak_texts == ["peak 1,100 e- (1% sat.)"]
+
+
+def test_plot_stacks_defaults_to_adu_without_saturation(monkeypatch, tmp_path):
+    result = _stacks_result({"GAIN": 1.9}, None)
+    ax, _, legend = _render_stacks(monkeypatch, tmp_path, result)
+
+    assert ax.get_ylabel() == "pixel value (ADU)"
+    assert "aperture r = 6 px" in legend
+    assert not any(label.startswith("saturation") for label in legend)
+    assert [t.get_text() for t in ax.texts] == ["peak 1,100 ADU"]

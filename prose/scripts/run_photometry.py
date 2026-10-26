@@ -105,6 +105,7 @@ from prose.utils import (
     get_simbad_data,
     header_jd,
     load_cached_df,
+    pixel_unit,
     read_filename_per_band,
     save_cached_df,
     z_scale,
@@ -2613,6 +2614,8 @@ def _build_display_reference(
     data = warped[0] if len(warped) == 1 else easy_median(warped)
     display = shared_ref.copy()
     display.data = np.asarray(data, dtype=float)
+    # Actual stack depth (frames can fail alignment), for the _stacks caption.
+    display.computed["n_stacked"] = len(warped)
     if own_header is not None:
         display.header = own_header
         # Show this band's own saturation level on the radial-profile plots.
@@ -3913,6 +3916,47 @@ def _radial_peak_profile(data, center):
     return peaks
 
 
+def _enclosed_flux_profile(data, center, rin, rout):
+    """Sky-subtracted flux enclosed within radius ``k + 1`` for ring ``k``.
+
+    The sky level is the median pixel in the ``[rin, rout)`` annulus. The curve
+    is normalized to its value at ``rin`` so a well-chosen aperture reads as
+    the radius where it levels off near 1. Returns ``None`` when the
+    normalization is not positive (no star above sky).
+    """
+    y, x = np.indices(data.shape)
+    r = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2)
+    in_annulus = (r >= rin) & (r < rout)
+    sky = float(np.nanmedian(data[in_annulus])) if in_annulus.any() else 0.0
+    ring_sums = np.bincount(r.astype(int).ravel(), (data - sky).ravel())
+    enclosed = np.cumsum(ring_sums)
+    norm = enclosed[min(max(int(rin) - 1, 0), len(enclosed) - 1)]
+    if not np.isfinite(norm) or norm <= 0:
+        return None
+    return enclosed / norm
+
+
+def _pixel_scale_arcsec(ref) -> float | None:
+    try:
+        scale = float(getattr(ref.telescope, "pixel_scale", None))
+    except (TypeError, ValueError):
+        return None
+    return scale if np.isfinite(scale) and scale > 0 else None
+
+
+def _radius_label(radius_pix: float, scale) -> str:
+    text = f"{radius_pix:.0f} px"
+    return f"{text} ({radius_pix * scale:.1f}″)" if scale else text
+
+
+def _stacks_pixel_source(r: dict) -> str:
+    display = r.get("display_ref")
+    if display is None:
+        return "reference frame"
+    n = getattr(display, "computed", {}).get("n_stacked", 1)
+    return "1 aligned frame" if n == 1 else f"median of {n} aligned frames"
+
+
 def plot_stacks(
     band_results,
     path: Path,
@@ -3934,7 +3978,7 @@ def plot_stacks(
     """
     bands = sort_bands_canonical(band_results.keys())
     fig, axes = plt.subplots(
-        len(bands), 2, figsize=(7, 3 * len(bands)), constrained_layout=True
+        len(bands), 2, figsize=(8, 4 * len(bands)), constrained_layout=True
     )
     axes = np.atleast_2d(axes)
     for row, band in enumerate(bands):
@@ -3960,28 +4004,66 @@ def plot_stacks(
                 label_mag=False,
             )
 
+        unit = pixel_unit(ref.header)
+        scale = _pixel_scale_arcsec(ref)
         radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
-        peaks = _radial_peak_profile(c.data, center)
-        axes[row, 1].plot(peaks, ".", c="0.5", ms=4, alpha=0.5)
-        axes[row, 1].plot(peaks, ls="--", c="0.5", alpha=0.5, label="peak")
+        ax = axes[row, 1]
 
+        # Both pixel-value curves share one axis; ring k spans [k, k+1) pixels.
+        peaks = _radial_peak_profile(c.data, center)
+        ax.plot(
+            np.arange(len(peaks)) + 0.5,
+            peaks,
+            ".--",
+            c="0.5",
+            ms=4,
+            alpha=0.5,
+            label="max pixel in ring",
+        )
         prof = _radial_profile(c.data, center)
-        ax_twin = axes[row, 1].twinx()
-        ax_twin.plot(prof, ".", c=bc, ms=6, alpha=0.5)
-        ax_twin.plot(prof, c=bc, alpha=0.5, label="flux")
-        ax_twin.set_yscale("log")
-        ax_twin.set_ylabel("flux (ADU)")
+        ax.plot(
+            np.arange(len(prof)) + 0.5,
+            prof,
+            ".-",
+            c=bc,
+            ms=6,
+            alpha=0.5,
+            label="mean pixel in ring",
+        )
+
+        enclosed = _enclosed_flux_profile(c.data, center, rin_pix, rout_pix)
+        ax_twin = ax.twinx()
+        if enclosed is not None:
+            ax_twin.plot(
+                np.arange(1, len(enclosed) + 1),
+                enclosed,
+                c=bc,
+                ls=":",
+                lw=1.5,
+                label="enclosed flux (sky-sub.)",
+            )
+            ax_twin.set_ylim(0, 1.2)
+        ax_twin.set_ylabel("enclosed flux / flux(<r_in)")
 
         best = float(radii_pix[min(int(diff.aperture), len(radii_pix) - 1)])
-        axes[row, 1].axvline(
-            best, color=colors["aperture"], alpha=0.6, label=f"best: r={best:.0f}"
+        ax.axvline(
+            best,
+            color=colors["aperture"],
+            alpha=0.6,
+            label=f"aperture r = {_radius_label(best, scale)}",
         )
         axes[row, 0].add_artist(
             plt.Circle(tuple(center), best, color=colors["aperture"], fill=False)
         )
-        for radius in (rin_pix, rout_pix):
-            axes[row, 1].axvline(
-                radius, color=colors["sky_annulus"], ls="--", alpha=0.6
+        for i, radius in enumerate((rin_pix, rout_pix)):
+            ax.axvline(
+                radius,
+                color=colors["sky_annulus"],
+                ls="--",
+                alpha=0.6,
+                label=(
+                    f"sky annulus {rin_pix:.0f}–{rout_pix:.0f} px" if i == 0 else None
+                ),
             )
             axes[row, 0].add_artist(
                 plt.Circle(
@@ -3993,20 +4075,52 @@ def plot_stacks(
                 )
             )
         saturation = getattr(ref.telescope, "saturation", None)
+        # Target peak only: the cutout can hold a brighter neighbour.
+        peak = float(np.nanmax(peaks[: max(int(np.ceil(best)), 1)]))
         if saturation is not None:
-            axes[row, 1].axhline(
-                saturation, color="k", ls="--", alpha=0.7, label="saturation"
+            ax.axhline(
+                saturation,
+                color="k",
+                ls="--",
+                alpha=0.7,
+                label=f"saturation {saturation:,.0f} {unit} (single frame)",
             )
-        axes[row, 1].set_yscale("log")
-        axes[row, 1].set_xlabel("radius (pixels)")
-        axes[row, 1].set_ylabel("peak count (ADU)")
+            peak_text = f"peak {peak:,.0f} {unit} ({100 * peak / saturation:.0f}% sat.)"
+        else:
+            peak_text = f"peak {peak:,.0f} {unit}"
+        ax.text(
+            0.97,
+            0.68,
+            peak_text,
+            transform=ax.transAxes,
+            ha="right",
+            fontsize=8,
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.8),
+        )
+        ax.set_yscale("log")
+        ax.set_xlabel("radius (pixels)")
+        ax.set_ylabel(f"pixel value ({unit})")
+        ax.set_title(_stacks_pixel_source(r), fontsize=9)
 
-        # Combine legends from main and twin axes
-        lines, labels = axes[row, 1].get_legend_handles_labels()
+        # Combine legends from main and twin axes, below the panel so the
+        # saturation line and curves stay visible.
+        lines, labels = ax.get_legend_handles_labels()
         lines_twin, labels_twin = ax_twin.get_legend_handles_labels()
-        axes[row, 1].legend(lines + lines_twin, labels + labels_twin, loc="upper right")
+        ax.legend(
+            lines + lines_twin,
+            labels + labels_twin,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.22),
+            ncol=2,
+            fontsize=7,
+            frameon=False,
+        )
     desc = ref_header_desc(band_results[bands[0]]["ref"], "stacks")
-    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}\n{desc}")
+    fig.suptitle(
+        f"{target_name} | {instrument} | {date} | tID={target_index}\n{desc}\n"
+        "pixel values as stored in the input FITS (no gain applied)",
+        fontsize=10,
+    )
     _savefig(fig, path)
 
 
