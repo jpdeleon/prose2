@@ -185,6 +185,14 @@ How to read `…_stacks.png` (one row per band):
   scale is known). Colours match the circles in the target cutout.
 - **Legend**: one legend per band row, below both panels.
 
+SIMBAD objects on `…_ref.png` and `…_cutouts.png` are labelled without
+overlap. Entries within a few points of each other on screen share one
+diamond, labelled with each type once (e.g. `EclBin/X/IR`). The diamond takes
+the eclipsing-binary colour if any entry is flagged. Each label takes the
+first free spot on rings around its diamond, avoiding other labels, diamonds,
+existing text such as star IDs, and the panel edge
+(`prose/scripts/plot_labels.py`).
+
 ### Options
 
 | Group | Options |

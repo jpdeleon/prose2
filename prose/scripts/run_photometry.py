@@ -93,6 +93,7 @@ from prose.core.block import Block
 from prose.core.source import PointSource, Sources
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
+from prose.scripts.plot_labels import LabelPoint, place_labels
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
 from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
 from prose.utils import (
@@ -3284,6 +3285,34 @@ def photometry_df(diff: Fluxes, bjd: np.ndarray) -> pd.DataFrame:
 # --------------------------- plots ---------------------------
 
 
+def _simbad_color(otype, colors: dict, flag_types: bool) -> str:
+    """Highlight colour for flagged SIMBAD types (e.g. EclBin) when enabled."""
+    if flag_types:
+        otype_lower = str(otype).lower()
+        for keyword, color_key in _SIMBAD_FLAG_TYPES.items():
+            if keyword in otype_lower:
+                return colors[color_key]
+    return colors["simbad_default"]
+
+
+def _draw_simbad_objects(ax, xy_otypes, colors: dict, flag_types: bool) -> None:
+    """SIMBAD markers with non-overlapping labels.
+
+    Co-located entries share one marker labelled ``"EB*/X/IR"``; a merged
+    marker takes the flagged colour if any of its entries is flagged.
+    """
+    points = [
+        LabelPoint(float(x), float(y), str(otype), _simbad_color(otype, colors, flag_types))
+        for x, y, otype in xy_otypes
+    ]
+    default = colors["simbad_default"]
+    place_labels(
+        ax,
+        points,
+        color_for=lambda cs: next((c for c in cs if c != default), default),
+    )
+
+
 def _project_gaia_to_cutout(cutout, gaia_df, target_coord=None):
     """Gaia positions in the cutout's pixel frame, clipped to its bounds.
 
@@ -3574,23 +3603,12 @@ def plot_ref_image(
                 ).T
                 x_pix += wcs_offset[0]
                 y_pix += wcs_offset[1]
-                for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
-                    color = colors["simbad_default"]
-                    if plot_gaia_sources:
-                        label_lower = str(label).lower()
-                        for keyword, color_key in _SIMBAD_FLAG_TYPES.items():
-                            if keyword in label_lower:
-                                color = colors[color_key]
-                                break
-                    ax.scatter([xi], [yi], marker="D", s=40, ec=color, fc="none", lw=1)
-                    ax.annotate(
-                        label,
-                        (xi, yi),
-                        xytext=(5, 5),
-                        textcoords="offset points",
-                        fontsize=5,
-                        color=color,
-                    )
+                _draw_simbad_objects(
+                    ax,
+                    zip(x_pix, y_pix, simbad.OTYPE),
+                    colors,
+                    flag_types=plot_gaia_sources,
+                )
 
     _savefig(fig, path)
 
@@ -4351,36 +4369,14 @@ def plot_cutouts(
         if simbad_coords_list and hasattr(img, "origin") and img.origin is not None:
             x0, y0 = img.origin
             ny, nx = img.data.shape
-            for xi, yi, label in simbad_coords_list:
-                xi_c = xi - x0
-                yi_c = yi - y0
-                if 0 <= xi_c < nx and 0 <= yi_c < ny:
-                    color = colors["simbad_default"]
-                    if plot_gaia_sources:
-                        label_lower = str(label).lower()
-                        for keyword, color_key in _SIMBAD_FLAG_TYPES.items():
-                            if keyword in label_lower:
-                                color = colors[color_key]
-                                break
-                    ax[i].scatter(
-                        [xi_c],
-                        [yi_c],
-                        marker="D",
-                        s=40,
-                        ec=color,
-                        fc="none",
-                        lw=1,
-                        zorder=10,
-                    )
-                    ax[i].annotate(
-                        label,
-                        (xi_c, yi_c),
-                        xytext=(5, 5),
-                        textcoords="offset points",
-                        fontsize=5,
-                        color=color,
-                        zorder=10,
-                    )
+            in_cutout = [
+                (xi - x0, yi - y0, label)
+                for xi, yi, label in simbad_coords_list
+                if 0 <= xi - x0 < nx and 0 <= yi - y0 < ny
+            ]
+            _draw_simbad_objects(
+                ax[i], in_cutout, colors, flag_types=plot_gaia_sources
+            )
 
         center = np.array(img.data.shape)[::-1] / 2
         ax[i].add_artist(
