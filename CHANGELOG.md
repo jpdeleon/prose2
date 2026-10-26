@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.5.0](https://github.com/jpdeleon/prose2/compare/v3.4.0...v3.5.0) (2026-10-26)
+
+
+### Features
+
+* **stacks:** mark nearest Gaia neighbour and share legend per row ([d4fe38b](https://github.com/jpdeleon/prose2/commit/d4fe38bb9792dfbc14a5546bd35e11fce3763f5c))
+
+
+### Bug Fixes
+
+* close five bugs found in a prose2 audit ([649f284](https://github.com/jpdeleon/prose2/commit/649f284dff80e11a6234855dc321898508c5e741))
+* close five bugs found in a prose2 audit ([f6b4491](https://github.com/jpdeleon/prose2/commit/f6b4491de4f47826c60fab6d9b43be4fe71ffbe1))
+* **plots:** clarify _stacks radial profile, MuSCAT saturation line, non-overlapping SIMBAD labels ([00421bb](https://github.com/jpdeleon/prose2/commit/00421bb2f0585b59ce538bfdf3a8f0441ae4d8df))
+* **plots:** place SIMBAD labels without overlap on _ref and _cutouts ([4d08752](https://github.com/jpdeleon/prose2/commit/4d087522171f34665a1f709f296d0c970442a6f0))
+* **saturation:** fall back to telescope file for MuSCAT and MuSCAT2 ([fe4f537](https://github.com/jpdeleon/prose2/commit/fe4f5377ea0322fadeed497078e566d599b01f3b))
+* **stacks:** label pixel units from header and clarify profile curves ([9b268f7](https://github.com/jpdeleon/prose2/commit/9b268f731195970ad023069eae90dc5af7243ca7))
+* **telescope:** match MuSCAT3/4 frames by camera ID ([d1fef3e](https://github.com/jpdeleon/prose2/commit/d1fef3e918377e9d880e15c959176c4a5031da78))
+* **telescope:** match per-band telescope files by FILTER and MuSCAT3/4 camera ID ([de545b7](https://github.com/jpdeleon/prose2/commit/de545b7fd810ce844a0f53b6e7273f6d7116c2c2))
+* **telescope:** match per-band telescope files by the frame's FILTER ([bf6932b](https://github.com/jpdeleon/prose2/commit/bf6932bc27b20acd86f426a3526883d3d2ab9a66))
+
 ## [3.4.0](https://github.com/jpdeleon/prose2/compare/v3.3.4...v3.4.0) (2026-10-23)
 
 
