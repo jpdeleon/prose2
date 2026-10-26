@@ -67,6 +67,7 @@ import time as time_module
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterable
 
 import matplotlib
@@ -92,6 +93,7 @@ from prose.core.block import Block
 from prose.core.source import PointSource, Sources
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
+from prose.scripts.plot_labels import LabelPoint, place_labels
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
 from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
 from prose.utils import (
@@ -105,6 +107,7 @@ from prose.utils import (
     get_simbad_data,
     header_jd,
     load_cached_df,
+    pixel_unit,
     read_filename_per_band,
     save_cached_df,
     z_scale,
@@ -268,6 +271,8 @@ COLOR_SKY_ANNULUS = "yellow"  # visible on both dark and light sky
 COLOR_SIMBAD_DEFAULT = "teal"  # works on dark image backgrounds
 COLOR_SIMBAD_ECLBIN = "orange"  # warmer, more visible than default markers
 COLOR_SOURCES = "lime"  # pops against dark source regions
+COLOR_GAIA = "cyan"  # Gaia "+" markers, and the nearest-neighbour line in _stacks
+COLOR_ENCLOSED_FLUX = "sienna"  # _stacks growth curve; no band or overlay uses it
 
 # SIMBAD OTYPE substrings to highlight; all flagged types use the eclbin color.
 _SIMBAD_FLAG_TYPES = {
@@ -429,6 +434,39 @@ def setup_logger(outdir: Path, verbose: bool = False) -> Path:
 
     logger.info(f"log file: {log_path}")
     return log_path
+
+
+# Instruments whose headers carry no saturation keyword but whose .telescope
+# file states a real per-instrument limit (ADU): MuSCAT 55000, MuSCAT2 62000.
+TELESCOPE_FILE_SATURATION_INSTRUMENTS = ("muscat", "muscat2")
+
+
+def resolve_saturation(header, instrument: str, telescope) -> tuple[float | None, str]:
+    """Saturation limit for a frame, and where it came from.
+
+    LCO headers are read via :func:`get_saturation_from_header`. MuSCAT and
+    MuSCAT2 headers have no gain/saturation keywords, so they fall back to the
+    matched ``.telescope`` file's ``saturation``. The fallback is limited to
+    those instruments and to a telescope actually matched for them: an
+    unmatched camera gets ``Telescope``'s generic 55000 default, which is not a
+    measured limit. Returns ``(None, "unknown")`` when neither applies.
+    """
+    try:
+        sat_all = get_saturation_from_header(header)
+        band = header.get("FILTER", "")
+        saturation = sat_all.get(band) if isinstance(sat_all, dict) else None
+    except Exception:  # noqa: BLE001 - non-LCO headers lack TELID/GAIN
+        saturation = None
+    if saturation is not None:
+        return saturation, "header"
+    name = str(getattr(telescope, "name", "") or "").lower()
+    if (
+        instrument in TELESCOPE_FILE_SATURATION_INSTRUMENTS
+        and name.split("_")[0] == instrument
+        and getattr(telescope, "saturation", None) is not None
+    ):
+        return float(telescope.saturation), f"{telescope.name} telescope file"
+    return None, "unknown"
 
 
 def get_instrument(header) -> str:
@@ -2195,17 +2233,14 @@ def build_reference(
     else:
         pix_key = instrument
     pixel_scale = float(ref.header.get("PIXSCALE", PIXSCALES.get(pix_key, 0.267)))
-    band_key = ref.header.get("FILTER", "")
-    try:
-        sat_all = get_saturation_from_header(ref.header)
-        saturation = sat_all.get(band_key) if isinstance(sat_all, dict) else None
-    except Exception:  # noqa: BLE001
-        saturation = None
+    saturation, saturation_source = resolve_saturation(
+        ref.header, instrument, ref.telescope
+    )
     ref.telescope.saturation = saturation
     ref.telescope.pixel_scale = pixel_scale
     logger.info(
         f"{Path(ref_file).name}: PIXSCALE={pixel_scale} "
-        f"saturation={saturation} instrument={instrument}"
+        f"saturation={saturation} ({saturation_source}) instrument={instrument}"
     )
     reference_sequence(
         ccd_trim_size_yx=ccd_trim_size_yx,
@@ -2613,6 +2648,8 @@ def _build_display_reference(
     data = warped[0] if len(warped) == 1 else easy_median(warped)
     display = shared_ref.copy()
     display.data = np.asarray(data, dtype=float)
+    # Actual stack depth (frames can fail alignment), for the _stacks caption.
+    display.computed["n_stacked"] = len(warped)
     if own_header is not None:
         display.header = own_header
         # Show this band's own saturation level on the radial-profile plots.
@@ -3278,30 +3315,42 @@ def photometry_df(diff: Fluxes, bjd: np.ndarray) -> pd.DataFrame:
 # --------------------------- plots ---------------------------
 
 
-def _overlay_gaia_sources(
-    ax,
-    cutout,
-    gaia_df,
-    target_coord=None,
-    color="cyan",
-    label_mag=True,
-    marker_size=45,
-    fontsize=4,
-    legend_label="Gaia sources",
-) -> int:
-    """Overlay queried Gaia source positions on a target cutout.
+def _simbad_color(otype, colors: dict, flag_types: bool) -> str:
+    """Highlight colour for flagged SIMBAD types (e.g. EclBin) when enabled."""
+    if flag_types:
+        otype_lower = str(otype).lower()
+        for keyword, color_key in _SIMBAD_FLAG_TYPES.items():
+            if keyword in otype_lower:
+                return colors[color_key]
+    return colors["simbad_default"]
 
-    Gaia ``ra``/``dec`` are projected into the cutout's own pixel frame via its
-    WCS and clipped to the cutout bounds, so the markers line up with whatever
-    ``origin="lower"`` image the axis already shows.  When *target_coord* is
-    given, the target itself is plotted with a distinct marker (no text label)
-    and neighbouring sources are annotated with their **delta** G magnitude
-    (``Gmag - target_Gmag``) instead of the absolute value.
 
-    Failures (missing catalog, missing/invalid WCS) degrade to a no-op rather
-    than breaking the figure.
+def _draw_simbad_objects(ax, xy_otypes, colors: dict, flag_types: bool) -> None:
+    """SIMBAD markers with non-overlapping labels.
 
-    Returns the number of Gaia sources drawn.
+    Co-located entries share one marker labelled ``"EB*/X/IR"``; a merged
+    marker takes the flagged colour if any of its entries is flagged.
+    """
+    points = [
+        LabelPoint(float(x), float(y), str(otype), _simbad_color(otype, colors, flag_types))
+        for x, y, otype in xy_otypes
+    ]
+    default = colors["simbad_default"]
+    place_labels(
+        ax,
+        points,
+        color_for=lambda cs: next((c for c in cs if c != default), default),
+    )
+
+
+def _project_gaia_to_cutout(cutout, gaia_df, target_coord=None):
+    """Gaia positions in the cutout's pixel frame, clipped to its bounds.
+
+    Returns ``None`` when there is nothing to project (no catalog, no celestial
+    WCS, projection failure, or no source inside the cutout). Otherwise returns
+    a namespace with ``x``, ``y``, ``target_mask`` (the source nearest
+    *target_coord*; all False without it), ``mags`` (G magnitudes or ``None``)
+    and ``target_mag`` (``nan`` when unknown).
     """
     cutout_wcs = getattr(cutout, "wcs", None)
     if (
@@ -3310,13 +3359,13 @@ def _overlay_gaia_sources(
         or cutout_wcs is None
         or not getattr(cutout_wcs, "has_celestial", False)
     ):
-        return 0
+        return None
     try:
         coords = SkyCoord(gaia_df.ra.values, gaia_df.dec.values, unit="deg")
         x, y = cutout.wcs.world_to_pixel(coords)
     except Exception as exc:  # noqa: BLE001 - overlay must not break the plot
         logger.warning(f"Gaia overlay skipped ({exc})")
-        return 0
+        return None
     ny, nx = cutout.data.shape
 
     # Correct for WCS error: the cutout is centered on the target's refined
@@ -3337,7 +3386,11 @@ def _overlay_gaia_sources(
     inside = np.isfinite(x) & np.isfinite(y) & (x >= 0) & (x < nx) & (y >= 0) & (y < ny)
     x, y = x[inside], y[inside]
     if not len(x):
-        return 0
+        return None
+
+    mags = None
+    if "phot_g_mean_mag" in gaia_df:
+        mags = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[inside]
 
     # Identify the target among the visible Gaia sources (nearest to target_coord).
     target_mask = np.zeros(len(x), dtype=bool)
@@ -3347,14 +3400,78 @@ def _overlay_gaia_sources(
             seps = target_coord.separation(coords[inside])
             nearest = int(np.argmin(seps))
             target_mask[nearest] = True
-            if "phot_g_mean_mag" in gaia_df:
-                mags_all = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[
-                    inside
-                ]
-                target_mag = mags_all[nearest]
+            if mags is not None:
+                target_mag = mags[nearest]
         except Exception:  # noqa: BLE001
             pass
 
+    return SimpleNamespace(
+        x=x, y=y, target_mask=target_mask, mags=mags, target_mag=target_mag
+    )
+
+
+def _nearest_gaia_neighbour(cutout, gaia_df, target_coord=None):
+    """Closest Gaia source to the target (the cutout centre), excluding it.
+
+    Without *target_coord* the source nearest the centre is taken as the
+    target. Returns a namespace with ``x``, ``y``, ``dist`` (pixels from the
+    centre) and ``dmag`` (G - target G, ``nan`` when unknown), or ``None``
+    when no neighbour lies inside the cutout.
+    """
+    proj = _project_gaia_to_cutout(cutout, gaia_df, target_coord)
+    if proj is None:
+        return None
+    ny, nx = cutout.data.shape
+    dist = np.hypot(proj.x - nx / 2, proj.y - ny / 2)
+    target_mask = proj.target_mask.copy()
+    target_mag = proj.target_mag
+    if not target_mask.any():
+        centre = int(np.argmin(dist))
+        target_mask[centre] = True
+        if proj.mags is not None:
+            target_mag = proj.mags[centre]
+    if target_mask.all():
+        return None
+    candidates = np.where(~target_mask)[0]
+    i = int(candidates[np.argmin(dist[candidates])])
+    mag = proj.mags[i] if proj.mags is not None else np.nan
+    return SimpleNamespace(
+        x=float(proj.x[i]),
+        y=float(proj.y[i]),
+        dist=float(dist[i]),
+        dmag=float(mag - target_mag),
+    )
+
+
+def _overlay_gaia_sources(
+    ax,
+    cutout,
+    gaia_df,
+    target_coord=None,
+    color=COLOR_GAIA,
+    label_mag=True,
+    marker_size=45,
+    fontsize=4,
+    legend_label="Gaia sources",
+) -> int:
+    """Overlay queried Gaia source positions on a target cutout.
+
+    Gaia ``ra``/``dec`` are projected into the cutout's own pixel frame via its
+    WCS and clipped to the cutout bounds, so the markers line up with whatever
+    ``origin="lower"`` image the axis already shows.  When *target_coord* is
+    given, the target itself is plotted with a distinct marker (no text label)
+    and neighbouring sources are annotated with their **delta** G magnitude
+    (``Gmag - target_Gmag``) instead of the absolute value.
+
+    Failures (missing catalog, missing/invalid WCS) degrade to a no-op rather
+    than breaking the figure.
+
+    Returns the number of Gaia sources drawn.
+    """
+    proj = _project_gaia_to_cutout(cutout, gaia_df, target_coord)
+    if proj is None:
+        return 0
+    x, y, target_mask, target_mag = proj.x, proj.y, proj.target_mask, proj.target_mag
     neighbour = ~target_mask
 
     # Plot the target marker (no label).
@@ -3381,9 +3498,8 @@ def _overlay_gaia_sources(
             label=legend_label,
         )
 
-    if label_mag and "phot_g_mean_mag" in gaia_df:
-        mags = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[inside]
-        for i, (xi, yi, mag) in enumerate(zip(x, y, mags)):
+    if label_mag and proj.mags is not None:
+        for i, (xi, yi, mag) in enumerate(zip(x, y, proj.mags)):
             if target_mask[i] or not np.isfinite(mag):
                 continue  # skip the target (no text label)
             if np.isfinite(target_mag):
@@ -3517,23 +3633,12 @@ def plot_ref_image(
                 ).T
                 x_pix += wcs_offset[0]
                 y_pix += wcs_offset[1]
-                for xi, yi, label in zip(x_pix, y_pix, simbad.OTYPE):
-                    color = colors["simbad_default"]
-                    if plot_gaia_sources:
-                        label_lower = str(label).lower()
-                        for keyword, color_key in _SIMBAD_FLAG_TYPES.items():
-                            if keyword in label_lower:
-                                color = colors[color_key]
-                                break
-                    ax.scatter([xi], [yi], marker="D", s=40, ec=color, fc="none", lw=1)
-                    ax.annotate(
-                        label,
-                        (xi, yi),
-                        xytext=(5, 5),
-                        textcoords="offset points",
-                        fontsize=5,
-                        color=color,
-                    )
+                _draw_simbad_objects(
+                    ax,
+                    zip(x_pix, y_pix, simbad.OTYPE),
+                    colors,
+                    flag_types=plot_gaia_sources,
+                )
 
     _savefig(fig, path)
 
@@ -3913,6 +4018,49 @@ def _radial_peak_profile(data, center):
     return peaks
 
 
+def _enclosed_flux_profile(data, center, rin, rout):
+    """Sky-subtracted flux enclosed within radius ``k + 1`` for ring ``k``.
+
+    The sky level is the median pixel in the ``[rin, rout)`` annulus. The curve
+    is normalized to its value at ``rin`` so a well-chosen aperture reads as
+    the radius where it levels off near 1. Returns ``None`` when the
+    normalization is not positive (no star above sky).
+    """
+    y, x = np.indices(data.shape)
+    r = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2)
+    in_annulus = (r >= rin) & (r < rout)
+    sky = float(np.nanmedian(data[in_annulus])) if in_annulus.any() else 0.0
+    ring_sums = np.bincount(r.astype(int).ravel(), (data - sky).ravel())
+    enclosed = np.cumsum(ring_sums)
+    norm = enclosed[min(max(int(rin) - 1, 0), len(enclosed) - 1)]
+    if not np.isfinite(norm) or norm <= 0:
+        return None
+    return enclosed / norm
+
+
+def _pixel_scale_arcsec(ref) -> float | None:
+    try:
+        scale = float(getattr(ref.telescope, "pixel_scale", None))
+    except (TypeError, ValueError):
+        return None
+    return scale if np.isfinite(scale) and scale > 0 else None
+
+
+def _radius_label(radius_pix: float, scale) -> str:
+    text = f"{radius_pix:.0f} px"
+    return f"{text} ({radius_pix * scale:.1f}″)" if scale else text
+
+
+def _stacks_profile_title(r: dict) -> str:
+    """Radial-profile panel title; names the stack depth for display refs."""
+    display = r.get("display_ref")
+    if display is None:
+        return "radial profile"
+    n = getattr(display, "computed", {}).get("n_stacked", 1)
+    source = "1 aligned frame" if n == 1 else f"median of {n} aligned frames"
+    return f"radial profile ({source})"
+
+
 def plot_stacks(
     band_results,
     path: Path,
@@ -3933,81 +4081,185 @@ def plot_stacks(
     (reference band and self-reference mode).
     """
     bands = sort_bands_canonical(band_results.keys())
-    fig, axes = plt.subplots(
-        len(bands), 2, figsize=(7, 3 * len(bands)), constrained_layout=True
-    )
-    axes = np.atleast_2d(axes)
-    for row, band in enumerate(bands):
-        bc = band_color(band)
-        r = band_results[band]
-        ref = r["display_ref"] if r.get("display_ref") is not None else r["ref"]
-        diff = r["diff"]
-        c = ref.cutout(
-            ref.sources[r["target_index"]].coords, GAIA_CUTOUT, reset_index=False
+    fig = plt.figure(figsize=(8, 4.6 * len(bands)), layout="constrained")
+    subfigs = np.atleast_1d(fig.subfigures(len(bands), 1))
+    for subfig, band in zip(subfigs, bands):
+        _plot_stacks_row(
+            subfig,
+            band_results[band],
+            band,
+            plot_gaia_sources=plot_gaia_sources,
+            target_coord=target_coord,
+            cmap=cmap,
         )
-        center = np.array(c.data.shape)[::-1] / 2
-
-        colors = get_plot_colors(cmap)
-        axes[row, 0].imshow(z_scale(c.data), cmap=cmap, origin="lower")
-        axes[row, 0].set_title(f"target zoom ({band})")
-        axes[row, 0].axis("off")
-        if plot_gaia_sources:
-            _overlay_gaia_sources(
-                axes[row, 0],
-                c,
-                r.get("gaia_df"),
-                target_coord=target_coord,
-                label_mag=False,
-            )
-
-        radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
-        peaks = _radial_peak_profile(c.data, center)
-        axes[row, 1].plot(peaks, ".", c="0.5", ms=4, alpha=0.5)
-        axes[row, 1].plot(peaks, ls="--", c="0.5", alpha=0.5, label="peak")
-
-        prof = _radial_profile(c.data, center)
-        ax_twin = axes[row, 1].twinx()
-        ax_twin.plot(prof, ".", c=bc, ms=6, alpha=0.5)
-        ax_twin.plot(prof, c=bc, alpha=0.5, label="flux")
-        ax_twin.set_yscale("log")
-        ax_twin.set_ylabel("flux (ADU)")
-
-        best = float(radii_pix[min(int(diff.aperture), len(radii_pix) - 1)])
-        axes[row, 1].axvline(
-            best, color=colors["aperture"], alpha=0.6, label=f"best: r={best:.0f}"
-        )
-        axes[row, 0].add_artist(
-            plt.Circle(tuple(center), best, color=colors["aperture"], fill=False)
-        )
-        for radius in (rin_pix, rout_pix):
-            axes[row, 1].axvline(
-                radius, color=colors["sky_annulus"], ls="--", alpha=0.6
-            )
-            axes[row, 0].add_artist(
-                plt.Circle(
-                    tuple(center),
-                    radius,
-                    color=colors["sky_annulus"],
-                    ls="--",
-                    fill=False,
-                )
-            )
-        saturation = getattr(ref.telescope, "saturation", None)
-        if saturation is not None:
-            axes[row, 1].axhline(
-                saturation, color="k", ls="--", alpha=0.7, label="saturation"
-            )
-        axes[row, 1].set_yscale("log")
-        axes[row, 1].set_xlabel("radius (pixels)")
-        axes[row, 1].set_ylabel("peak count (ADU)")
-
-        # Combine legends from main and twin axes
-        lines, labels = axes[row, 1].get_legend_handles_labels()
-        lines_twin, labels_twin = ax_twin.get_legend_handles_labels()
-        axes[row, 1].legend(lines + lines_twin, labels + labels_twin, loc="upper right")
     desc = ref_header_desc(band_results[bands[0]]["ref"], "stacks")
-    fig.suptitle(f"{target_name} | {instrument} | {date} | tID={target_index}\n{desc}")
+    fig.suptitle(
+        f"{target_name} | {instrument} | {date} | tID={target_index}\n{desc}",
+        fontsize=10,
+    )
     _savefig(fig, path)
+
+
+def _plot_stacks_row(subfig, r, band, plot_gaia_sources, target_coord, cmap):
+    """One ``_stacks`` row: target cutout, radial profile, shared legend."""
+    bc = band_color(band)
+    colors = get_plot_colors(cmap)
+    ref = r["display_ref"] if r.get("display_ref") is not None else r["ref"]
+    c = ref.cutout(
+        ref.sources[r["target_index"]].coords, GAIA_CUTOUT, reset_index=False
+    )
+    center = np.array(c.data.shape)[::-1] / 2
+    unit = pixel_unit(ref.header)
+    scale = _pixel_scale_arcsec(ref)
+    radii_pix, rin_pix, rout_pix = aper_radii_pix(r)
+    best = float(radii_pix[min(int(r["diff"].aperture), len(radii_pix) - 1)])
+    ax_img, ax = subfig.subplots(1, 2)
+
+    ax_img.imshow(z_scale(c.data), cmap=cmap, origin="lower")
+    ax_img.set_title(f"target zoom ({band})")
+    ax_img.axis("off")
+    if plot_gaia_sources:
+        _overlay_gaia_sources(
+            ax_img, c, r.get("gaia_df"), target_coord=target_coord, label_mag=False
+        )
+    ax_img.add_artist(
+        plt.Circle(tuple(center), best, color=colors["aperture"], fill=False)
+    )
+    for radius in (rin_pix, rout_pix):
+        ax_img.add_artist(
+            plt.Circle(
+                tuple(center), radius, color=colors["sky_annulus"], ls="--", fill=False
+            )
+        )
+
+    peaks = _plot_ring_profiles(ax, c.data, center, bc)
+    ax_twin = _plot_enclosed_flux(ax, c.data, center, rin_pix, rout_pix)
+    ax.axvline(
+        best,
+        color=colors["aperture"],
+        alpha=0.6,
+        label=f"aperture r = {_radius_label(best, scale)}",
+    )
+    for i, radius in enumerate((rin_pix, rout_pix)):
+        ax.axvline(
+            radius,
+            color=colors["sky_annulus"],
+            ls="--",
+            alpha=0.6,
+            label=f"sky annulus {rin_pix:.0f}–{rout_pix:.0f} px" if i == 0 else None,
+        )
+    _plot_nearest_neighbour(
+        ax, ax_img, c, r.get("gaia_df"), target_coord, scale, plot_gaia_sources
+    )
+    # Target peak only: the cutout can hold a brighter neighbour.
+    peak = float(np.nanmax(peaks[: max(int(np.ceil(best)), 1)]))
+    _plot_saturation(ax, getattr(ref.telescope, "saturation", None), peak, unit)
+    ax.set_yscale("log")
+    ax.set_xlabel("radius (pixels)")
+    ax.set_ylabel(f"pixel value ({unit})")
+    ax.set_title(_stacks_profile_title(r), fontsize=9)
+
+    # One legend per row, below both panels, so neither panel is crowded.
+    handles, labels = [], []
+    for a in (ax_img, ax, ax_twin):
+        for h, lab in zip(*a.get_legend_handles_labels()):
+            if lab not in labels:
+                handles.append(h)
+                labels.append(lab)
+    subfig.legend(
+        handles, labels, loc="outside lower center", ncol=3, fontsize=7, frameon=False
+    )
+
+
+def _plot_ring_profiles(ax, data, center, color):
+    """Max and mean pixel per 1-px ring, plotted at ring centres [k, k+1)."""
+    peaks = _radial_peak_profile(data, center)
+    prof = _radial_profile(data, center)
+    ax.plot(
+        np.arange(len(peaks)) + 0.5,
+        peaks,
+        ".--",
+        c="0.5",
+        ms=4,
+        alpha=0.5,
+        label="max pixel in ring",
+    )
+    ax.plot(
+        np.arange(len(prof)) + 0.5,
+        prof,
+        ".-",
+        c=color,
+        ms=6,
+        alpha=0.5,
+        label="mean pixel in ring",
+    )
+    return peaks
+
+
+def _plot_enclosed_flux(ax, data, center, rin_pix, rout_pix):
+    """Growth curve on a twin axis; returns the twin axis."""
+    ax_twin = ax.twinx()
+    enclosed = _enclosed_flux_profile(data, center, rin_pix, rout_pix)
+    if enclosed is not None:
+        ax_twin.plot(
+            np.arange(1, len(enclosed) + 1),
+            enclosed,
+            c=COLOR_ENCLOSED_FLUX,
+            ls=":",
+            lw=1.5,
+            label="enclosed flux (sky-sub.)",
+        )
+        ax_twin.set_ylim(0, 1.2)
+    ax_twin.set_ylabel("enclosed flux / flux(<r_in)", color=COLOR_ENCLOSED_FLUX)
+    ax_twin.tick_params(axis="y", colors=COLOR_ENCLOSED_FLUX)
+    return ax_twin
+
+
+def _plot_nearest_neighbour(
+    ax, ax_img, cutout, gaia_df, target_coord, scale, gaia_overlay_drawn
+):
+    """Mark the nearest Gaia neighbour's distance in the Gaia "+" colour.
+
+    When the full Gaia overlay is off, the neighbour still gets a "+" on the
+    cutout so the radial-profile line has a visible counterpart.
+    """
+    nn = _nearest_gaia_neighbour(cutout, gaia_df, target_coord)
+    if nn is None:
+        return
+    dmag = f", ΔG = {nn.dmag:+.1f}" if np.isfinite(nn.dmag) else ""
+    ax.axvline(
+        nn.dist,
+        color=COLOR_GAIA,
+        ls="-.",
+        lw=1.2,
+        label=f"nearest Gaia star {_radius_label(nn.dist, scale)}{dmag}",
+    )
+    if not gaia_overlay_drawn:
+        ax_img.scatter(nn.x, nn.y, marker="+", s=45, c=COLOR_GAIA, lw=0.9, zorder=10)
+
+
+def _plot_saturation(ax, saturation, peak, unit):
+    """Saturation line (when known) and a target-peak note."""
+    if saturation is not None:
+        ax.axhline(
+            saturation,
+            color="k",
+            ls="--",
+            alpha=0.7,
+            label=f"saturation {saturation:,.0f} {unit} (single frame)",
+        )
+        text = f"peak {peak:,.0f} {unit} ({100 * peak / saturation:.0f}% sat.)"
+    else:
+        text = f"peak {peak:,.0f} {unit}"
+    ax.text(
+        0.97,
+        0.68,
+        text,
+        transform=ax.transAxes,
+        ha="right",
+        fontsize=8,
+        bbox=dict(facecolor="white", edgecolor="none", alpha=0.8),
+    )
 
 
 def plot_cutouts(
@@ -4147,36 +4399,14 @@ def plot_cutouts(
         if simbad_coords_list and hasattr(img, "origin") and img.origin is not None:
             x0, y0 = img.origin
             ny, nx = img.data.shape
-            for xi, yi, label in simbad_coords_list:
-                xi_c = xi - x0
-                yi_c = yi - y0
-                if 0 <= xi_c < nx and 0 <= yi_c < ny:
-                    color = colors["simbad_default"]
-                    if plot_gaia_sources:
-                        label_lower = str(label).lower()
-                        for keyword, color_key in _SIMBAD_FLAG_TYPES.items():
-                            if keyword in label_lower:
-                                color = colors[color_key]
-                                break
-                    ax[i].scatter(
-                        [xi_c],
-                        [yi_c],
-                        marker="D",
-                        s=40,
-                        ec=color,
-                        fc="none",
-                        lw=1,
-                        zorder=10,
-                    )
-                    ax[i].annotate(
-                        label,
-                        (xi_c, yi_c),
-                        xytext=(5, 5),
-                        textcoords="offset points",
-                        fontsize=5,
-                        color=color,
-                        zorder=10,
-                    )
+            in_cutout = [
+                (xi - x0, yi - y0, label)
+                for xi, yi, label in simbad_coords_list
+                if 0 <= xi - x0 < nx and 0 <= yi - y0 < ny
+            ]
+            _draw_simbad_objects(
+                ax[i], in_cutout, colors, flag_types=plot_gaia_sources
+            )
 
         center = np.array(img.data.shape)[::-1] / 2
         ax[i].add_artist(

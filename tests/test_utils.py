@@ -222,3 +222,27 @@ def test_header_jd_returns_none_without_any_usable_keyword():
     jd, source = pu.header_jd({"OBJECT": "TOI-6715"})
     assert jd is None
     assert source == "none"
+
+
+# --------------------------------- pixel_unit ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "header, expected",
+    [
+        ({"BUNIT": "electrons"}, "e-"),
+        ({"BUNIT": "e-"}, "e-"),
+        ({"BUNIT": "ADU"}, "ADU"),
+        ({"BUNIT": "counts", "GAIN": 1.0, "SATURATE": 1e5}, "ADU"),
+        ({"BUNIT": "Jy"}, "Jy"),
+        # BANZAI-reduced LCO frame: normalized to electrons, GAIN=1.
+        ({"GAIN": 1.0, "SATURATE": 120000.0}, "e-"),
+        # Raw MuSCAT frame: real gain, pixels in ADU.
+        ({"GAIN": 1.88, "SATURATE": 64000.0}, "ADU"),
+        ({"GAIN": 1.0}, "ADU"),
+        ({"GAIN": "n/a", "SATURATE": 1.0}, "ADU"),
+        ({}, "ADU"),
+    ],
+)
+def test_pixel_unit_from_header(header, expected):
+    assert pu.pixel_unit(header) == expected

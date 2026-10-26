@@ -4199,3 +4199,254 @@ def test_test_run_window_by_time_centres_each_band_on_matching_time(tmp_path):
     assert gp[5] in windows["gp"]
     assert ip[10] in windows["ip"]
     assert all(len(v) == 4 for v in windows.values())
+
+
+# ------------------------- _stacks plot labels/units -------------------------
+
+
+def _gaussian_star(shape=(60, 60), amp=1000.0, sigma=2.0, sky=100.0):
+    y, x = np.indices(shape)
+    cy, cx = shape[0] / 2, shape[1] / 2
+    return sky + amp * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
+
+
+def test_enclosed_flux_profile_levels_off_at_one_by_inner_annulus():
+    data = _gaussian_star()
+    center = np.array(data.shape)[::-1] / 2
+    enclosed = rp._enclosed_flux_profile(data, center, rin=15.0, rout=25.0)
+    assert enclosed is not None
+    assert enclosed[14] == pytest.approx(1.0)
+    assert enclosed[2] < 0.9  # still rising inside ~1.5 sigma
+    assert np.all(np.diff(enclosed[:15]) >= -1e-9)
+
+
+def test_enclosed_flux_profile_returns_none_for_flat_sky():
+    data = np.full((40, 40), 50.0)
+    assert rp._enclosed_flux_profile(data, np.array([20.0, 20.0]), 8, 12) is None
+
+
+@pytest.mark.parametrize(
+    "display, expected",
+    [
+        (None, "radial profile"),
+        (SimpleNamespace(computed={"n_stacked": 1}), "radial profile (1 aligned frame)"),
+        (
+            SimpleNamespace(computed={"n_stacked": 7}),
+            "radial profile (median of 7 aligned frames)",
+        ),
+    ],
+)
+def test_stacks_profile_title_names_stack_depth(display, expected):
+    assert rp._stacks_profile_title({"display_ref": display}) == expected
+
+
+def _cutout_wcs(shape=(60, 60), arcsec_per_pix=1.0):
+    w = WCS(naxis=2)
+    w.wcs.crpix = [shape[1] / 2 + 1, shape[0] / 2 + 1]  # FITS 1-based -> centre
+    w.wcs.cdelt = [-arcsec_per_pix / 3600, arcsec_per_pix / 3600]
+    w.wcs.crval = [150.0, 20.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    return w
+
+
+def _gaia_at_offsets(offsets_pix, mags, w):
+    """Gaia-like table placing sources at pixel offsets from the cutout centre."""
+    xy = np.array([[30.0 + dx, 30.0 + dy] for dx, dy in offsets_pix])
+    sky = w.pixel_to_world(xy[:, 0], xy[:, 1])
+    return pd.DataFrame(
+        {"ra": sky.ra.deg, "dec": sky.dec.deg, "phot_g_mean_mag": mags}
+    )
+
+
+def _stacks_result(header, saturation, pixel_scale=None, wcs=None, gaia_df=None):
+    class FakeCutout:
+        def __init__(self):
+            self.data = _gaussian_star()
+            self.wcs = wcs
+
+    class FakeImg:
+        def __init__(self):
+            self.header = header
+            self.telescope = SimpleNamespace(
+                saturation=saturation, pixel_scale=pixel_scale
+            )
+            self.sources = _fake_sources([[30.0, 30.0]])
+
+        def cutout(self, coords, shape, reset_index=False):
+            return FakeCutout()
+
+    return dict(
+        ref=FakeImg(),
+        diff=SimpleNamespace(aperture=0),
+        target_index=0,
+        aper_radii=np.array([6.0]),
+        rin=15.0,
+        rout=25.0,
+        scale=False,
+        gaia_df=gaia_df,
+        display_ref=None,
+    )
+
+
+def _render_stacks(monkeypatch, tmp_path, result, **kwargs):
+    captured = {}
+    monkeypatch.setattr(rp, "_savefig", lambda fig, path: captured.update(fig=fig))
+    rp.plot_stacks({"gp": result}, tmp_path / "s.png", "T", "inst", "d", 0, **kwargs)
+    (subfig,) = captured["fig"].subfigs
+    img_ax, profile_ax, twin_ax = subfig.axes
+    assert profile_ax.get_legend() is None  # legend is shared by the whole row
+    (row_legend,) = subfig.legends
+    legend = [t.get_text() for t in row_legend.get_texts()]
+    return profile_ax, twin_ax, legend
+
+
+def test_nearest_gaia_neighbour_skips_target_and_picks_closest():
+    w = _cutout_wcs()
+    gaia = _gaia_at_offsets([(0, 0), (12, 5), (-3, 4), (20, 0)], [10, 11, 13.5, 9], w)
+    cutout = SimpleNamespace(data=np.zeros((60, 60)), wcs=w)
+    target = w.pixel_to_world(30.0, 30.0)
+
+    nn = rp._nearest_gaia_neighbour(cutout, gaia, target_coord=target)
+
+    assert nn.dist == pytest.approx(5.0, abs=1e-3)
+    assert nn.dmag == pytest.approx(3.5)
+    assert (nn.x, nn.y) == pytest.approx((27.0, 34.0), abs=1e-3)
+
+
+def test_nearest_gaia_neighbour_without_target_coord_uses_centre_source():
+    w = _cutout_wcs()
+    gaia = _gaia_at_offsets([(0.5, 0), (8, 0)], [12, 14], w)
+    cutout = SimpleNamespace(data=np.zeros((60, 60)), wcs=w)
+
+    nn = rp._nearest_gaia_neighbour(cutout, gaia)
+
+    assert nn.dist == pytest.approx(8.0, abs=1e-3)
+    assert nn.dmag == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize(
+    "gaia_offsets, wcs",
+    [([(0, 0)], _cutout_wcs()), ([(0, 0), (5, 0)], None)],
+    ids=["target-only", "no-wcs"],
+)
+def test_nearest_gaia_neighbour_returns_none_without_a_neighbour(gaia_offsets, wcs):
+    gaia = _gaia_at_offsets(gaia_offsets, [10] * len(gaia_offsets), _cutout_wcs())
+    cutout = SimpleNamespace(data=np.zeros((60, 60)), wcs=wcs)
+    assert rp._nearest_gaia_neighbour(cutout, gaia) is None
+
+
+def test_plot_stacks_marks_nearest_gaia_star_in_gaia_marker_colour(
+    monkeypatch, tmp_path
+):
+    w = _cutout_wcs()
+    gaia = _gaia_at_offsets([(0, 0), (0, 18)], [11.0, 12.5], w)
+    result = _stacks_result({}, None, pixel_scale=0.5, wcs=w, gaia_df=gaia)
+    ax, twin, legend = _render_stacks(monkeypatch, tmp_path, result)
+
+    label = "nearest Gaia star 18 px (9.0″), ΔG = +1.5"
+    assert label in legend
+    (line,) = [ln for ln in ax.get_lines() if ln.get_label() == label]
+    assert line.get_xdata()[0] == pytest.approx(18.0, abs=1e-3)
+    assert line.get_color() == rp.COLOR_GAIA
+    # Overlay off: the neighbour still gets its own "+" on the cutout.
+    img_ax = ax.figure.axes[0]
+    (marker,) = img_ax.collections
+    assert tuple(marker.get_offsets()[0]) == pytest.approx((30.0, 48.0), abs=1e-3)
+
+
+def test_plot_stacks_enclosed_flux_uses_its_own_colour(monkeypatch, tmp_path):
+    result = _stacks_result({}, None)
+    _, twin, _ = _render_stacks(monkeypatch, tmp_path, result)
+    (curve,) = twin.get_lines()
+    assert curve.get_color() == rp.COLOR_ENCLOSED_FLUX
+    assert rp.COLOR_ENCLOSED_FLUX not in set(rp.BAND_COLORS.values())
+    assert rp.COLOR_ENCLOSED_FLUX not in set(rp.get_plot_colors().values())
+
+
+def test_plot_stacks_labels_pixels_in_electrons_for_banzai_frames(
+    monkeypatch, tmp_path
+):
+    result = _stacks_result({"GAIN": 1.0, "SATURATE": 120000.0}, 120000.0, 0.27)
+    ax, twin, legend = _render_stacks(monkeypatch, tmp_path, result)
+
+    assert ax.get_ylabel() == "pixel value (e-)"
+    assert "saturation 120,000 e- (single frame)" in legend
+    assert "aperture r = 6 px (1.6″)" in legend
+    assert "sky annulus 15–25 px" in legend
+    assert {"max pixel in ring", "mean pixel in ring"} <= set(legend)
+    assert "enclosed flux (sky-sub.)" in legend
+    assert twin.get_ylabel() == "enclosed flux / flux(<r_in)"
+    assert "flux" not in ax.get_ylabel()
+    assert ax.get_title() == "radial profile"
+    peak_texts = [t.get_text() for t in ax.texts]
+    assert peak_texts == ["peak 1,100 e- (1% sat.)"]
+
+
+def test_plot_stacks_defaults_to_adu_without_saturation(monkeypatch, tmp_path):
+    result = _stacks_result({"GAIN": 1.9}, None)
+    ax, _, legend = _render_stacks(monkeypatch, tmp_path, result)
+
+    assert ax.get_ylabel() == "pixel value (ADU)"
+    assert "aperture r = 6 px" in legend
+    assert not any(label.startswith("saturation") for label in legend)
+    assert [t.get_text() for t in ax.texts] == ["peak 1,100 ADU"]
+
+
+# ----------------------------- resolve_saturation -----------------------------
+
+_MUSCAT2_HEADER = {"TELESCOP": "TCS 1.52m tel.", "INSTRUME": "MuSCAT2", "FILTER": "g"}
+
+
+@pytest.mark.parametrize(
+    "header, instrument, telescope, expected",
+    [
+        # MuSCAT2: no GAIN/SATURATE -> the matched telescope file's limit.
+        (
+            _MUSCAT2_HEADER,
+            "muscat2",
+            SimpleNamespace(name="MuSCAT2_i", saturation=62000),
+            (62000.0, "MuSCAT2_i telescope file"),
+        ),
+        (
+            {"INSTRUME": "MuSCAT", "FILTER": "g"},
+            "muscat",
+            SimpleNamespace(name="MuSCAT_g", saturation=55000),
+            (55000.0, "MuSCAT_g telescope file"),
+        ),
+        # "muscat" must not borrow a MuSCAT2 file (prefix match is exact).
+        (
+            {"INSTRUME": "MuSCAT", "FILTER": "g"},
+            "muscat",
+            SimpleNamespace(name="MuSCAT2_g", saturation=62000),
+            (None, "unknown"),
+        ),
+        # Unmatched camera: Telescope()'s generic 55000 is not a real limit.
+        (
+            _MUSCAT2_HEADER,
+            "muscat2",
+            SimpleNamespace(name="default_TCS 1.52m tel.", saturation=55000),
+            (None, "unknown"),
+        ),
+        # Other instruments without a header limit get no fallback.
+        (
+            {"FILTER": "gp"},
+            "unknown",
+            SimpleNamespace(name="Unknown_x", saturation=55000),
+            (None, "unknown"),
+        ),
+    ],
+    ids=["muscat2", "muscat", "muscat-vs-muscat2-file", "unmatched", "other"],
+)
+def test_resolve_saturation_falls_back_to_telescope_file_for_muscat(
+    header, instrument, telescope, expected
+):
+    assert rp.resolve_saturation(header, instrument, telescope) == expected
+
+
+def test_resolve_saturation_prefers_header_value(monkeypatch):
+    monkeypatch.setattr(rp, "get_saturation_from_header", lambda h: {"g": 50000})
+    telescope = SimpleNamespace(name="MuSCAT2_g", saturation=62000)
+    assert rp.resolve_saturation({"FILTER": "g"}, "muscat2", telescope) == (
+        50000,
+        "header",
+    )

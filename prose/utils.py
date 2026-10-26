@@ -171,6 +171,35 @@ def get_simbad_data(target_coord, inst, fov_arcmin=None):
     _simbad_cache[cache_key] = result_df
     return result_df
 
+_ELECTRON_BUNITS = {"e", "e-", "electron", "electrons"}
+_ADU_BUNITS = {"adu", "count", "counts", "dn"}
+
+
+def pixel_unit(h) -> str:
+    """Unit of the pixel values stored in a frame: ``"e-"`` or ``"ADU"``.
+
+    The pipeline never applies gain, so pixels keep the unit of the input FITS.
+    ``BUNIT`` wins when present. Otherwise BANZAI-reduced LCO frames are
+    recognised the same way :func:`get_saturation_from_header` does: ``GAIN``
+    of 1 with a ``SATURATE`` keyword means the data were normalized to
+    electrons. Anything else is treated as raw ADU.
+    """
+    bunit = str(h.get("BUNIT", "") or "").strip()
+    if bunit:
+        if bunit.lower() in _ELECTRON_BUNITS:
+            return "e-"
+        if bunit.lower() in _ADU_BUNITS:
+            return "ADU"
+        return bunit
+    try:
+        gain = float(h.get("GAIN", np.nan))
+    except (TypeError, ValueError):
+        gain = np.nan
+    if gain == 1.0 and "SATURATE" in h:
+        return "e-"
+    return "ADU"
+
+
 def get_saturation_from_header(h) -> dict:
     """Only works for LCO data header"""
     gain = h['GAIN']

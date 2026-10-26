@@ -162,6 +162,39 @@ Everything is written to `--results_dir`:
   `…_stacks.png`
 - a single `….npz` archive and a timestamped `.log`
 
+How to read `…_stacks.png` (one row per band):
+
+- **Pixel units.** No gain is applied, so pixels keep the unit of the input
+  FITS. The unit comes from `BUNIT`, or is `e-` for BANZAI-reduced frames
+  (`GAIN=1` with `SATURATE`), and `ADU` otherwise. Every axis and label in
+  a row uses that unit.
+- **max pixel in ring / mean pixel in ring** (left axis): the brightest and
+  the average pixel in each 1-px ring around the target, sky included. These
+  are pixel values, not flux.
+- **enclosed flux** (right axis, sienna): sky-subtracted flux within radius
+  r, normalized to 1 at the inner sky radius. A good aperture sits at the
+  knee where this curve starts to level off (typically 0.9–0.98), not
+  necessarily at 1.
+- **nearest Gaia star** (cyan dash-dot line): distance and ΔG of the closest
+  Gaia neighbour, in the same cyan as the `+` markers on the cutout. With
+  `--plot_gaia_sources` off, only that neighbour gets a `+`.
+- **saturation**: the per-frame limit from the header. MuSCAT and MuSCAT2
+  headers carry none, so their limit comes from the matched `.telescope` file
+  (55,000 and 62,000 ADU); the log says which source was used. When a row shows a
+  stack, its title says so (`radial profile (median of N aligned frames)`);
+  a stacked peak under the line does not rule out a saturated single frame. The peak note (`% sat.`) uses only pixels inside the aperture.
+- **aperture r / sky annulus**: radii in pixels (arcsec too when the pixel
+  scale is known). Colours match the circles in the target cutout.
+- **Legend**: one legend per band row, below both panels.
+
+SIMBAD objects on `…_ref.png` and `…_cutouts.png` are labelled without
+overlap. Entries within a few points of each other on screen share one
+diamond, labelled with each type once (e.g. `EclBin/X/IR`). The diamond takes
+the eclipsing-binary colour if any entry is flagged. Each label takes the
+first free spot on rings around its diamond, avoiding other labels, diamonds,
+existing text such as star IDs, and the panel edge
+(`prose/scripts/plot_labels.py`).
+
 ### Options
 
 | Group | Options |
@@ -305,7 +338,7 @@ they are unaffected.
 * muscat4: 240128 (supply `--tID` manually)
 
 ## Note
-Note: The gain and saturation limit are reflected in the FITS header keywords GAIN and and SATURATE, respectively, and those are set for each individual camera in the network. The units of the saturation limit will be ADU for raw images, and electrons for BANZAI-processed images.
+Note: The gain and saturation limit are reflected in the FITS header keywords GAIN and and SATURATE, respectively, and those are set for each individual camera in the network. The units of the saturation limit will be ADU for raw images, and electrons for BANZAI-processed images. prose2 never applies gain, so the `_stacks` plot labels its axes with this same unit (see *Output products*).
 
 ## Installation
 
