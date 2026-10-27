@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Sparse-field comparison selection
+
+Automatic differential photometry supports a single valid comparison, including a constant comparison. The ensemble search excludes the target and retains the best evaluated set even when improvement continues through the last candidate. No valid comparison raises a descriptive error.
+
 ### Detector and sky uncertainty units
 
 Aperture errors use source-plus-sky Poisson variance in input count units and read noise converted from electrons by the gain. Sky subtraction adds the estimated variance of the sigma-clipped annulus median (Gaussian approximation). Correlated pixels, calibration-master uncertainty, scintillation, and input variance-plane ingestion are not yet modeled.
