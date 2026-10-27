@@ -198,6 +198,11 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
         Differential fluxes if weights is provided, else normalized fluxes
     """
     diff_fluxes = fluxes / np.expand_dims(np.nanmean(fluxes, -1), -1)
+    diff_errors = (
+        errors / np.abs(np.expand_dims(np.nanmean(fluxes, -1), -1))
+        if errors is not None
+        else None
+    )
     if weights is not None:
         # not to divide flux by itself
         sub = np.expand_dims((~np.eye(fluxes.shape[-2]).astype(bool)).astype(int), 0)

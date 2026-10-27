@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Normalization without comparison stars
+
+`Fluxes.diff()` without comparison IDs returns normalized flux and, when supplied, normalized uncertainties. It no longer raises an uninitialized-variable exception.
+
 ### Binned measurement uncertainties
 
 `Fluxes.bin()` combines independent measurement errors in quadrature along the time axis, retaining each aperture and star. Time-dependent covariates and aperture radii are binned with the measurements.
