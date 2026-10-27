@@ -63,6 +63,7 @@ class AperturePhotometry(Block):
                 for a in apertures
             ]
         ).T
+        full_areas = np.array([a.area for a in apertures])
         areas = np.array([a.area_overlap(image.data, mask=bad) for a in apertures]).T
         geometric_areas = np.array([a.area_overlap(image.data) for a in apertures]).T
         missing = np.maximum(geometric_areas - areas, 0.0)
@@ -75,6 +76,7 @@ class AperturePhotometry(Block):
             "areas": areas,
             "valid": valid,
             "masked_area": missing,
+            "truncated": geometric_areas < full_areas[None, :] - 1e-8,
         }
 
     @property

@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Photometry near detector edges
+
+Sky annuli use only finite on-detector pixels; empty sky regions yield invalid measurements. Background subtraction uses the aperture area actually overlapping the image. Aperture metadata flags truncation: correct sky subtraction does not recover stellar light lost off the detector.
+
 ### Sparse-field comparison selection
 
 Automatic differential photometry supports a single valid comparison, including a constant comparison. The ensemble search excludes the target and retains the best evaluated set even when improvement continues through the last candidate. No valid comparison raises a descriptive error.

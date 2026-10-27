@@ -670,8 +670,16 @@ class GetFluxes(Get):
         def get_aperture(im):
             return im.aperture["radii"]
 
+        def get_areas(im):
+            return im.aperture.get(
+                "areas",
+                np.broadcast_to(
+                    np.pi * im.aperture["radii"] ** 2, im.aperture["fluxes"].shape
+                ),
+            )
+
         def get_error(im):
-            area = im.aperture.get("areas", np.pi * im.aperture["radii"] ** 2)
+            area = get_areas(im)
             gain = float(im.gain)
             read_noise = float(im.read_noise)
             if not np.isfinite(gain) or gain <= 0:
@@ -700,6 +708,7 @@ class GetFluxes(Get):
             _bkg=get_bkg,
             _fluxes=get_fluxes,
             _apertures=get_aperture,
+            _areas=get_areas,
             _errors=get_error,
             name=name,
             **kwargs,
@@ -709,11 +718,10 @@ class GetFluxes(Get):
 
     def terminate(self):
         super().terminate()
-        area = np.pi * (self._apertures**2)
         if len(self._fluxes) == 0:
             self.fluxes = None
             return
-        raw_fluxes = (self._fluxes - self._bkg[:, :, None] * area[:, None, :]).T
+        raw_fluxes = (self._fluxes - self._bkg[:, :, None] * self._areas).T
         time = self._time
         data = {"bkg": np.mean(self._bkg, -1)}
         data.update({key: value for key, value in self.values.items() if key[0] != "_"})
