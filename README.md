@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Ensemble calculation cost
+
+Differential ensemble sums use a total-minus-self reduction instead of constructing a dense star-by-star exclusion matrix. Arithmetic scales linearly in the number of stars per time sample; output dimensions and the existing uncertainty behavior are preserved. The separate uncertainty correction addresses its scientific formula.
+
 ### Incompatible automatic sky annuli
 
 Automatic annulus selection raises a descriptive error when the minimum PSF clearance would re-enclose a known Gaia contaminant. Inspect the field and supply a custom aperture/annulus grid, or use neighbor modeling; the pipeline no longer presents impossible automatic geometry as uncontaminated.
