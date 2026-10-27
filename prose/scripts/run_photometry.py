@@ -5607,6 +5607,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(useful for e.g. a slow start before focus/guiding stabilized). "
         "See --exclude_after_jd for the pairing rule when both are given.",
     )
+    ap.add_argument(
+        "--plots",
+        choices=("all", "reference", "summary", "none"),
+        default="all",
+        help="Diagnostic PNG groups to render; CSV/NPZ output and --gif are independent",
+    )
     args = ap.parse_args(argv)
 
     if args.aper_radii is not None and args.annulus is None:
@@ -6531,7 +6537,7 @@ def main(argv=None) -> int:
                 resolved_confmode = probe.get("CONFMODE")
 
     simbad_df = None
-    if target_coord is not None:
+    if target_coord is not None and args.plots in ("all", "reference"):
         try:
             simbad_df = get_simbad_data(target_coord, instrument)
         except Exception as exc:  # noqa: BLE001
@@ -6573,56 +6579,57 @@ def main(argv=None) -> int:
             photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
             logger.info(f"wrote {csv_path}")
 
-        plot_ref_image(
-            r,
-            target_coord,
-            instrument,
-            args.results_dir / f"{stem}_ref.png",
-            target_name=args.target_name,
-            date=date,
-            avoid_cids=r.get("avoid_cids"),
-            plot_gaia_sources=args.plot_gaia_sources,
-            simbad_df=simbad_df,
-            cmap=args.cmap,
-        )
-        plot_apertures(
-            r,
-            args.results_dir / f"{stem}_apertures.png",
-            target_name=args.target_name,
-            instrument=instrument,
-            date=date,
-            plot_gaia_sources=args.plot_gaia_sources,
-            target_coord=target_coord,
-            cmap=args.cmap,
-        )
-        plot_alignment(
-            r,
-            r["files"][-1],
-            args.results_dir / f"{stem}_alignment.png",
-            args.target_name,
-            instrument,
-            date,
-            target_index=r["target_index"],
-            ccd_trim_size_yx=args.ccd_trim_size_yx,
-            max_num_stars=args.max_num_stars,
-            min_star_separation=args.min_star_separation,
-            n_stars_align=args.n_stars_align,
-            min_area=args.min_star_area,
-            cmap=args.cmap,
-        )
-        plot_cutouts(
-            r,
-            args.results_dir / f"{stem}_cutouts.png",
-            args.target_name,
-            instrument,
-            band,
-            date,
-            max_num_stars=args.max_num_stars,
-            plot_gaia_sources=args.plot_gaia_sources,
-            target_coord=target_coord,
-            simbad_df=simbad_df,
-            cmap=args.cmap,
-        )
+        if args.plots in ("all", "reference"):
+            plot_ref_image(
+                r,
+                target_coord,
+                instrument,
+                args.results_dir / f"{stem}_ref.png",
+                target_name=args.target_name,
+                date=date,
+                avoid_cids=r.get("avoid_cids"),
+                plot_gaia_sources=args.plot_gaia_sources,
+                simbad_df=simbad_df,
+                cmap=args.cmap,
+            )
+            plot_apertures(
+                r,
+                args.results_dir / f"{stem}_apertures.png",
+                target_name=args.target_name,
+                instrument=instrument,
+                date=date,
+                plot_gaia_sources=args.plot_gaia_sources,
+                target_coord=target_coord,
+                cmap=args.cmap,
+            )
+            plot_alignment(
+                r,
+                r["files"][-1],
+                args.results_dir / f"{stem}_alignment.png",
+                args.target_name,
+                instrument,
+                date,
+                target_index=r["target_index"],
+                ccd_trim_size_yx=args.ccd_trim_size_yx,
+                max_num_stars=args.max_num_stars,
+                min_star_separation=args.min_star_separation,
+                n_stars_align=args.n_stars_align,
+                min_area=args.min_star_area,
+                cmap=args.cmap,
+            )
+            plot_cutouts(
+                r,
+                args.results_dir / f"{stem}_cutouts.png",
+                args.target_name,
+                instrument,
+                band,
+                date,
+                max_num_stars=args.max_num_stars,
+                plot_gaia_sources=args.plot_gaia_sources,
+                target_coord=target_coord,
+                simbad_df=simbad_df,
+                cmap=args.cmap,
+            )
         if args.make_gif:
             stride_step = (
                 1 if args.test_run else max(1, len(r["files"]) // args.gif_stride)
@@ -6765,8 +6772,8 @@ def main(argv=None) -> int:
 
     bin_size_days = args.bin_size_minutes / (24 * 60)
     target_index = next(iter(band_results.values()))["target_index"]
-    if args.test_run:
-        logger.info("test-run: skipping combined lightcurve plot")
+    if args.test_run or args.plots not in ("all", "summary"):
+        logger.info("skipping combined lightcurve plot")
     else:
         plot_lightcurves(
             band_results,
@@ -6777,8 +6784,8 @@ def main(argv=None) -> int:
             target_index=target_index,
             bin_size_days=bin_size_days,
         )
-    if args.test_run:
-        logger.info("test-run: skipping raw flux and covariate plots")
+    if args.test_run or args.plots not in ("all", "summary"):
+        logger.info("skipping raw flux and covariate plots")
     else:
         plot_raw_flux(
             band_results,
@@ -6796,17 +6803,18 @@ def main(argv=None) -> int:
             date,
             target_index=target_index,
         )
-    plot_stacks(
-        band_results,
-        args.results_dir / f"{stem_multi}_stacks.png",
-        args.target_name,
-        instrument,
-        date,
-        target_index=target_index,
-        plot_gaia_sources=args.plot_gaia_sources,
-        target_coord=target_coord,
-        cmap=args.cmap,
-    )
+    if args.plots in ("all", "reference"):
+        plot_stacks(
+            band_results,
+            args.results_dir / f"{stem_multi}_stacks.png",
+            args.target_name,
+            instrument,
+            date,
+            target_index=target_index,
+            plot_gaia_sources=args.plot_gaia_sources,
+            target_coord=target_coord,
+            cmap=args.cmap,
+        )
     if args.test_run:
         logger.info("test-run: skipping multi-band .npz archive")
     else:

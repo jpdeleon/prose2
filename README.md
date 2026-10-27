@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Selective diagnostic plots
+
+Use `--plots all` (default), `reference`, `summary`, or `none` to select diagnostic PNGs. Reference plots include source/aperture/alignment/cutout and stack views; summary plots include light curves, raw flux, and covariates. CSV/NPZ products and the separately requested `--gif` remain independent. SIMBAD annotation queries are skipped when reference plots are disabled.
