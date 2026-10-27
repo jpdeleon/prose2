@@ -1,4 +1,6 @@
 import logging
+from copy import deepcopy
+from types import SimpleNamespace
 from typing import Optional, Union
 
 import numpy as np
@@ -202,7 +204,11 @@ class ComputeTransformTwirl(Block):
 
     def __init__(self, reference_image: Image, n=10, rtol=0.02, **kwargs):
         super().__init__(**kwargs)
-        self.reference_image = reference_image
+        # Solving needs reference coordinates and WCS, not reference pixels.
+        # Keep a private lightweight Image rather than serializing a full CCD.
+        self.reference_image = SimpleNamespace(
+            data=None, wcs=deepcopy(getattr(reference_image, "wcs", None))
+        )
         ref_coords = reference_image.sources.coords
         self.ref = ref_coords[0:n].copy()
         self.n = n
@@ -212,6 +218,7 @@ class ComputeTransformTwirl(Block):
         self.quads_ref, self.asterisms_ref = quads.hashes(ref_coords[0:n])
         self.tree_ref = cKDTree(self.quads_ref)
         self.rtol = rtol
+        self.worker_shared_arrays = (self.ref, self.quads_ref, self.asterisms_ref)
 
     def run(self, image):
         success = False

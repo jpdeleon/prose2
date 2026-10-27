@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Worker reference storage
+
+Parallel workers initialize their immutable array store once. Each frame still unpickles block and loader state, including fresh closure state, but arrays a block lists in `worker_shared_arrays` are resolved from that store instead of being copied per frame. Those arrays become read-only within each worker. Twirl alignment retains a lightweight reference WCS instead of CCD pixels and opts its reference arrays into reuse. No memory is shared across independent runs.
+
 ### Ensemble calculation cost
 
 Differential ensemble sums use a total-minus-self reduction instead of constructing a dense star-by-star exclusion matrix. Arithmetic scales linearly in the number of stars per time sample; output dimensions and the existing uncertainty behavior are preserved. The separate uncertainty correction addresses its scientific formula.
