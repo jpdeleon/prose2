@@ -822,10 +822,10 @@ class FilterPointSources(Block):
 class MaskBadPixels(Block):
     """Mask bad pixels in image data using a bad pixel map.
 
-    Bad pixels (hot pixels, dead pixels, cosmic rays) are marked as NaN
-    so they don't contribute to aperture photometry. This allows the
-    photometry to be performed with the remaining valid pixels while
-    avoiding bias from detector defects.
+    Bad pixels are marked as NaN and explicitly masked by aperture photometry.
+    Partial sums are retained for diagnostics, but apertures touching invalid
+    pixels are flagged and rejected by GetFluxes; missing stellar flux cannot
+    be recovered by simply ignoring a pixel.
     """
 
     def __init__(self, bad_pixel_map: np.ndarray | None = None, name=None):
@@ -1718,6 +1718,12 @@ def _sky_annulus_pix(
     # keep the ring physical: positive inner radius above the minimum aperture
     rin = max(rin, fwhm + APER_STEP_PIX)
     rout = max(rout, rin + fwhm)
+    if len(intruding) and rout > float(intruding.min()) - CONTAM_MARGIN_PIX:
+        raise ValueError(
+            f"cannot place an uncontaminated sky annulus outside FWHM={fwhm:g} px "
+            f"before the neighbour at {float(intruding.min()):g} px; "
+            "supply an inspected --aper_radii/--annulus grid or use neighbour modeling"
+        )
     return rin, rout
 
 
@@ -2457,6 +2463,8 @@ def photometry_sequence(
     min_area: int = MIN_STAR_AREA,
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
+    workers: int | None = None,
+    chunksize: int = 1,
 ) -> SequenceParallel:
     """Parallel per-image photometry sequence (mirrors the notebook).
 
@@ -2507,10 +2515,13 @@ def photometry_sequence(
     )
 
     return SequenceParallel(
+        processes=workers,
+        chunksize=chunksize,
         blocks=blocks_list,
         data_blocks=[
             blocks.GetFluxes(
                 "fwhm",
+                time="midpoint_jd",
                 airmass=lambda im: _header_airmass(im.header, airmass_keyword),
                 dx=lambda im: (
                     im.transform.translation[0]
@@ -2701,6 +2712,8 @@ def run_band(
     centroid_method: str = CENTROID_METHOD,
     reference_source_indices: list[int] | None = None,
     display_stack_nframes: int = 1,
+    workers: int | None = None,
+    chunksize: int = 1,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -2949,6 +2962,8 @@ def run_band(
         reference["aper_radii"],
         reference["rin"],
         reference["rout"],
+        workers=workers,
+        chunksize=chunksize,
         scale=reference["scale"],
         ccd_trim_size_yx=ccd_trim_size_yx,
         max_num_stars=max_num_stars,
@@ -3080,6 +3095,18 @@ def differential_photometry(
 
     fluxes = fluxes.copy()
     fluxes.target = target_index
+    # A missing target sample is not an observation. Drop its frame across
+    # every aperture and covariate before any comparison interpolation.
+    valid_target = np.all(np.isfinite(fluxes.fluxes[:, target_index, :]), axis=0)
+    if not np.any(valid_target):
+        logger.warning("no frames have finite target measurements; skipping band")
+        return None
+    if not np.all(valid_target):
+        logger.warning(
+            "discarding %d frames with missing target measurements",
+            int((~valid_target).sum()),
+        )
+        fluxes = fluxes.mask(valid_target)
 
     # Impute NaNs before filtering, to recover partially-valid comparison stars
     if nan_imputation_method != "none":
@@ -3120,7 +3147,7 @@ def differential_photometry(
             f"after masking target + explicit comparisons"
         )
     else:
-        keep = ~np.any(np.isnan(fluxes.fluxes), axis=(0, 2))
+        keep = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2))
         logger.info(
             f"comparison pool (auto): {int(np.sum(keep)) - 1 if keep[target_index] else int(np.sum(keep))} "
             f"candidates after NaN filtering"
@@ -5613,7 +5640,23 @@ def parse_args(argv=None) -> argparse.Namespace:
         default="all",
         help="Diagnostic PNG groups to render; CSV/NPZ output and --gif are independent",
     )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of photometry worker processes (default: CPU count)",
+    )
+    ap.add_argument(
+        "--chunksize",
+        type=int,
+        default=1,
+        help="Frames per multiprocessing task batch (default: 1)",
+    )
     args = ap.parse_args(argv)
+    if args.workers is not None and args.workers < 1:
+        ap.error("--workers must be positive")
+    if args.chunksize < 1:
+        ap.error("--chunksize must be positive")
 
     if args.aper_radii is not None and args.annulus is None:
         ap.error("--annulus RIN,ROUT is required when --aper_radii is given")
@@ -6459,6 +6502,8 @@ def main(argv=None) -> int:
                 centroid_method=args.centroid_method,
                 reference_source_indices=reference_source_indices,
                 display_stack_nframes=args.display_stack_nframes,
+                workers=args.workers,
+                chunksize=args.chunksize,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
@@ -6773,7 +6818,8 @@ def main(argv=None) -> int:
     bin_size_days = args.bin_size_minutes / (24 * 60)
     target_index = next(iter(band_results.values()))["target_index"]
     if args.test_run or args.plots not in ("all", "summary"):
-        logger.info("skipping combined lightcurve plot")
+        reason = "test run" if args.test_run else f"--plots={args.plots}"
+        logger.info(f"skipping combined lightcurve plot ({reason})")
     else:
         plot_lightcurves(
             band_results,
@@ -6785,7 +6831,8 @@ def main(argv=None) -> int:
             bin_size_days=bin_size_days,
         )
     if args.test_run or args.plots not in ("all", "summary"):
-        logger.info("skipping raw flux and covariate plots")
+        reason = "test run" if args.test_run else f"--plots={args.plots}"
+        logger.info(f"skipping raw flux and covariate plots ({reason})")
     else:
         plot_raw_flux(
             band_results,

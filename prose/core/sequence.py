@@ -1,5 +1,7 @@
+import pickle
 import sys
 from collections import OrderedDict
+from io import BytesIO
 from functools import partial
 from pathlib import Path
 
@@ -289,7 +291,18 @@ class SequenceParallel(Sequence):
         A name for the sequence.
     """
 
-    def __init__(self, blocks, data_blocks=None, name=""):
+    def __init__(self, blocks, data_blocks=None, name="", processes=None, chunksize=1):
+        for label, value in (("processes", processes), ("chunksize", chunksize)):
+            if value is None and label == "processes":
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, np.integer))
+                or value < 1
+            ):
+                raise ValueError(f"{label} must be a positive integer")
+        self.processes = processes
+        self.chunksize = chunksize
         super().__init__(blocks, name=name)
         if data_blocks is None:
             self.data = None
@@ -321,9 +334,11 @@ class SequenceParallel(Sequence):
         # made the parent process the bottleneck however many workers ran.
         payload = bytes(ForkingPickler.dumps((self.blocks, loader)))
 
-        with mp.Pool(initializer=_init_worker, initargs=(payload,)) as pool:
+        with mp.Pool(
+            processes=self.processes, initializer=_init_worker, initargs=(payload,)
+        ) as pool:
             for image in self.progress(
-                pool.imap(_run_all_in_worker, images_i),
+                pool.imap(_run_all_in_worker, images_i, chunksize=self.chunksize),
                 total=n,
             ):
                 if not image.discard:
@@ -339,17 +354,38 @@ class SequenceParallel(Sequence):
 
 
 _worker_payload = None
+_worker_shared_arrays = ()
+
+
+class _WorkerPickler(ForkingPickler):
+    def persistent_id(self, obj):
+        return self.shared_ids.get(id(obj))
 
 
 def _init_worker(payload):
-    global _worker_payload
-    _worker_payload = payload
+    global _worker_payload, _worker_shared_arrays
+    blocks, loader = ForkingPickler.loads(payload)
+    arrays = []
+    for block in blocks:
+        for value in getattr(block, "worker_shared_arrays", ()):
+            if not isinstance(value, np.ndarray) or value.dtype.hasobject:
+                raise TypeError("worker_shared_arrays must contain numeric arrays")
+            value.flags.writeable = False
+            arrays.append(value)
+    _worker_shared_arrays = tuple(arrays)
+    stream = BytesIO()
+    pickler = _WorkerPickler(stream)
+    pickler.shared_ids = {id(value): index for index, value in enumerate(arrays)}
+    pickler.dump((blocks, loader))
+    _worker_payload = stream.getvalue()
 
 
 def _run_all_in_worker(image_i):
-    # Unpickled per image so every image starts from fresh block state, as
-    # it did when the blocks were sent along with each task.
-    blocks, loader = ForkingPickler.loads(_worker_payload)
+    # Unpickling preserves fresh closure state as well as mutable attributes.
+    # Large opted-in constants are resolved from this worker's read-only store.
+    unpickler = pickle.Unpickler(BytesIO(_worker_payload))
+    unpickler.persistent_load = lambda index: _worker_shared_arrays[index]
+    blocks, loader = unpickler.load()
     return _run_all(image_i, blocks=blocks, loader=loader)
 
 
