@@ -822,10 +822,10 @@ class FilterPointSources(Block):
 class MaskBadPixels(Block):
     """Mask bad pixels in image data using a bad pixel map.
 
-    Bad pixels (hot pixels, dead pixels, cosmic rays) are marked as NaN
-    so they don't contribute to aperture photometry. This allows the
-    photometry to be performed with the remaining valid pixels while
-    avoiding bias from detector defects.
+    Bad pixels are marked as NaN and explicitly masked by aperture photometry.
+    Partial sums are retained for diagnostics, but apertures touching invalid
+    pixels are flagged and rejected by GetFluxes; missing stellar flux cannot
+    be recovered by simply ignoring a pixel.
     """
 
     def __init__(self, bad_pixel_map: np.ndarray | None = None, name=None):
@@ -2517,6 +2517,7 @@ def photometry_sequence(
         data_blocks=[
             blocks.GetFluxes(
                 "fwhm",
+                time="midpoint_jd",
                 airmass=lambda im: _header_airmass(im.header, airmass_keyword),
                 dx=lambda im: (
                     im.transform.translation[0]
@@ -3086,6 +3087,18 @@ def differential_photometry(
 
     fluxes = fluxes.copy()
     fluxes.target = target_index
+    # A missing target sample is not an observation. Drop its frame across
+    # every aperture and covariate before any comparison interpolation.
+    valid_target = np.all(np.isfinite(fluxes.fluxes[:, target_index, :]), axis=0)
+    if not np.any(valid_target):
+        logger.warning("no frames have finite target measurements; skipping band")
+        return None
+    if not np.all(valid_target):
+        logger.warning(
+            "discarding %d frames with missing target measurements",
+            int((~valid_target).sum()),
+        )
+        fluxes = fluxes.mask(valid_target)
 
     # Impute NaNs before filtering, to recover partially-valid comparison stars
     if nan_imputation_method != "none":
@@ -3126,7 +3139,7 @@ def differential_photometry(
             f"after masking target + explicit comparisons"
         )
     else:
-        keep = ~np.any(np.isnan(fluxes.fluxes), axis=(0, 2))
+        keep = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2))
         logger.info(
             f"comparison pool (auto): {int(np.sum(keep)) - 1 if keep[target_index] else int(np.sum(keep))} "
             f"candidates after NaN filtering"

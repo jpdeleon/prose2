@@ -198,6 +198,11 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
         Differential fluxes if weights is provided, else normalized fluxes
     """
     diff_fluxes = fluxes / np.expand_dims(np.nanmean(fluxes, -1), -1)
+    diff_errors = (
+        errors / np.abs(np.expand_dims(np.nanmean(fluxes, -1), -1))
+        if errors is not None
+        else None
+    )
     if weights is not None:
         # not to divide flux by itself
         sub = np.expand_dims((~np.eye(fluxes.shape[-2]).astype(bool)).astype(int), 0)
@@ -215,10 +220,14 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
             diff_errors = errors / np.expand_dims(np.nanmean(fluxes, -1), -1)
             weighted_errors = diff_errors**2 * np.expand_dims(weights, -1) ** 2
             with np.errstate(divide="ignore", invalid="ignore"):
-                squarred_art_error = (sub @ weighted_errors) / np.expand_dims(
-                    weights**2 @ sub[0], -1
+                artificial_variance = (sub @ weighted_errors) / np.expand_dims(
+                    (weights @ sub[0]) ** 2, -1
                 )
-                diff_errors = np.sqrt(diff_errors**2 + squarred_art_error)
+                # Propagate y = normalized_target / artificial_light_curve.
+                # Treat the fitted weights and time-series means as fixed.
+                diff_errors = np.sqrt(
+                    diff_errors**2 + diff_fluxes**2 * artificial_variance
+                ) / np.abs(artificial_light_curve)
         else:
             diff_errors = None
 
@@ -251,28 +260,36 @@ def auto_diff_1d(fluxes, i=None, errors=None):
 
     # to retain minimal set of comparison stars
     if i is not None:
-        idxs = np.argsort(w)[::-1]
-        white_noise = utils.binned_nanstd(fluxes)
-        last_white_noise = 1e10
-
-        def best_weights(j):
-            _w = w.copy()
-            _w[idxs[j::]] = 0.0
-            _w[i] = 0.0
-            return _w
-
-        for j in range(w.shape[-1]):
-            _w = best_weights(j)
-            _df, _ = diff(fluxes, _w)
-            _white_noise = np.take(white_noise(_df), i, axis=-1)[0]
-            if not np.isfinite(_white_noise):
-                continue
-            if _white_noise < last_white_noise:
-                last_white_noise = _white_noise
-            else:
-                break
-
-        w = best_weights(j - 1)
+        # Rank comparisons only; the target must not consume a search slot.
+        eligible = np.all(np.isfinite(fluxes), axis=-1) & (np.mean(fluxes, axis=-1) > 0)
+        eligible[i] = False
+        if not np.any(eligible):
+            raise ValueError("no valid comparison stars")
+        if np.count_nonzero(eligible) == 1:
+            w = eligible.astype(float)
+        else:
+            if not np.any(w[eligible] > 0):
+                w = eligible.astype(float)
+            idxs = np.array(
+                [j for j in np.argsort(w)[::-1] if eligible[j] and w[j] > 0]
+            )
+            white_noise = utils.binned_nanstd(fluxes)
+            best_noise = np.inf
+            chosen = None
+            for count in range(1, len(idxs) + 1):
+                candidate = np.zeros_like(w)
+                candidate[idxs[:count]] = w[idxs[:count]]
+                candidate_flux, _ = diff(fluxes, candidate)
+                noise = float(np.asarray(white_noise(candidate_flux))[0, i])
+                if not np.isfinite(noise):
+                    continue
+                if noise < best_noise:
+                    best_noise, chosen = noise, candidate
+                else:
+                    break
+            if chosen is None:
+                raise ValueError("no comparison ensemble yields finite target scatter")
+            w = chosen
 
     df, derr = diff(fluxes, w, errors)
     df = df.reshape(fluxes.shape)
@@ -724,20 +741,26 @@ class Fluxes:
 
         if self.time is not None:
             _new.time = np.array([np.mean(self.time[i], 0) for i in idxs])
-        if self.errors is not None:
-            _new.errors = np.array(
-                [np.mean(self.errors.T[i], 0) / np.sqrt(len(i)) for i in idxs]
-            ).T
-
         if estimate_error:
             _new.errors = np.array(
                 [np.std(self.fluxes.T[i], 0) / np.sqrt(len(i)) for i in idxs]
             ).T
         elif self.errors is not None:
             _new.errors = np.array(
-                [np.sqrt(np.sum(np.power(self.errors[i], 2))) / len(i) for i in idxs]
-            ).T
+                [
+                    np.sqrt(np.sum(self.errors[..., i] ** 2, axis=-1)) / len(i)
+                    for i in idxs
+                ]
+            ).transpose(1, 2, 0)
 
+        _new.data = {
+            key: np.array([np.mean(value[i], axis=0) for i in idxs])
+            for key, value in self.data.items()
+        }
+        if self.apertures is not None and self.apertures.ndim > 1:
+            _new.apertures = np.array(
+                [np.mean(self.apertures[i], axis=0) for i in idxs]
+            )
         return _new
 
     def save(self, path: Union[str, Path]):
