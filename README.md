@@ -498,3 +498,15 @@ archivePrefix = {arXiv},
 ### Target gaps in light curves
 
 Frames with a nonfinite target measurement in any requested aperture are removed before comparison-star imputation. Target flux is never interpolated; the same frame mask is applied to times, uncertainties, covariates, and per-frame radii. This conservative policy can discard otherwise usable smaller-aperture measurements.
+
+### Bad-pixel aperture validity
+
+Aperture photometry explicitly masks nonfinite detector pixels and records effective area, masked area, and validity. Partial sums remain available on the image for diagnostics. `GetFluxes` rejects apertures touching invalid pixels, since a masked sum cannot recover missing stellar light. Unaffected apertures remain usable.
+
+### Exposure midpoint timestamps
+
+The production light-curve time axis uses each exposure midpoint before BJD conversion. Raw `Image.jd` remains unchanged for reference selection and JD exclusion. Telescope `time_reference` accepts `auto`, `start`, `midpoint`, or `end`. Auto recognizes MJD-STRT, MJD-OBS, and DATE-OBS as starts; generic JD remains unchanged, and FITS TIMEPIXR takes precedence. Explicit configuration overrides TIMEPIXR. Start/end corrections require a positive finite exposure time; missing timestamps are never replaced by frame numbers.
+
+### Missing target protection
+
+A target with any missing or non-finite measurement is rejected, in both automatic and explicit comparison modes. It is never interpolated, normalized into a sentinel light curve, or used as a comparison star.
