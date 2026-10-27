@@ -56,11 +56,26 @@ class AperturePhotometry(Block):
             radii = np.array(self._radii)
 
         apertures = [image.sources.apertures(r) for r in radii]
+        bad = ~np.isfinite(image.data)
         aperture_fluxes = np.array(
-            [aperture_photometry(image.data, a)["aperture_sum"].data for a in apertures]
+            [
+                aperture_photometry(image.data, a, mask=bad)["aperture_sum"].data
+                for a in apertures
+            ]
         ).T
-
-        image.aperture = {"fluxes": aperture_fluxes, "radii": radii}
+        areas = np.array([a.area_overlap(image.data, mask=bad) for a in apertures]).T
+        geometric_areas = np.array([a.area_overlap(image.data) for a in apertures]).T
+        missing = np.maximum(geometric_areas - areas, 0.0)
+        # A masked sum is a useful diagnostic, not an estimate of missing
+        # stellar light. Reject any aperture intersecting an invalid pixel.
+        valid = np.isfinite(areas) & (areas > 0) & (missing < 1e-10)
+        image.aperture = {
+            "fluxes": aperture_fluxes,
+            "radii": radii,
+            "areas": areas,
+            "valid": valid,
+            "masked_area": missing,
+        }
 
     @property
     def citations(self) -> list:
