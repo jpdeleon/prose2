@@ -3080,6 +3080,11 @@ def differential_photometry(
 
     fluxes = fluxes.copy()
     fluxes.target = target_index
+    if not np.any(np.isfinite(fluxes.fluxes[:, target_index, :])):
+        logger.warning(
+            "target has no finite measurements; skipping differential photometry"
+        )
+        return None
 
     # Impute NaNs before filtering, to recover partially-valid comparison stars
     if nan_imputation_method != "none":
@@ -3120,7 +3125,7 @@ def differential_photometry(
             f"after masking target + explicit comparisons"
         )
     else:
-        keep = ~np.any(np.isnan(fluxes.fluxes), axis=(0, 2))
+        keep = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2))
         logger.info(
             f"comparison pool (auto): {int(np.sum(keep)) - 1 if keep[target_index] else int(np.sum(keep))} "
             f"candidates after NaN filtering"
@@ -3134,6 +3139,11 @@ def differential_photometry(
                     f"comparison pool (auto): {int(np.sum(keep)) - 1 if keep[target_index] else int(np.sum(keep))} "
                     f"candidates after avoid_cids filtering (removed {valid_avoid})"
                 )
+        if not keep[target_index]:
+            logger.warning(
+                "target has unresolved invalid measurements; skipping differential photometry"
+            )
+            return None
         fluxes = fluxes.mask_stars(keep)
     n_before = len(fluxes.time) if fluxes.time is not None else 0
     sigma_kwargs = {

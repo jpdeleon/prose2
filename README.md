@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Missing target protection
+
+A target with no finite measurements is rejected instead of producing a normalized sentinel light curve. Automatic comparison filtering also rejects a target with unresolved missing samples rather than masking it as a comparison star.
