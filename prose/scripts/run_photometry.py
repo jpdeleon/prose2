@@ -3081,14 +3081,6 @@ def differential_photometry(
 
     fluxes = fluxes.copy()
     fluxes.target = target_index
-    # Checked before imputation: a target gap is never interpolated, and a
-    # target with any gap is rejected in both comparison modes.
-    if not np.all(np.isfinite(fluxes.fluxes[:, target_index, :])):
-        logger.warning(
-            "target has missing or non-finite measurements; skipping differential photometry"
-        )
-        return None
-
     # A missing target sample is not an observation. Drop its frame across
     # every aperture and covariate before any comparison interpolation.
     valid_target = np.all(np.isfinite(fluxes.fluxes[:, target_index, :]), axis=0)

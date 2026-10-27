@@ -509,4 +509,4 @@ The production light-curve time axis uses each exposure midpoint before BJD conv
 
 ### Missing target protection
 
-A target with any missing or non-finite measurement is rejected, in both automatic and explicit comparison modes. It is never interpolated, normalized into a sentinel light curve, or used as a comparison star.
+A target with no finite measurements is rejected instead of producing a normalized sentinel light curve. Target gaps are never interpolated or used as comparison stars; see Target gaps in light curves for how the affected frames are handled.

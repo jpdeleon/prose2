@@ -14,14 +14,3 @@ def test_entirely_missing_target_never_becomes_a_lightcurve(method, cids):
         differential_photometry(obj, 0, cids=cids, nan_imputation_method=method) is None
     )
     assert np.isnan(obj.fluxes[:, 0]).all()
-
-
-@pytest.mark.parametrize("method", ["none", "linear"])
-@pytest.mark.parametrize("cids", [None, [1, 2]])
-def test_partially_missing_target_is_rejected_in_both_modes(method, cids):
-    f = 100 + np.random.default_rng(9).normal(size=(1, 6, 100))
-    f[:, 0, 20] = np.nan
-    obj = Fluxes(f, time=np.arange(100.0))
-    assert (
-        differential_photometry(obj, 0, cids=cids, nan_imputation_method=method) is None
-    )
