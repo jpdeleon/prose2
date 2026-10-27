@@ -498,3 +498,7 @@ archivePrefix = {arXiv},
 ### Exposure midpoint timestamps
 
 The production light-curve time axis uses each exposure midpoint before BJD conversion. Raw `Image.jd` remains unchanged for reference selection and JD exclusion. Telescope `time_reference` accepts `auto`, `start`, `midpoint`, or `end`. Auto recognizes MJD-STRT, MJD-OBS, and DATE-OBS as starts; generic JD remains unchanged, and FITS TIMEPIXR takes precedence. Explicit configuration overrides TIMEPIXR. Start/end corrections require a positive finite exposure time; missing timestamps are never replaced by frame numbers.
+
+### Missing target protection
+
+A target with any missing or non-finite measurement is rejected, in both automatic and explicit comparison modes. It is never interpolated, normalized into a sentinel light curve, or used as a comparison star.
