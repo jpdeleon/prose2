@@ -498,3 +498,51 @@ archivePrefix = {arXiv},
 ### Ensemble calculation cost
 
 Differential ensemble sums use a total-minus-self reduction instead of constructing a dense star-by-star exclusion matrix. Arithmetic scales linearly in the number of stars per time sample; output dimensions and the existing uncertainty behavior are preserved. The separate uncertainty correction addresses its scientific formula.
+
+### Incompatible automatic sky annuli
+
+Automatic annulus selection raises a descriptive error when the minimum PSF clearance would re-enclose a known Gaia contaminant. Inspect the field and supply a custom aperture/annulus grid, or use neighbor modeling; the pipeline no longer presents impossible automatic geometry as uncontaminated.
+
+### Normalization without comparison stars
+
+`Fluxes.diff()` without comparison IDs returns normalized flux and, when supplied, normalized uncertainties. It no longer raises an uninitialized-variable exception.
+
+### Binned measurement uncertainties
+
+`Fluxes.bin()` combines independent measurement errors in quadrature along the time axis, retaining each aperture and star. Time-dependent covariates and aperture radii are binned with the measurements.
+
+### Signed calibration pixels
+
+Calibration preserves finite negative pixel values, including valid bias/dark-subtracted noise. Invalid calibration results, such as division by a zero flat, remain NaN rather than becoming finite sentinel measurements.
+
+### Photometry near detector edges
+
+Sky annuli use only finite on-detector pixels; empty sky regions yield invalid measurements. Background subtraction uses the aperture area actually overlapping the image. Aperture metadata flags truncation: correct sky subtraction does not recover stellar light lost off the detector.
+
+### Sparse-field comparison selection
+
+Automatic differential photometry supports a single valid comparison, including a constant comparison. The ensemble search excludes the target and retains the best evaluated set even when improvement continues through the last candidate. No valid comparison raises a descriptive error.
+
+### Detector and sky uncertainty units
+
+Aperture errors use source-plus-sky Poisson variance in input count units and read noise converted from electrons by the gain. Sky subtraction adds the estimated variance of the sigma-clipped annulus median (Gaussian approximation). Correlated pixels, calibration-master uncertainty, scintillation, and input variance-plane ingestion are not yet modeled.
+
+### Differential flux uncertainties
+
+Differential errors propagate the variance of the weighted comparison mean and the full target/ensemble ratio. Weights and temporal normalization means are treated as fixed; covariance introduced by estimating them is not modeled.
+
+### Target gaps in light curves
+
+Frames with a nonfinite target measurement in any requested aperture are removed before comparison-star imputation. Target flux is never interpolated; the same frame mask is applied to times, uncertainties, covariates, and per-frame radii. This conservative policy can discard otherwise usable smaller-aperture measurements.
+
+### Bad-pixel aperture validity
+
+Aperture photometry explicitly masks nonfinite detector pixels and records effective area, masked area, and validity. Partial sums remain available on the image for diagnostics. `GetFluxes` rejects apertures touching invalid pixels, since a masked sum cannot recover missing stellar light. Unaffected apertures remain usable.
+
+### Exposure midpoint timestamps
+
+The production light-curve time axis uses each exposure midpoint before BJD conversion. Raw `Image.jd` remains unchanged for reference selection and JD exclusion. Telescope `time_reference` accepts `auto`, `start`, `midpoint`, or `end`. Auto recognizes MJD-STRT, MJD-OBS, and DATE-OBS as starts; generic JD remains unchanged, and FITS TIMEPIXR takes precedence. Explicit configuration overrides TIMEPIXR. Start/end corrections require a positive finite exposure time; missing timestamps are never replaced by frame numbers.
+
+### Missing target protection
+
+A target with no finite measurements is rejected instead of producing a normalized sentinel light curve. Target gaps are never interpolated or used as comparison stars; see Target gaps in light curves for how the affected frames are handled.

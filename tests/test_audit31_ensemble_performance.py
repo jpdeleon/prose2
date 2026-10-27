@@ -18,11 +18,12 @@ def test_ensemble_sum_matches_dense_reference(n, apertures):
         c = (sub @ (z * w[..., None])) / (w @ sub[0])[..., None]
         expected = z / c
         normalized_error = e / f.mean(axis=-1, keepdims=True)
+        artificial_variance = (sub @ (normalized_error**2 * w[..., None] ** 2)) / (
+            (w @ sub[0]) ** 2
+        )[..., None]
         expected_error = np.sqrt(
-            normalized_error**2
-            + (sub @ (normalized_error**2 * w[..., None] ** 2))
-            / (w**2 @ sub[0])[..., None]
-        )
+            normalized_error**2 + expected**2 * artificial_variance
+        ) / np.abs(c)
     result, error = diff(f, w, e)
     np.testing.assert_allclose(result, expected, atol=1e-12)
     np.testing.assert_allclose(error, expected_error, atol=1e-12)

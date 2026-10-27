@@ -243,6 +243,39 @@ class Image:
         return self.metadata["jd"]
 
     @property
+    def midpoint_jd(self):
+        """Exposure midpoint in the same JD/MJD representation as ``jd``.
+
+        Raw ``jd`` stays unchanged for header selection and exclusion filters.
+        Unknown generic JD conventions are preserved unless configured.
+        """
+        if self.jd is None or not np.isfinite(float(self.jd)):
+            raise ValueError("photometry requires a finite observation timestamp")
+        reference = self.metadata.get("time_reference", "auto")
+        if reference not in {"auto", "start", "midpoint", "end"}:
+            raise ValueError(f"invalid time_reference: {reference!r}")
+        if reference == "auto":
+            if self.header is not None and "TIMEPIXR" in self.header:
+                fraction = float(self.header["TIMEPIXR"])
+                if not np.isfinite(fraction) or not 0 <= fraction <= 1:
+                    raise ValueError("TIMEPIXR must lie between zero and one")
+            else:
+                keyword = str(self.metadata.get("time_keyword", "JD")).upper()
+                fraction = (
+                    0.0 if keyword in {"MJD-STRT", "MJD-OBS", "DATE-OBS"} else 0.5
+                )
+        else:
+            fraction = {"start": 0.0, "midpoint": 0.5, "end": 1.0}[reference]
+        if fraction == 0.5:
+            return float(self.jd)
+        exposure = self.metadata.get("exposure")
+        if exposure is None or not np.isfinite(float(exposure)) or float(exposure) <= 0:
+            raise ValueError(
+                "midpoint photometry requires a positive finite exposure time"
+            )
+        return float(self.jd) + (0.5 - fraction) * float(exposure) / 86400.0
+
+    @property
     def pixel_scale(self):
         """Pixel scale (or plate scale) as an astropy Quantity"""
         return self._from_metadata_with_unit("pixel_scale")
@@ -775,6 +808,12 @@ def FITSImage(
         "filter": header.get(telescope.keyword_filter, None),
         "date": obs_date.isoformat() if obs_date is not None else None,
         "jd": header.get(telescope.keyword_jd, None),
+        "time_keyword": (
+            telescope.keyword_jd
+            if header.get(telescope.keyword_jd) is not None
+            else telescope.keyword_observation_date
+        ),
+        "time_reference": telescope.time_reference,
         "object": header.get(telescope.keyword_object, None),
         "pixel_scale": telescope.pixel_scale,
         "gain": _header_positive_float(header, telescope.keyword_gain, telescope.gain),

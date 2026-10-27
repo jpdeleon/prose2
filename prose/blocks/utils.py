@@ -441,8 +441,9 @@ class Calibration(Block):
         data = image.data
         exposure = image.exposure.value if image.exposure is not None else 1.0
         calibrated_image = self.calibration(data, exposure)
-        calibrated_image[calibrated_image < 0] = np.nan
-        calibrated_image[~np.isfinite(calibrated_image)] = -1
+        # Negative calibrated samples are valid noise realizations.
+        # Invalid calibration pixels remain distinguishable from measurements.
+        calibrated_image[~np.isfinite(calibrated_image)] = np.nan
         image.data = calibrated_image
 
     def _share(self):
@@ -647,7 +648,9 @@ class GetFluxes(Get):
         self._time_key = time
 
         def get_fluxes(im):
-            return im.aperture["fluxes"]
+            return np.where(
+                im.aperture.get("valid", True), im.aperture["fluxes"], np.nan
+            )
 
         def get_bkg(im):
             if "annulus" in im.computed.keys():
@@ -656,7 +659,9 @@ class GetFluxes(Get):
                 return np.zeros(len(im.sources))
 
         def get_time(im):
-            if self._time_key in im.computed.keys():
+            if self._time_key in im.computed.keys() or (
+                self._time_key != "jd" and hasattr(im, self._time_key)
+            ):
                 return getattr(im, self._time_key)
             elif im.jd is not None:
                 return im.jd
@@ -666,16 +671,37 @@ class GetFluxes(Get):
         def get_aperture(im):
             return im.aperture["radii"]
 
+        def get_areas(im):
+            return im.aperture.get(
+                "areas",
+                np.broadcast_to(
+                    np.pi * im.aperture["radii"] ** 2, im.aperture["fluxes"].shape
+                ),
+            )
+
         def get_error(im):
-            _area = np.pi * im.aperture["radii"] ** 2
-            _signal = im.aperture["fluxes"] - (
-                im.annulus["median"][:, None] * _area[None, :]
-            )
-            # TODO : figure out the correct CCD equation for error computation
-            _squarred_error = _signal + _area[None, :] * (
-                im.read_noise**2 + (im.gain / 2) ** 2 + im.annulus["median"][:, None]
-            )
-            return np.sqrt(_squarred_error)
+            area = get_areas(im)
+            gain = float(im.gain)
+            read_noise = float(im.read_noise)
+            if not np.isfinite(gain) or gain <= 0:
+                raise ValueError("photometry gain must be positive and finite")
+            if not np.isfinite(read_noise) or read_noise < 0:
+                raise ValueError("read noise must be nonnegative and finite")
+            # Pixels are in input count units; gain is electrons per count.
+            # Include source + sky shot noise once, and electronic read noise.
+            variance = np.maximum(im.aperture["fluxes"], 0) / gain
+            variance += area * (read_noise / gain) ** 2
+            median_variance = im.annulus.get("median_variance")
+            if median_variance is None:
+                # Compatibility with externally supplied annulus measurements.
+                nsky = im.annulus["area"]
+                sky_variance = (
+                    np.maximum(im.annulus["median"], 0) / gain
+                    + (read_noise / gain) ** 2
+                )
+                median_variance = np.pi / 2 * sky_variance / nsky
+            variance += area**2 * np.asarray(median_variance)[:, None]
+            return np.where(im.aperture.get("valid", True), np.sqrt(variance), np.nan)
 
         super().__init__(
             *args,
@@ -683,6 +709,7 @@ class GetFluxes(Get):
             _bkg=get_bkg,
             _fluxes=get_fluxes,
             _apertures=get_aperture,
+            _areas=get_areas,
             _errors=get_error,
             name=name,
             **kwargs,
@@ -692,11 +719,10 @@ class GetFluxes(Get):
 
     def terminate(self):
         super().terminate()
-        area = np.pi * (self._apertures**2)
         if len(self._fluxes) == 0:
             self.fluxes = None
             return
-        raw_fluxes = (self._fluxes - self._bkg[:, :, None] * area[:, None, :]).T
+        raw_fluxes = (self._fluxes - self._bkg[:, :, None] * self._areas).T
         time = self._time
         data = {"bkg": np.mean(self._bkg, -1)}
         data.update({key: value for key, value in self.values.items() if key[0] != "_"})
