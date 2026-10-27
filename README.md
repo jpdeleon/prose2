@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Sparse-field comparison selection
+
+Automatic differential photometry supports a single valid comparison, including a constant comparison. The ensemble search excludes the target and retains the best evaluated set even when improvement continues through the last candidate. No valid comparison raises a descriptive error.

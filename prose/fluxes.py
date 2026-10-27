@@ -251,28 +251,36 @@ def auto_diff_1d(fluxes, i=None, errors=None):
 
     # to retain minimal set of comparison stars
     if i is not None:
-        idxs = np.argsort(w)[::-1]
-        white_noise = utils.binned_nanstd(fluxes)
-        last_white_noise = 1e10
-
-        def best_weights(j):
-            _w = w.copy()
-            _w[idxs[j::]] = 0.0
-            _w[i] = 0.0
-            return _w
-
-        for j in range(w.shape[-1]):
-            _w = best_weights(j)
-            _df, _ = diff(fluxes, _w)
-            _white_noise = np.take(white_noise(_df), i, axis=-1)[0]
-            if not np.isfinite(_white_noise):
-                continue
-            if _white_noise < last_white_noise:
-                last_white_noise = _white_noise
-            else:
-                break
-
-        w = best_weights(j - 1)
+        # Rank comparisons only; the target must not consume a search slot.
+        eligible = np.all(np.isfinite(fluxes), axis=-1) & (np.mean(fluxes, axis=-1) > 0)
+        eligible[i] = False
+        if not np.any(eligible):
+            raise ValueError("no valid comparison stars")
+        if np.count_nonzero(eligible) == 1:
+            w = eligible.astype(float)
+        else:
+            if not np.any(w[eligible] > 0):
+                w = eligible.astype(float)
+            idxs = np.array(
+                [j for j in np.argsort(w)[::-1] if eligible[j] and w[j] > 0]
+            )
+            white_noise = utils.binned_nanstd(fluxes)
+            best_noise = np.inf
+            chosen = None
+            for count in range(1, len(idxs) + 1):
+                candidate = np.zeros_like(w)
+                candidate[idxs[:count]] = w[idxs[:count]]
+                candidate_flux, _ = diff(fluxes, candidate)
+                noise = float(np.asarray(white_noise(candidate_flux))[0, i])
+                if not np.isfinite(noise):
+                    continue
+                if noise < best_noise:
+                    best_noise, chosen = noise, candidate
+                else:
+                    break
+            if chosen is None:
+                raise ValueError("no comparison ensemble yields finite target scatter")
+            w = chosen
 
     df, derr = diff(fluxes, w, errors)
     df = df.reshape(fluxes.shape)
