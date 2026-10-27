@@ -45,6 +45,20 @@ def test_transform_does_not_retain_reference_pixels():
     np.testing.assert_equal(block.ref, image.sources.coords)
 
 
+def test_coordinate_only_reference_does_not_require_wcs():
+    from types import SimpleNamespace
+
+    from prose.blocks.geometry import ComputeTransformTwirl
+    from prose.core.source import Sources
+
+    reference = SimpleNamespace(
+        sources=Sources(np.random.default_rng(2).uniform(10, 100, (6, 2)))
+    )
+    block = ComputeTransformTwirl(reference, n=6)
+    assert block.reference_image.wcs is None
+    np.testing.assert_equal(block.ref, reference.sources.coords)
+
+
 def test_per_frame_closure_state_is_fresh():
     class ClosureBlock(Block):
         def __init__(self):

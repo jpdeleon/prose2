@@ -1,4 +1,6 @@
 import logging
+from copy import deepcopy
+from types import SimpleNamespace
 from typing import Optional, Union
 
 import numpy as np
@@ -204,8 +206,9 @@ class ComputeTransformTwirl(Block):
         super().__init__(**kwargs)
         # Solving needs reference coordinates and WCS, not reference pixels.
         # Keep a private lightweight Image rather than serializing a full CCD.
-        self.reference_image = Image()
-        self.reference_image.wcs = reference_image.wcs.deepcopy()
+        self.reference_image = SimpleNamespace(
+            data=None, wcs=deepcopy(getattr(reference_image, "wcs", None))
+        )
         ref_coords = reference_image.sources.coords
         self.ref = ref_coords[0:n].copy()
         self.n = n
