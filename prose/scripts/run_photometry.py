@@ -2511,6 +2511,7 @@ def photometry_sequence(
         data_blocks=[
             blocks.GetFluxes(
                 "fwhm",
+                time="midpoint_jd",
                 airmass=lambda im: _header_airmass(im.header, airmass_keyword),
                 dx=lambda im: (
                     im.transform.translation[0]
@@ -3080,6 +3081,13 @@ def differential_photometry(
 
     fluxes = fluxes.copy()
     fluxes.target = target_index
+    # Checked before imputation: a target gap is never interpolated, and a
+    # target with any gap is rejected in both comparison modes.
+    if not np.all(np.isfinite(fluxes.fluxes[:, target_index, :])):
+        logger.warning(
+            "target has missing or non-finite measurements; skipping differential photometry"
+        )
+        return None
 
     # Impute NaNs before filtering, to recover partially-valid comparison stars
     if nan_imputation_method != "none":
@@ -3120,7 +3128,7 @@ def differential_photometry(
             f"after masking target + explicit comparisons"
         )
     else:
-        keep = ~np.any(np.isnan(fluxes.fluxes), axis=(0, 2))
+        keep = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2))
         logger.info(
             f"comparison pool (auto): {int(np.sum(keep)) - 1 if keep[target_index] else int(np.sum(keep))} "
             f"candidates after NaN filtering"
