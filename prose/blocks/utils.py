@@ -647,7 +647,9 @@ class GetFluxes(Get):
         self._time_key = time
 
         def get_fluxes(im):
-            return im.aperture["fluxes"]
+            return np.where(
+                im.aperture.get("valid", True), im.aperture["fluxes"], np.nan
+            )
 
         def get_bkg(im):
             if "annulus" in im.computed.keys():
@@ -656,7 +658,9 @@ class GetFluxes(Get):
                 return np.zeros(len(im.sources))
 
         def get_time(im):
-            if self._time_key in im.computed.keys():
+            if self._time_key in im.computed.keys() or (
+                self._time_key != "jd" and hasattr(im, self._time_key)
+            ):
                 return getattr(im, self._time_key)
             elif im.jd is not None:
                 return im.jd
