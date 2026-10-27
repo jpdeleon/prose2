@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Signed calibration pixels
+
+Calibration preserves finite negative pixel values, including valid bias/dark-subtracted noise. Invalid calibration results, such as division by a zero flat, remain NaN rather than becoming finite sentinel measurements.
+
 ### Photometry near detector edges
 
 Sky annuli use only finite on-detector pixels; empty sky regions yield invalid measurements. Background subtraction uses the aperture area actually overlapping the image. Aperture metadata flags truncation: correct sky subtraction does not recover stellar light lost off the detector.

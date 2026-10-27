@@ -194,14 +194,26 @@ class TestCalibrateBand:
     def test_output_valid_fits(self, fake_data_dir, tmp_path, band):
         darks, flats = cm.find_files(fake_data_dir)
         sciences = cm.find_science_files(fake_data_dir, "TOI00663.02")
-        cm.calibrate_band(darks[band], flats[band], sciences[band], tmp_path, band)
+        master_dark, master_flat = cm.calibrate_band(
+            darks[band], flats[band], sciences[band], tmp_path, band
+        )
         out_files = sorted(tmp_path.glob("*_calibrated.fits"))
         for fp in out_files:
             hdr = fits.getheader(fp)
             data = fits.getdata(fp)
             assert data.dtype.kind == "f" and data.dtype.itemsize == 4
             assert data.shape == (32, 32)
-            assert np.all(np.isfinite(data))
+            raw_path = fake_data_dir / fp.name.replace("_calibrated.fits", ".fits")
+            raw = fits.getdata(raw_path)
+            exposure = fits.getheader(raw_path)["EXPTIME"]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                expected = (raw - master_dark * exposure) / master_flat
+            expected[~np.isfinite(expected)] = np.nan
+            # Invalid flat pixels stay invalid; signed finite measurements
+            # must agree with the calibration equation, not a -1 sentinel.
+            np.testing.assert_allclose(
+                data, expected, rtol=1e-5, atol=1e-4, equal_nan=True
+            )
             assert hdr.get("CALSTAGE") == "calibrated"
 
     def test_skips_band_without_darks(self, tmp_path):
