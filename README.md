@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Incompatible automatic sky annuli
+
+Automatic annulus selection raises a descriptive error when the minimum PSF clearance would re-enclose a known Gaia contaminant. Inspect the field and supply a custom aperture/annulus grid, or use neighbor modeling; the pipeline no longer presents impossible automatic geometry as uncontaminated.
