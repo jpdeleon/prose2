@@ -1718,6 +1718,12 @@ def _sky_annulus_pix(
     # keep the ring physical: positive inner radius above the minimum aperture
     rin = max(rin, fwhm + APER_STEP_PIX)
     rout = max(rout, rin + fwhm)
+    if len(intruding) and rout > float(intruding.min()) - CONTAM_MARGIN_PIX:
+        raise ValueError(
+            f"cannot place an uncontaminated sky annulus outside FWHM={fwhm:g} px "
+            f"before the neighbour at {float(intruding.min()):g} px; "
+            "supply an inspected --aper_radii/--annulus grid or use neighbour modeling"
+        )
     return rin, rout
 
 

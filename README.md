@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Incompatible automatic sky annuli
+
+Automatic annulus selection raises a descriptive error when the minimum PSF clearance would re-enclose a known Gaia contaminant. Inspect the field and supply a custom aperture/annulus grid, or use neighbor modeling; the pipeline no longer presents impossible automatic geometry as uncontaminated.
+
 ### Normalization without comparison stars
 
 `Fluxes.diff()` without comparison IDs returns normalized flux and, when supplied, normalized uncertainties. It no longer raises an uninitialized-variable exception.
