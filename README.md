@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Signed calibration pixels
+
+Calibration preserves finite negative pixel values, including valid bias/dark-subtracted noise. Invalid calibration results, such as division by a zero flat, remain NaN rather than becoming finite sentinel measurements.

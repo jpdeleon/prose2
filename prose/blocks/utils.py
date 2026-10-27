@@ -441,8 +441,9 @@ class Calibration(Block):
         data = image.data
         exposure = image.exposure.value if image.exposure is not None else 1.0
         calibrated_image = self.calibration(data, exposure)
-        calibrated_image[calibrated_image < 0] = np.nan
-        calibrated_image[~np.isfinite(calibrated_image)] = -1
+        # Negative calibrated samples are valid noise realizations.
+        # Invalid calibration pixels remain distinguishable from measurements.
+        calibrated_image[~np.isfinite(calibrated_image)] = np.nan
         image.data = calibrated_image
 
     def _share(self):
