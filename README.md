@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Photometry worker controls
+
+Use `--workers N --chunksize M` to tune science-frame multiprocessing. Defaults preserve CPU-count workers and one frame per task. Benchmark representative nights against RAM and storage throughput; for process-parallel runs, set numerical-library thread limits such as `OPENBLAS_NUM_THREADS=1` before starting Python. These flags control science photometry, not reference-quality candidate selection.
+
 ### Worker reference storage
 
 Parallel workers initialize their immutable array store once. Each frame still unpickles block and loader state, including fresh closure state, but arrays a block lists in `worker_shared_arrays` are resolved from that store instead of being copied per frame. Those arrays become read-only within each worker. Twirl alignment retains a lightweight reference WCS instead of CCD pixels and opts its reference arrays into reuse. No memory is shared across independent runs.

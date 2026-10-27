@@ -2463,6 +2463,8 @@ def photometry_sequence(
     min_area: int = MIN_STAR_AREA,
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
+    workers: int | None = None,
+    chunksize: int = 1,
 ) -> SequenceParallel:
     """Parallel per-image photometry sequence (mirrors the notebook).
 
@@ -2513,6 +2515,8 @@ def photometry_sequence(
     )
 
     return SequenceParallel(
+        processes=workers,
+        chunksize=chunksize,
         blocks=blocks_list,
         data_blocks=[
             blocks.GetFluxes(
@@ -2708,6 +2712,8 @@ def run_band(
     centroid_method: str = CENTROID_METHOD,
     reference_source_indices: list[int] | None = None,
     display_stack_nframes: int = 1,
+    workers: int | None = None,
+    chunksize: int = 1,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -2956,6 +2962,8 @@ def run_band(
         reference["aper_radii"],
         reference["rin"],
         reference["rout"],
+        workers=workers,
+        chunksize=chunksize,
         scale=reference["scale"],
         ccd_trim_size_yx=ccd_trim_size_yx,
         max_num_stars=max_num_stars,
@@ -5626,7 +5634,23 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(useful for e.g. a slow start before focus/guiding stabilized). "
         "See --exclude_after_jd for the pairing rule when both are given.",
     )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of photometry worker processes (default: CPU count)",
+    )
+    ap.add_argument(
+        "--chunksize",
+        type=int,
+        default=1,
+        help="Frames per multiprocessing task batch (default: 1)",
+    )
     args = ap.parse_args(argv)
+    if args.workers is not None and args.workers < 1:
+        ap.error("--workers must be positive")
+    if args.chunksize < 1:
+        ap.error("--chunksize must be positive")
 
     if args.aper_radii is not None and args.annulus is None:
         ap.error("--annulus RIN,ROUT is required when --aper_radii is given")
@@ -6472,6 +6496,8 @@ def main(argv=None) -> int:
                 centroid_method=args.centroid_method,
                 reference_source_indices=reference_source_indices,
                 display_stack_nframes=args.display_stack_nframes,
+                workers=args.workers,
+                chunksize=args.chunksize,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
