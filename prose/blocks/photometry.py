@@ -60,7 +60,13 @@ class AperturePhotometry(Block):
             [aperture_photometry(image.data, a)["aperture_sum"].data for a in apertures]
         ).T
 
-        image.aperture = {"fluxes": aperture_fluxes, "radii": radii}
+        areas = np.array([a.area_overlap(image.data) for a in apertures]).T
+        image.aperture = {
+            "fluxes": aperture_fluxes,
+            "radii": radii,
+            "areas": areas,
+            "truncated": areas < np.array([a.area for a in apertures])[None, :] - 1e-8,
+        }
 
     @property
     def citations(self) -> list:
@@ -138,15 +144,14 @@ class AnnulusBackground(_AnnulusPhotometry):
 
         bkg_median = []
         for mask in annulus_masks:
-            annulus_data = mask.multiply(image.data)
-            if annulus_data is not None:
-                annulus_data_1d = annulus_data[mask.data > 0]
+            annulus_data_1d = mask.get_values(image.data, mask=~np.isfinite(image.data))
+            if annulus_data_1d.size:
                 _, median_sigma_clip, _ = sigma_clipped_stats(
                     annulus_data_1d, sigma=self.sigma
                 )
                 bkg_median.append(median_sigma_clip)
             else:
-                bkg_median.append(0.0)
+                bkg_median.append(np.nan)
 
         image.computed["annulus"] = {
             "rin": rin,
