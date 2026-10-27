@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Missing target protection
+
+A target with any missing or non-finite measurement is rejected, in both automatic and explicit comparison modes. It is never interpolated, normalized into a sentinel light curve, or used as a comparison star.
