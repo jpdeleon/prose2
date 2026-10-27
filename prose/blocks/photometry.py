@@ -1,5 +1,5 @@
 import numpy as np
-from astropy.stats import sigma_clipped_stats
+from astropy.stats import sigma_clip
 from photutils.aperture import aperture_photometry
 
 from prose import Block, Image
@@ -56,11 +56,26 @@ class AperturePhotometry(Block):
             radii = np.array(self._radii)
 
         apertures = [image.sources.apertures(r) for r in radii]
+        bad = ~np.isfinite(image.data)
         aperture_fluxes = np.array(
-            [aperture_photometry(image.data, a)["aperture_sum"].data for a in apertures]
+            [
+                aperture_photometry(image.data, a, mask=bad)["aperture_sum"].data
+                for a in apertures
+            ]
         ).T
-
-        image.aperture = {"fluxes": aperture_fluxes, "radii": radii}
+        areas = np.array([a.area_overlap(image.data, mask=bad) for a in apertures]).T
+        geometric_areas = np.array([a.area_overlap(image.data) for a in apertures]).T
+        missing = np.maximum(geometric_areas - areas, 0.0)
+        # A masked sum is a useful diagnostic, not an estimate of missing
+        # stellar light. Reject any aperture intersecting an invalid pixel.
+        valid = np.isfinite(areas) & (areas > 0) & (missing < 1e-10)
+        image.aperture = {
+            "fluxes": aperture_fluxes,
+            "radii": radii,
+            "areas": areas,
+            "valid": valid,
+            "masked_area": missing,
+        }
 
     @property
     def citations(self) -> list:
@@ -137,16 +152,18 @@ class AnnulusBackground(_AnnulusPhotometry):
         annulus_area = np.pi * (rout**2 - rin**2)
 
         bkg_median = []
+        bkg_variance = []
+        bkg_npix = []
         for mask in annulus_masks:
-            annulus_data = mask.multiply(image.data)
-            if annulus_data is not None:
-                annulus_data_1d = annulus_data[mask.data > 0]
-                _, median_sigma_clip, _ = sigma_clipped_stats(
-                    annulus_data_1d, sigma=self.sigma
-                )
-                bkg_median.append(median_sigma_clip)
-            else:
-                bkg_median.append(0.0)
+            values = mask.get_values(image.data, mask=~np.isfinite(image.data))
+            clipped = sigma_clip(values, sigma=self.sigma).compressed()
+            count = clipped.size
+            bkg_npix.append(count)
+            bkg_median.append(np.median(clipped) if count else np.nan)
+            # Gaussian approximation for the variance of a sample median.
+            bkg_variance.append(
+                np.pi / 2 * np.var(clipped, ddof=1) / count if count > 1 else np.nan
+            )
 
         image.computed["annulus"] = {
             "rin": rin,
@@ -154,4 +171,6 @@ class AnnulusBackground(_AnnulusPhotometry):
             "median": np.array(bkg_median),
             "sigma": self.sigma,
             "area": annulus_area,
+            "median_variance": np.array(bkg_variance),
+            "n_pixels": np.array(bkg_npix),
         }
