@@ -39,7 +39,7 @@ def test_date_fallback_timepixr_and_getfluxes(tmp_path):
     image.header["TIMEPIXR"] = 0.5
     assert image.midpoint_jd == image.jd
     image.aperture = {"fluxes": np.array([[100.0]]), "radii": np.array([1.0])}
-    image.annulus = {"median": np.array([1.0])}
+    image.annulus = {"median": np.array([1.0]), "area": 100.0}
     get = blocks.GetFluxes(time="midpoint_jd")
     get.run(image)
     get.terminate()

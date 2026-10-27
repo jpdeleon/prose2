@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Detector and sky uncertainty units
+
+Aperture errors use source-plus-sky Poisson variance in input count units and read noise converted from electrons by the gain. Sky subtraction adds the estimated variance of the sigma-clipped annulus median (Gaussian approximation). Correlated pixels, calibration-master uncertainty, scintillation, and input variance-plane ingestion are not yet modeled.
+
 ### Differential flux uncertainties
 
 Differential errors propagate the variance of the weighted comparison mean and the full target/ensemble ratio. Weights and temporal normalization means are treated as fixed; covariance introduced by estimating them is not modeled.
