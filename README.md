@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Differential flux uncertainties
+
+Differential errors propagate the variance of the weighted comparison mean and the full target/ensemble ratio. Weights and temporal normalization means are treated as fixed; covariance introduced by estimating them is not modeled.
