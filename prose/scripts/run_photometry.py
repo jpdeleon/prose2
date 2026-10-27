@@ -2511,6 +2511,7 @@ def photometry_sequence(
         data_blocks=[
             blocks.GetFluxes(
                 "fwhm",
+                time="midpoint_jd",
                 airmass=lambda im: _header_airmass(im.header, airmass_keyword),
                 dx=lambda im: (
                     im.transform.translation[0]
