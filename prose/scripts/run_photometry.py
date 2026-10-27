@@ -3081,6 +3081,19 @@ def differential_photometry(
     fluxes = fluxes.copy()
     fluxes.target = target_index
 
+    # A missing target sample is not an observation. Drop its frame across
+    # every aperture and covariate before any comparison interpolation.
+    valid_target = np.all(np.isfinite(fluxes.fluxes[:, target_index, :]), axis=0)
+    if not np.any(valid_target):
+        logger.warning("no frames have finite target measurements; skipping band")
+        return None
+    if not np.all(valid_target):
+        logger.warning(
+            "discarding %d frames with missing target measurements",
+            int((~valid_target).sum()),
+        )
+        fluxes = fluxes.mask(valid_target)
+
     # Impute NaNs before filtering, to recover partially-valid comparison stars
     if nan_imputation_method != "none":
         from prose.fluxes import impute_nans

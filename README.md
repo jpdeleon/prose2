@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Target gaps in light curves
+
+Frames with a nonfinite target measurement in any requested aperture are removed before comparison-star imputation. Target flux is never interpolated; the same frame mask is applied to times, uncertainties, covariates, and per-frame radii. This conservative policy can discard otherwise usable smaller-aperture measurements.
