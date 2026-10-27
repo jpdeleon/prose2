@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Binned measurement uncertainties
+
+`Fluxes.bin()` combines independent measurement errors in quadrature along the time axis, retaining each aperture and star. Time-dependent covariates and aperture radii are binned with the measurements.
