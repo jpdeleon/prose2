@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Normalization without comparison stars
+
+`Fluxes.diff()` without comparison IDs returns normalized flux and, when supplied, normalized uncertainties. It no longer raises an uninitialized-variable exception.
