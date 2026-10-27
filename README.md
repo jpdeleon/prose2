@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Selective diagnostic plots
+
+Use `--plots all` (default), `reference`, `summary`, or `none` to select diagnostic PNGs. Reference plots include source/aperture/alignment/cutout and stack views; summary plots include light curves, raw flux, and covariates. CSV/NPZ products and the separately requested `--gif` remain independent. SIMBAD annotation queries are skipped when reference plots are disabled.
+
 ### Photometry worker controls
 
 Use `--workers N --chunksize M` to tune science-frame multiprocessing. Defaults preserve CPU-count workers and one frame per task. Benchmark representative nights against RAM and storage throughput; for process-parallel runs, set numerical-library thread limits such as `OPENBLAS_NUM_THREADS=1` before starting Python. These flags control science photometry, not reference-quality candidate selection.
