@@ -497,7 +497,7 @@ archivePrefix = {arXiv},
 
 ### Worker reference storage
 
-Parallel workers initialize their immutable array store once, then deserialize only mutable block state for every frame, including fresh closure state. Blocks may opt numerical constants into `worker_shared_arrays`; these arrays become read-only within each worker. Twirl alignment retains a lightweight reference WCS instead of CCD pixels and opts its reference arrays into reuse. No memory is shared across independent runs.
+Parallel workers initialize their immutable array store once. Each frame still unpickles block and loader state, including fresh closure state, but arrays a block lists in `worker_shared_arrays` are resolved from that store instead of being copied per frame. Those arrays become read-only within each worker. Twirl alignment retains a lightweight reference WCS instead of CCD pixels and opts its reference arrays into reuse. No memory is shared across independent runs.
 
 ### Ensemble calculation cost
 

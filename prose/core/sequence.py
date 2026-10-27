@@ -1,8 +1,7 @@
+import pickle
 import sys
 from collections import OrderedDict
 from io import BytesIO
-
-from dill import Unpickler
 from functools import partial
 from pathlib import Path
 
@@ -371,7 +370,7 @@ def _init_worker(payload):
 def _run_all_in_worker(image_i):
     # Unpickling preserves fresh closure state as well as mutable attributes.
     # Large opted-in constants are resolved from this worker's read-only store.
-    unpickler = Unpickler(BytesIO(_worker_payload))
+    unpickler = pickle.Unpickler(BytesIO(_worker_payload))
     unpickler.persistent_load = lambda index: _worker_shared_arrays[index]
     blocks, loader = unpickler.load()
     return _run_all(image_i, blocks=blocks, loader=loader)
