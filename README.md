@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Ensemble calculation cost
+
+Differential ensemble sums use a total-minus-self reduction instead of constructing a dense star-by-star exclusion matrix. Arithmetic scales linearly in the number of stars per time sample; output dimensions and the existing uncertainty behavior are preserved. The separate uncertainty correction addresses its scientific formula.

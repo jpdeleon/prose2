@@ -175,6 +175,22 @@ def weights(
     return weights if weights.ndim == 1 else weights[0]
 
 
+def _sum_other(values, axis=-1):
+    """Sum all other entries, avoiding cancellation for dominant weights."""
+    total = np.sum(values, axis=axis, keepdims=True)
+    result = total - values
+    risky = (np.abs(result) < 1e-8 * np.abs(total)) & (values != 0)
+    if np.any(risky):
+        # Stable exclusive sums retain small comparisons when one weight is
+        # many orders of magnitude larger. No quadratic exclusion matrix.
+        data = np.moveaxis(values, axis, -1)
+        stable = np.zeros_like(data)
+        stable[..., 1:] = np.cumsum(data[..., :-1], axis=-1)
+        stable[..., :-1] += np.cumsum(data[..., :0:-1], axis=-1)[..., ::-1]
+        result = np.where(risky, np.moveaxis(stable, -1, axis), result)
+    return result
+
+
 def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = None):
     """Returns differential fluxes.
 
@@ -200,24 +216,28 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
     diff_fluxes = fluxes / np.expand_dims(np.nanmean(fluxes, -1), -1)
     if weights is not None:
         # not to divide flux by itself
-        sub = np.expand_dims((~np.eye(fluxes.shape[-2]).astype(bool)).astype(int), 0)
         weighted_fluxes = diff_fluxes * np.expand_dims(weights, -1)
+        if weighted_fluxes.ndim == 2:
+            weighted_fluxes = weighted_fluxes[None, ...]
+        other_weights = _sum_other(weights)
         # see broeg 2005:
         # https://ui.adsabs.harvard.edu/abs/2005AN....326..134B/abstract
         # errstate silences the divide-by-zero warning when a star has no valid
         # comparison stars (all other weights zero); the result stays NaN as before.
         with np.errstate(divide="ignore", invalid="ignore"):
-            artificial_light_curve = (sub @ weighted_fluxes) / np.expand_dims(
-                weights @ sub[0], -1
-            )
+            artificial_light_curve = (
+                _sum_other(weighted_fluxes, axis=-2)
+            ) / np.expand_dims(other_weights, -1)
             diff_fluxes = diff_fluxes / artificial_light_curve
         if errors is not None:
             diff_errors = errors / np.expand_dims(np.nanmean(fluxes, -1), -1)
             weighted_errors = diff_errors**2 * np.expand_dims(weights, -1) ** 2
+            if weighted_errors.ndim == 2:
+                weighted_errors = weighted_errors[None, ...]
             with np.errstate(divide="ignore", invalid="ignore"):
-                squarred_art_error = (sub @ weighted_errors) / np.expand_dims(
-                    weights**2 @ sub[0], -1
-                )
+                squarred_art_error = (
+                    _sum_other(weighted_errors, axis=-2)
+                ) / np.expand_dims(_sum_other(weights**2), -1)
                 diff_errors = np.sqrt(diff_errors**2 + squarred_art_error)
         else:
             diff_errors = None
