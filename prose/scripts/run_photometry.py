@@ -822,10 +822,10 @@ class FilterPointSources(Block):
 class MaskBadPixels(Block):
     """Mask bad pixels in image data using a bad pixel map.
 
-    Bad pixels (hot pixels, dead pixels, cosmic rays) are marked as NaN
-    so they don't contribute to aperture photometry. This allows the
-    photometry to be performed with the remaining valid pixels while
-    avoiding bias from detector defects.
+    Bad pixels are marked as NaN and explicitly masked by aperture photometry.
+    Partial sums are retained for diagnostics, but apertures touching invalid
+    pixels are flagged and rejected by GetFluxes; missing stellar flux cannot
+    be recovered by simply ignoring a pixel.
     """
 
     def __init__(self, bad_pixel_map: np.ndarray | None = None, name=None):

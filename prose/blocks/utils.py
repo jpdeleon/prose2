@@ -647,7 +647,9 @@ class GetFluxes(Get):
         self._time_key = time
 
         def get_fluxes(im):
-            return im.aperture["fluxes"]
+            return np.where(
+                im.aperture.get("valid", True), im.aperture["fluxes"], np.nan
+            )
 
         def get_bkg(im):
             if "annulus" in im.computed.keys():
@@ -675,7 +677,9 @@ class GetFluxes(Get):
             _squarred_error = _signal + _area[None, :] * (
                 im.read_noise**2 + (im.gain / 2) ** 2 + im.annulus["median"][:, None]
             )
-            return np.sqrt(_squarred_error)
+            return np.where(
+                im.aperture.get("valid", True), np.sqrt(_squarred_error), np.nan
+            )
 
         super().__init__(
             *args,
