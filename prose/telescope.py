@@ -105,6 +105,11 @@ class Telescope:
     jd_scale: str = "utc"
     """unit of the value of `JD`, default is :code:`"utc"`"""
 
+    time_reference: str = "auto"
+    """Timestamp position: auto, start, midpoint, or end. Auto recognizes
+    MJD-STRT, MJD-OBS and DATE-OBS as exposure starts; generic JD is unchanged.
+    FITS TIMEPIXR, when present, takes precedence in auto mode."""
+
     bjd_scale: str = "utc"
     """ unit of the value of `BJD`, default is :code:`"utc"`"""
 
