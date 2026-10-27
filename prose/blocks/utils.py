@@ -647,7 +647,9 @@ class GetFluxes(Get):
         self._time_key = time
 
         def get_fluxes(im):
-            return im.aperture["fluxes"]
+            return np.where(
+                im.aperture.get("valid", True), im.aperture["fluxes"], np.nan
+            )
 
         def get_bkg(im):
             if "annulus" in im.computed.keys():
@@ -656,7 +658,9 @@ class GetFluxes(Get):
                 return np.zeros(len(im.sources))
 
         def get_time(im):
-            if self._time_key in im.computed.keys():
+            if self._time_key in im.computed.keys() or (
+                self._time_key != "jd" and hasattr(im, self._time_key)
+            ):
                 return getattr(im, self._time_key)
             elif im.jd is not None:
                 return im.jd
@@ -675,13 +679,28 @@ class GetFluxes(Get):
             )
 
         def get_error(im):
-            _area = get_areas(im)
-            _signal = im.aperture["fluxes"] - im.annulus["median"][:, None] * _area
-            # TODO : figure out the correct CCD equation for error computation
-            _squarred_error = _signal + _area * (
-                im.read_noise**2 + (im.gain / 2) ** 2 + im.annulus["median"][:, None]
-            )
-            return np.sqrt(_squarred_error)
+            area = get_areas(im)
+            gain = float(im.gain)
+            read_noise = float(im.read_noise)
+            if not np.isfinite(gain) or gain <= 0:
+                raise ValueError("photometry gain must be positive and finite")
+            if not np.isfinite(read_noise) or read_noise < 0:
+                raise ValueError("read noise must be nonnegative and finite")
+            # Pixels are in input count units; gain is electrons per count.
+            # Include source + sky shot noise once, and electronic read noise.
+            variance = np.maximum(im.aperture["fluxes"], 0) / gain
+            variance += area * (read_noise / gain) ** 2
+            median_variance = im.annulus.get("median_variance")
+            if median_variance is None:
+                # Compatibility with externally supplied annulus measurements.
+                nsky = im.annulus["area"]
+                sky_variance = (
+                    np.maximum(im.annulus["median"], 0) / gain
+                    + (read_noise / gain) ** 2
+                )
+                median_variance = np.pi / 2 * sky_variance / nsky
+            variance += area**2 * np.asarray(median_variance)[:, None]
+            return np.where(im.aperture.get("valid", True), np.sqrt(variance), np.nan)
 
         super().__init__(
             *args,
