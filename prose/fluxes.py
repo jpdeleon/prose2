@@ -215,10 +215,14 @@ def diff(fluxes: np.ndarray, weights: np.ndarray = None, errors: np.ndarray = No
             diff_errors = errors / np.expand_dims(np.nanmean(fluxes, -1), -1)
             weighted_errors = diff_errors**2 * np.expand_dims(weights, -1) ** 2
             with np.errstate(divide="ignore", invalid="ignore"):
-                squarred_art_error = (sub @ weighted_errors) / np.expand_dims(
-                    weights**2 @ sub[0], -1
+                artificial_variance = (sub @ weighted_errors) / np.expand_dims(
+                    (weights @ sub[0]) ** 2, -1
                 )
-                diff_errors = np.sqrt(diff_errors**2 + squarred_art_error)
+                # Propagate y = normalized_target / artificial_light_curve.
+                # Treat the fitted weights and time-series means as fixed.
+                diff_errors = np.sqrt(
+                    diff_errors**2 + diff_fluxes**2 * artificial_variance
+                ) / np.abs(artificial_light_curve)
         else:
             diff_errors = None
 

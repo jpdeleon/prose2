@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Differential flux uncertainties
+
+Differential errors propagate the variance of the weighted comparison mean and the full target/ensemble ratio. Weights and temporal normalization means are treated as fixed; covariance introduced by estimating them is not modeled.
+
 ### Target gaps in light curves
 
 Frames with a nonfinite target measurement in any requested aperture are removed before comparison-star imputation. Target flux is never interpolated; the same frame mask is applied to times, uncertainties, covariates, and per-frame radii. This conservative policy can discard otherwise usable smaller-aperture measurements.
