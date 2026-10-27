@@ -736,20 +736,26 @@ class Fluxes:
 
         if self.time is not None:
             _new.time = np.array([np.mean(self.time[i], 0) for i in idxs])
-        if self.errors is not None:
-            _new.errors = np.array(
-                [np.mean(self.errors.T[i], 0) / np.sqrt(len(i)) for i in idxs]
-            ).T
-
         if estimate_error:
             _new.errors = np.array(
                 [np.std(self.fluxes.T[i], 0) / np.sqrt(len(i)) for i in idxs]
             ).T
         elif self.errors is not None:
             _new.errors = np.array(
-                [np.sqrt(np.sum(np.power(self.errors[i], 2))) / len(i) for i in idxs]
-            ).T
+                [
+                    np.sqrt(np.sum(self.errors[..., i] ** 2, axis=-1)) / len(i)
+                    for i in idxs
+                ]
+            ).transpose(1, 2, 0)
 
+        _new.data = {
+            key: np.array([np.mean(value[i], axis=0) for i in idxs])
+            for key, value in self.data.items()
+        }
+        if self.apertures is not None and self.apertures.ndim > 1:
+            _new.apertures = np.array(
+                [np.mean(self.apertures[i], axis=0) for i in idxs]
+            )
         return _new
 
     def save(self, path: Union[str, Path]):

@@ -495,6 +495,10 @@ archivePrefix = {arXiv},
 }
 ```
 
+### Binned measurement uncertainties
+
+`Fluxes.bin()` combines independent measurement errors in quadrature along the time axis, retaining each aperture and star. Time-dependent covariates and aperture radii are binned with the measurements.
+
 ### Signed calibration pixels
 
 Calibration preserves finite negative pixel values, including valid bias/dark-subtracted noise. Invalid calibration results, such as division by a zero flat, remain NaN rather than becoming finite sentinel measurements.
