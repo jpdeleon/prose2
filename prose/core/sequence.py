@@ -1,5 +1,8 @@
 import sys
 from collections import OrderedDict
+from io import BytesIO
+
+from dill import Unpickler
 from functools import partial
 from pathlib import Path
 
@@ -339,17 +342,38 @@ class SequenceParallel(Sequence):
 
 
 _worker_payload = None
+_worker_shared_arrays = ()
+
+
+class _WorkerPickler(ForkingPickler):
+    def persistent_id(self, obj):
+        return self.shared_ids.get(id(obj))
 
 
 def _init_worker(payload):
-    global _worker_payload
-    _worker_payload = payload
+    global _worker_payload, _worker_shared_arrays
+    blocks, loader = ForkingPickler.loads(payload)
+    arrays = []
+    for block in blocks:
+        for value in getattr(block, "worker_shared_arrays", ()):
+            if not isinstance(value, np.ndarray) or value.dtype.hasobject:
+                raise TypeError("worker_shared_arrays must contain numeric arrays")
+            value.flags.writeable = False
+            arrays.append(value)
+    _worker_shared_arrays = tuple(arrays)
+    stream = BytesIO()
+    pickler = _WorkerPickler(stream)
+    pickler.shared_ids = {id(value): index for index, value in enumerate(arrays)}
+    pickler.dump((blocks, loader))
+    _worker_payload = stream.getvalue()
 
 
 def _run_all_in_worker(image_i):
-    # Unpickled per image so every image starts from fresh block state, as
-    # it did when the blocks were sent along with each task.
-    blocks, loader = ForkingPickler.loads(_worker_payload)
+    # Unpickling preserves fresh closure state as well as mutable attributes.
+    # Large opted-in constants are resolved from this worker's read-only store.
+    unpickler = Unpickler(BytesIO(_worker_payload))
+    unpickler.persistent_load = lambda index: _worker_shared_arrays[index]
+    blocks, loader = unpickler.load()
     return _run_all(image_i, blocks=blocks, loader=loader)
 
 
