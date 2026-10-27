@@ -494,3 +494,7 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+### Photometry worker controls
+
+Use `--workers N --chunksize M` to tune science-frame multiprocessing. Defaults preserve CPU-count workers and one frame per task. Benchmark representative nights against RAM and storage throughput; for process-parallel runs, set numerical-library thread limits such as `OPENBLAS_NUM_THREADS=1` before starting Python. These flags control science photometry, not reference-quality candidate selection.

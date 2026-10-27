@@ -289,7 +289,18 @@ class SequenceParallel(Sequence):
         A name for the sequence.
     """
 
-    def __init__(self, blocks, data_blocks=None, name=""):
+    def __init__(self, blocks, data_blocks=None, name="", processes=None, chunksize=1):
+        for label, value in (("processes", processes), ("chunksize", chunksize)):
+            if value is None and label == "processes":
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, np.integer))
+                or value < 1
+            ):
+                raise ValueError(f"{label} must be a positive integer")
+        self.processes = processes
+        self.chunksize = chunksize
         super().__init__(blocks, name=name)
         if data_blocks is None:
             self.data = None
@@ -321,9 +332,11 @@ class SequenceParallel(Sequence):
         # made the parent process the bottleneck however many workers ran.
         payload = bytes(ForkingPickler.dumps((self.blocks, loader)))
 
-        with mp.Pool(initializer=_init_worker, initargs=(payload,)) as pool:
+        with mp.Pool(
+            processes=self.processes, initializer=_init_worker, initargs=(payload,)
+        ) as pool:
             for image in self.progress(
-                pool.imap(_run_all_in_worker, images_i),
+                pool.imap(_run_all_in_worker, images_i, chunksize=self.chunksize),
                 total=n,
             ):
                 if not image.discard:
