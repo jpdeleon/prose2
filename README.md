@@ -497,4 +497,4 @@ archivePrefix = {arXiv},
 
 ### Missing target protection
 
-A target with no finite measurements is rejected instead of producing a normalized sentinel light curve. Automatic comparison filtering also rejects a target with unresolved missing samples rather than masking it as a comparison star.
+A target with any missing or non-finite measurement is rejected, in both automatic and explicit comparison modes. It is never interpolated, normalized into a sentinel light curve, or used as a comparison star.

@@ -3080,9 +3080,11 @@ def differential_photometry(
 
     fluxes = fluxes.copy()
     fluxes.target = target_index
-    if not np.any(np.isfinite(fluxes.fluxes[:, target_index, :])):
+    # Checked before imputation: a target gap is never interpolated, and a
+    # target with any gap is rejected in both comparison modes.
+    if not np.all(np.isfinite(fluxes.fluxes[:, target_index, :])):
         logger.warning(
-            "target has no finite measurements; skipping differential photometry"
+            "target has missing or non-finite measurements; skipping differential photometry"
         )
         return None
 
@@ -3139,11 +3141,6 @@ def differential_photometry(
                     f"comparison pool (auto): {int(np.sum(keep)) - 1 if keep[target_index] else int(np.sum(keep))} "
                     f"candidates after avoid_cids filtering (removed {valid_avoid})"
                 )
-        if not keep[target_index]:
-            logger.warning(
-                "target has unresolved invalid measurements; skipping differential photometry"
-            )
-            return None
         fluxes = fluxes.mask_stars(keep)
     n_before = len(fluxes.time) if fluxes.time is not None else 0
     sigma_kwargs = {
