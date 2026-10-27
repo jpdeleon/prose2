@@ -1,5 +1,51 @@
 # Changelog
 
+## [3.5.1](https://github.com/jpdeleon/prose2/compare/v3.5.0...v3.5.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* bad-pixel aperture validity ([47d50c5](https://github.com/jpdeleon/prose2/commit/47d50c513012a5386e5aacfb3d077b33f3276202))
+* bad-pixel aperture validity ([687cca5](https://github.com/jpdeleon/prose2/commit/687cca5c7d16b1d47942f9a174492113a4594778)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* binned measurement uncertainties ([629eebf](https://github.com/jpdeleon/prose2/commit/629eebff27db83d5134d6405832fea52d366e67e))
+* binned measurement uncertainties ([ec2285b](https://github.com/jpdeleon/prose2/commit/ec2285b34a6526d654180f4ea4fc8f4e3509fabc)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* detector and sky uncertainty units ([c2b9ec4](https://github.com/jpdeleon/prose2/commit/c2b9ec4bd3d81cd380774ecea733fedca17e2d29))
+* detector and sky uncertainty units ([379e650](https://github.com/jpdeleon/prose2/commit/379e650aa2bf4644667d9956480cc6ac24fc5d3d)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* differential flux uncertainties ([2ec2318](https://github.com/jpdeleon/prose2/commit/2ec23183df184f8cd48aaa9cdcf5e9df3f8cdd41))
+* differential flux uncertainties ([c1a8bdf](https://github.com/jpdeleon/prose2/commit/c1a8bdfc30c69adc5fccd3e60962dac2ff526be2)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* drop frames with missing target samples instead of rejecting the band ([01cfe28](https://github.com/jpdeleon/prose2/commit/01cfe2841891092777cfb5ff6fd1c2e615d1ea90))
+* exposure midpoint timestamps ([2cc3044](https://github.com/jpdeleon/prose2/commit/2cc304494d2d7a14abdc65823016022800314893))
+* exposure midpoint timestamps ([b5b2ea4](https://github.com/jpdeleon/prose2/commit/b5b2ea499ed86522e08dab14eca1419fb1919dc2)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* incompatible automatic sky annuli ([67e8d7f](https://github.com/jpdeleon/prose2/commit/67e8d7ff51137d0af02b5fa96dc4ad509f8f9e40))
+* incompatible automatic sky annuli ([e223851](https://github.com/jpdeleon/prose2/commit/e223851dc185cd08322f19265f6bb55b81fa435e)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* missing target protection ([474cb98](https://github.com/jpdeleon/prose2/commit/474cb986a35dd77b1ef81cdb36cb8c3fa28a2a25))
+* missing target protection ([503db01](https://github.com/jpdeleon/prose2/commit/503db0100479bd510256637b9c92aa1e69a145f9)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* normalization without comparison stars ([f988913](https://github.com/jpdeleon/prose2/commit/f988913839a35c0f4c716d61f488ecb33db0ba45))
+* normalization without comparison stars ([51cce25](https://github.com/jpdeleon/prose2/commit/51cce257ef6a963a9826d6e3fea7a60e2b12beed)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* photometry near detector edges ([6e562a0](https://github.com/jpdeleon/prose2/commit/6e562a0e7b91a997eaa3c4c83747f1ce0db5a514))
+* photometry near detector edges ([7637a11](https://github.com/jpdeleon/prose2/commit/7637a1109ca2fcdc7cc35afa058e2c198a9ff710)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* reject targets with any missing sample in both comparison modes ([4fb379b](https://github.com/jpdeleon/prose2/commit/4fb379ba0bd6c56e6cee5463c8e58a431d1c9cc4))
+* retain coordinate-only alignment references in workers ([ab403ba](https://github.com/jpdeleon/prose2/commit/ab403ba2e11c42e4f4e46be52fdc907ea5af8f59))
+* signed calibration pixels ([3dbf7e0](https://github.com/jpdeleon/prose2/commit/3dbf7e097e7a783fc2f83662433d3c39c8eced7d))
+* signed calibration pixels ([09a8cef](https://github.com/jpdeleon/prose2/commit/09a8ceff311f4b3a99f2ece437b378673bcab276)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* sparse-field comparison selection ([eaf17c6](https://github.com/jpdeleon/prose2/commit/eaf17c6fe52b8afb0e0890899f478c8d2419be77))
+* sparse-field comparison selection ([db1e33f](https://github.com/jpdeleon/prose2/commit/db1e33f0a65e25c8917d9c699689ffa2b94683dc)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* target gaps in light curves ([49df061](https://github.com/jpdeleon/prose2/commit/49df061494d49a0fa75849e3fce10033b17a8e17))
+* target gaps in light curves ([77bf902](https://github.com/jpdeleon/prose2/commit/77bf902e8baf9539ff1f4c48936fcd879d4af6dd)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* use stdlib unpickler for worker payloads and clarify worker store docs ([abae89f](https://github.com/jpdeleon/prose2/commit/abae89f0bf6a154ba81c36b222a44b49100c8601))
+
+
+### Performance Improvements
+
+* ensemble calculation cost ([8f04457](https://github.com/jpdeleon/prose2/commit/8f044575484ec353dd8a3401d42fd4c11a4a242e))
+* ensemble calculation cost ([61c5610](https://github.com/jpdeleon/prose2/commit/61c561064e1de1f3f30ff49937a91330b2fe7ea2)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* photometry worker controls ([7096bea](https://github.com/jpdeleon/prose2/commit/7096beab7c888e074669fadff3883280adec613d))
+* photometry worker controls ([5fb8a1a](https://github.com/jpdeleon/prose2/commit/5fb8a1a27a049d188c723b4d5580a6929ef15f3f)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* selective diagnostic plots ([6f370e3](https://github.com/jpdeleon/prose2/commit/6f370e3dba2aa7a60a7bcfc3c610ec8f44dbbe27))
+* selective diagnostic plots ([8c76137](https://github.com/jpdeleon/prose2/commit/8c76137c3b9fba41a3310db0353453cff21196f1)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+* worker reference storage ([49e60e1](https://github.com/jpdeleon/prose2/commit/49e60e1f3045b79d25a026e88d515122578094b5))
+* worker reference storage ([c7460d9](https://github.com/jpdeleon/prose2/commit/c7460d905719725d50c9dabebf1aff0655185b15)), closes [#31](https://github.com/jpdeleon/prose2/issues/31)
+
 ## [3.5.0](https://github.com/jpdeleon/prose2/compare/v3.4.0...v3.5.0) (2026-10-26)
 
 
