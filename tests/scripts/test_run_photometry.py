@@ -2843,6 +2843,9 @@ def test_plot_ref_image_custom_cmap(tmp_path, monkeypatch):
     from astropy.io import fits
     from astropy.wcs import WCS
 
+    # Colormap rendering must not depend on SIMBAD availability.
+    monkeypatch.setattr(rp, "get_simbad_data", lambda *a, **kw: None)
+
     w = WCS(naxis=2)
     w.wcs.crpix = [10, 10]
     w.wcs.cdelt = [0.01, 0.01]
@@ -2897,6 +2900,7 @@ def test_plot_ref_image_custom_cmap(tmp_path, monkeypatch):
 
     assert show_kwargs.get("cmap") == "Greys"
     assert "crimson" in scatter_colors
+    assert out.is_file()
 
 
 def test_nearby_stars_csv_generation(tmp_path, monkeypatch):
