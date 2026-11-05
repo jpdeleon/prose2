@@ -4412,20 +4412,20 @@ _MUSCAT2_HEADER = {"TELESCOP": "TCS 1.52m tel.", "INSTRUME": "MuSCAT2", "FILTER"
         (
             _MUSCAT2_HEADER,
             "muscat2",
-            SimpleNamespace(name="MuSCAT2_i", saturation=62000),
+            SimpleNamespace(name="MuSCAT2_i", saturation=62000, _default=False),
             (62000.0, "MuSCAT2_i telescope file"),
         ),
         (
             {"INSTRUME": "MuSCAT", "FILTER": "g"},
             "muscat",
-            SimpleNamespace(name="MuSCAT_g", saturation=55000),
+            SimpleNamespace(name="MuSCAT_g", saturation=55000, _default=False),
             (55000.0, "MuSCAT_g telescope file"),
         ),
         # "muscat" must not borrow a MuSCAT2 file (prefix match is exact).
         (
             {"INSTRUME": "MuSCAT", "FILTER": "g"},
             "muscat",
-            SimpleNamespace(name="MuSCAT2_g", saturation=62000),
+            SimpleNamespace(name="MuSCAT2_g", saturation=62000, _default=False),
             (None, "unknown"),
         ),
         # Unmatched camera: Telescope()'s generic 55000 is not a real limit.

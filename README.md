@@ -197,6 +197,10 @@ How to read `…_stacks.png` (one row per band):
   exclusion uses the reference frame, protects the target, and is relaxed
   if it would empty the available comparison pool; it does not mask saturated
   measurements in every exposure.
+  MuSCAT/MuSCAT2 fallback requires a loaded telescope configuration. If its
+  `.telescope` file is not registered, saturation is unknown rather than the
+  generic 55,000 default, even when the default telescope has the instrument's
+  name. Register the band-specific files to enable their measured ADU limits.
 - **aperture r / sky annulus**: radii in pixels (arcsec too when the pixel
   scale is known). Colours match the circles in the target cutout.
 - **Legend**: one legend per band row, below both panels.

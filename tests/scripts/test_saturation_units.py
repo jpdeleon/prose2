@@ -175,9 +175,9 @@ def test_display_reference_keeps_limit_for_unlisted_filter(monkeypatch):
 def test_display_reference_muscat2_falls_back_to_own_band_telescope(monkeypatch):
     display, _ = _display_reference(
         monkeypatch,
-        SimpleNamespace(name="MuSCAT2_g", saturation=61000),
+        SimpleNamespace(name="MuSCAT2_g", saturation=61000, _default=False),
         fits.Header(dict(INSTRUME="MuSCAT2", FILTER="i")),
-        SimpleNamespace(name="MuSCAT2_i", saturation=62000),
+        SimpleNamespace(name="MuSCAT2_i", saturation=62000, _default=False),
     )
     assert display.telescope.saturation == 62000
 
@@ -185,7 +185,9 @@ def test_display_reference_muscat2_falls_back_to_own_band_telescope(monkeypatch)
 @pytest.mark.parametrize("instrument, limit", [("muscat", 55000), ("muscat2", 62000)])
 def test_muscat_adu_comparison_exclusion(instrument, limit):
     header = fits.Header(dict(INSTRUME=instrument, FILTER="g"))
-    telescope = SimpleNamespace(name=f"{instrument}_g", saturation=limit)
+    telescope = SimpleNamespace(
+        name=f"{instrument}_g", saturation=limit, _default=False
+    )
     resolved, _ = rp.resolve_saturation(header, instrument, telescope)
     ref = SimpleNamespace(sources=[SimpleNamespace(peak=p) for p in (1, 54000, 63000)])
     assert pixel_unit(header) == "ADU"
@@ -215,7 +217,9 @@ def test_quality_ranking_checks_muscat2_adu_limit(monkeypatch):
 
     frame = Image(data=np.zeros((10, 10)))
     frame.header = fits.Header(dict(INSTRUME="MuSCAT2", FILTER="g"))
-    frame.telescope = SimpleNamespace(name="MuSCAT2_g", saturation=62000)
+    frame.telescope = SimpleNamespace(
+        name="MuSCAT2_g", saturation=62000, _default=False
+    )
     frame.metadata["path"] = "frame.fits"
     frame.fwhm = 3.0
     frame.sources = Sources([PointSource(coords=np.array([5.0, 5.0]), peak=63000)])

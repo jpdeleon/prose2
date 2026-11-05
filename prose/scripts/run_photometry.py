@@ -458,6 +458,7 @@ def resolve_saturation(header, instrument: str, telescope) -> tuple[float | None
     name = str(getattr(telescope, "name", "") or "").lower()
     if (
         instrument in TELESCOPE_FILE_SATURATION_INSTRUMENTS
+        and not getattr(telescope, "_default", True)
         and name.split("_")[0] == instrument
         and getattr(telescope, "saturation", None) is not None
     ):

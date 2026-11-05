@@ -183,9 +183,11 @@ class Telescope:
     @classmethod
     def from_dict(cls, env):
         """Load from a dict ensuring that only class attributes are used"""
-        return cls(
-            **{k: v for k, v in env.items() if k in inspect.signature(cls).parameters}
-        )
+        values = {k: v for k, v in env.items() if k in inspect.signature(cls).parameters}
+        # Configuration dictionaries omit this internal flag. Preserve it when
+        # restoring a serialized Telescope, so defaults cannot become configured.
+        values.setdefault("_default", False)
+        return cls(**values)
 
     @property
     def earth_location(self):
