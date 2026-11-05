@@ -202,86 +202,83 @@ def pixel_unit(h) -> str:
 
 
 def get_saturation_from_header(h) -> dict:
-    """Only works for LCO data header"""
-    gain = h['GAIN']
+    """LCO saturation limits in the units of the stored pixels.
+
+    BANZAI scales SATURATE alongside the image when normalizing gain, so
+    the header value must not be divided by the original detector gain.
+    Raw frames likewise use their own SATURATE (in ADU). Missing or invalid
+    limits are unknown, never replaced with another camera's full well.
+    MAXLIN is diagnostic only; this function describes saturation.
+    """
+    base_limit = float(h["SATURATE"])
+    if not np.isfinite(base_limit) or base_limit <= 0:
+        raise ValueError("SATURATE must be finite and positive")
     # 2m0a telescopes (MuSCAT)
-    if h['TELID'] == '2m0a':
-        is_narrow = h['filter'].endswith('_narrow')
-        nb_names = ['g_narrow','Na_D','i_narrow','z_narrow']
-        bb_names = ['gp','rp','ip','zs']
-        sat_m3 = [120_000/1.9, int(120_000/1.88), int(82_000/1.8), int(100_000/2.0)]
-        sat_m4 = [64_000, 64_000, 46_000, 64_000]
+    if h["TELID"] == "2m0a":
+        nb_names = ["g_narrow", "Na_D", "i_narrow", "z_narrow"]
+        bb_names = ["gp", "rp", "ip", "zs"]
         url = "https://lco.global/observatory/instruments/muscat/"
-        
-        if h['SITEID'] == 'coj':  # MuSCAT4
-            if is_narrow:
-                saturation_limits = {b: s for b,s in zip(nb_names,sat_m4)}  
-            else: 
-                saturation_limits = {b: s for b,s in zip(bb_names,sat_m4)}
-        elif h['SITEID'] == 'ogg':  # MuSCAT3
-            if is_narrow:
-                saturation_limits = {b: s for b,s in zip(nb_names,sat_m3)}  
-            else: 
-                saturation_limits = {b: s for b,s in zip(bb_names,sat_m3)}
-        else:
+        if h["SITEID"] not in ("coj", "ogg"):
             raise ValueError("Site ID must be 'coj' or 'ogg' for 2m0a telescopes")
-    
+        saturation_limits = {b: base_limit for b in bb_names + nb_names}
+
     # 1m0a telescopes (Sinistro)
-    elif h['TELID'] == '1m0a':
-        sinistro_sites = ['lsc', 'cpt', 'coj', 'tfn', 'elp']
-        if h['SITEID'] not in sinistro_sites:
-            raise ValueError(f"Site ID must be one of {sinistro_sites} for 1m0a telescopes")
-        
+    elif h["TELID"] == "1m0a":
+        sinistro_sites = ["lsc", "cpt", "coj", "tfn", "elp"]
+        if h["SITEID"] not in sinistro_sites:
+            raise ValueError(
+                f"Site ID must be one of {sinistro_sites} for 1m0a telescopes"
+            )
+
         url = "https://lco.global/observatory/instruments/sinistro/"
-        if float(h.get('GAIN', 1.0)) == 1.0 and 'SATURATE' in h:
-            base_limit = h['SATURATE']
-            gain = 1.0
-        else:
-            gain = 6.6 if h.get('CONFMODE') == 'central_2k_2x2' else 1.0
-            base_limit = 340_000 / gain
         # up/Y/w are schedulable on the SOPHIA-equipped units (ep60+); one limit
         # per frame comes from SATURATE, so it is the same for every band.
         saturation_limits = {
-            b: base_limit for b in ('up', 'gp', 'rp', 'ip', 'zs', 'Y', 'w')
+            b: base_limit for b in ("up", "gp", "rp", "ip", "zs", "Y", "w")
         }
 
     # 0m4x telescopes (LCO 0.4m network: SBIG STL-6303 and QHY600+DeltaRho 350)
-    elif h['TELID'].startswith('0m4'):
-        network_04m_sites = ['lsc', 'cpt', 'coj', 'tfn', 'elp', 'ogg']
-        if h['SITEID'] not in network_04m_sites:
-            raise ValueError(f"Site ID must be one of {network_04m_sites} for 0m4 telescopes")
+    elif h["TELID"].startswith("0m4"):
+        network_04m_sites = ["lsc", "cpt", "coj", "tfn", "elp", "ogg"]
+        if h["SITEID"] not in network_04m_sites:
+            raise ValueError(
+                f"Site ID must be one of {network_04m_sites} for 0m4 telescopes"
+            )
 
         url = "https://lco.global/observatory/instruments/qhy600-delta-rho-350/"
-        if float(h.get('GAIN', 1.0)) == 1.0 and 'SATURATE' in h:
-            base_limit = h['SATURATE']
-            gain = 1.0
-        else:
-            # Verified on real archive SBIG headers: GAIN is always 1.0 (BANZAI
-            # normalizes to electrons). No raw ADU full-well constant is known
-            # for either 0.4m camera generation, so fail loudly rather than
-            # invent one (unlike the 1m0a/6.6-gain 2x2-binning fallback above).
-            raise ValueError(
-                "Unexpected non-unity GAIN for a 0m4 telescope; no raw full-well "
-                "constant is known for SBIG/QHY600 to compute saturation from ADU."
-            )
         # Union of both camera generations' schedulable filters (LCO
         # instrument pages + live configdb); base_limit is the same across
         # bands since it comes straight from the per-frame SATURATE keyword.
         filter_names = [
-            'up', 'gp', 'rp', 'ip', 'zs', 'B', 'V', 'w',
-            'OIII', "S[II]", 'Astrodon-Exo', 'H-Alpha',
+            "up",
+            "gp",
+            "rp",
+            "ip",
+            "zs",
+            "B",
+            "V",
+            "w",
+            "OIII",
+            "S[II]",
+            "Astrodon-Exo",
+            "H-Alpha",
         ]
         saturation_limits = {f: base_limit for f in filter_names}
 
     else:
-        raise ValueError("This doesn't look like LCO data. Function only works with LCO telescopes.")
-    
+        raise ValueError(
+            "This doesn't look like LCO data. Function only works with LCO telescopes."
+        )
+
     # Print reference info
-    unit = 'e-' if gain==1 else 'ADU'
-    print(f"Header saturation: {h['SATURATE']:,} [{unit}], Max linearity: {h['MAXLIN']:,} [{unit}]")
+    unit = pixel_unit(h)
+    print(
+        f"Header saturation: {base_limit:,} [{unit}], Max linearity: {h.get('MAXLIN', 'unknown')} [{unit}]"
+    )
     print(f"Reference: {url}")
-    
+
     return saturation_limits
+
 
 # common FITS header FILTER value -> canonical band name aliases
 _FILTER_ALIASES: dict[str, str] = {

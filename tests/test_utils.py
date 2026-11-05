@@ -145,7 +145,7 @@ def test_get_saturation_from_header_sinistro_central_2k_2x2():
     limits_reduced = pu.get_saturation_from_header(h_reduced)
     assert limits_reduced["zs"] == 244000.0
 
-    # 2. Raw header / gain != 1.0 (fallback to hardcoded values)
+    # 2. Raw header: SATURATE already describes the stored ADU pixels.
     h_raw = {
         "TELID": "1m0a",
         "SITEID": "coj",
@@ -156,7 +156,7 @@ def test_get_saturation_from_header_sinistro_central_2k_2x2():
         "filter": "zs",
     }
     limits_raw = pu.get_saturation_from_header(h_raw)
-    assert limits_raw["zs"] == pytest.approx(340000.0 / 6.6)
+    assert limits_raw["zs"] == 37000.0
 
 
 def test_get_saturation_from_header_sinistro_sophia_all_schedulable_bands():

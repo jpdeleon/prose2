@@ -1284,15 +1284,9 @@ def pixel_validate_candidates(
         return _target_index_or_none(im, target_coord)
 
     def _target_saturated_getter(im):
-        try:
-            sat_all = get_saturation_from_header(im.header)
-            saturation = (
-                sat_all.get(im.header.get("FILTER", ""))
-                if isinstance(sat_all, dict)
-                else None
-            )
-        except Exception:
-            saturation = None
+        saturation, _ = resolve_saturation(
+            im.header, get_instrument(im.header), im.telescope
+        )
         return _target_is_saturated(
             im, _target_index_or_none(im, target_coord), saturation
         )
@@ -2425,7 +2419,8 @@ def build_reference(
     saturated_cids = _saturated_source_indices(ref, saturation, target_index)
     if saturated_cids:
         logger.info(
-            f"saturation exclusion ({saturation} ADU): {len(saturated_cids)} "
+            f"saturation exclusion ({saturation} {pixel_unit(ref.header)}): "
+            f"{len(saturated_cids)} "
             f"comparison star(s) flagged as saturated: {saturated_cids}"
         )
     return dict(
@@ -3322,17 +3317,18 @@ CSV_RENAME = {
     "airmass": "Airmass",
     "dx": "Dx(pix)",
     "dy": "Dy(pix)",
-    "bkg": "Bkg(ADU)",
     "fwhm": "FWHM(pix)",
-    "peak": "Peak(ADU)",
 }
 
 
-def photometry_df(diff: Fluxes, bjd: np.ndarray) -> pd.DataFrame:
+def photometry_df(diff: Fluxes, bjd: np.ndarray, unit: str = "ADU") -> pd.DataFrame:
+    """Export dimensionless differential flux and native-unit pixel diagnostics."""
     df = diff.df.copy()
     df["BJD_TDB"] = bjd
     df["Err"] = diff.error
-    df = df.rename(CSV_RENAME, axis=1)
+    df = df.rename(
+        {**CSV_RENAME, "bkg": f"Bkg({unit})", "peak": f"Peak({unit})"}, axis=1
+    )
     cols = df.columns.tolist()
     left = ["BJD_TDB", "Flux", "Err"]
     rest = [c for c in cols if c not in left]
@@ -6621,7 +6617,8 @@ def main(argv=None) -> int:
             logger.info(f"test-run: skipping {stem}.csv")
         else:
             csv_path = args.results_dir / f"{stem}.csv"
-            photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
+            unit = pixel_unit(_read_quality_header(r["files"][0]))
+            photometry_df(r["diff"], bjds[band], unit=unit).to_csv(csv_path, index=False)
             logger.info(f"wrote {csv_path}")
 
         if args.plots in ("all", "reference"):

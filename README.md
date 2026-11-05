@@ -162,6 +162,12 @@ Everything is written to `--results_dir`:
   `…_stacks.png`
 - a single `….npz` archive and a timestamped `.log`
 
+Raw aperture flux and pixel diagnostics keep the input FITS units: electrons
+for BANZAI-reduced Sinistro, QHY600, MuSCAT3 and MuSCAT4; ADU for MuSCAT
+and MuSCAT2. CSV background/peak columns are named `Bkg(e-)`/`Peak(e-)`
+or `Bkg(ADU)`/`Peak(ADU)` accordingly. Exported differential `Flux` and
+`Err` remain dimensionless.
+
 How to read `…_stacks.png` (one row per band):
 
 - **Pixel units.** No gain is applied, so pixels keep the unit of the input
@@ -183,6 +189,14 @@ How to read `…_stacks.png` (one row per band):
   (55,000 and 62,000 ADU); the log says which source was used. When a row shows a
   stack, its title says so (`radial profile (median of N aligned frames)`);
   a stacked peak under the line does not rule out a saturated single frame. The peak note (`% sat.`) uses only pixels inside the aperture.
+  All LCO instruments use their frame's positive, finite `SATURATE` directly:
+  BANZAI has already converted both pixels and this limit to electrons, so
+  no detector-gain division is applied. A missing/invalid LCO limit is unknown;
+  it is not replaced with a hardcoded camera limit. `MAXLIN` is reported for
+  reference but is not used as the saturation cutoff. Comparison-star
+  exclusion uses the reference frame, protects the target, and is relaxed
+  if it would empty the available comparison pool; it does not mask saturated
+  measurements in every exposure.
 - **aperture r / sky annulus**: radii in pixels (arcsec too when the pixel
   scale is known). Colours match the circles in the target cutout.
 - **Legend**: one legend per band row, below both panels.
