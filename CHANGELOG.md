@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.3](https://github.com/jpdeleon/prose2/compare/v3.5.2...v3.5.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* screen shared-reference comparisons in each band's native pixels ([56570fb](https://github.com/jpdeleon/prose2/commit/56570fb5ffe8789cff20e8523b3004aeb11a2e5f))
+
 ## [3.5.2](https://github.com/jpdeleon/prose2/compare/v3.5.1...v3.5.2) (2026-11-05)
 
 
