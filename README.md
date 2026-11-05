@@ -193,10 +193,19 @@ How to read `…_stacks.png` (one row per band):
   BANZAI has already converted both pixels and this limit to electrons, so
   no detector-gain division is applied. A missing/invalid LCO limit is unknown;
   it is not replaced with a hardcoded camera limit. `MAXLIN` is reported for
-  reference but is not used as the saturation cutoff. Comparison-star
-  exclusion uses the reference frame, protects the target, and is relaxed
-  if it would empty the available comparison pool; it does not mask saturated
-  measurements in every exposure.
+  reference but is not used as the saturation cutoff. In self-reference mode,
+  comparison-star exclusion uses the reference frame, protects the target,
+  and is relaxed if it would empty the available comparison pool.
+  With `--ref_band`, each band instead screens its middle science frame using
+  its own limit and native, unstacked pixels. Shared source positions are
+  transformed onto that frame; a saturated pixel inside the largest requested
+  photometry aperture excludes that comparison ID from automatic and explicit
+  selection. Unmeasurable apertures are excluded too. The target is retained
+  with a warning if saturated. Failed alignment or an empty comparison pool
+  fails the band rather than re-admitting saturated stars. Missing saturation
+  metadata is logged as unknown, without borrowing another band's exclusions.
+  Neither mode masks saturation in every exposure; changing saturation over
+  the time series still requires inspection.
   MuSCAT/MuSCAT2 fallback requires a loaded telescope configuration. If its
   `.telescope` file is not registered, saturation is unknown rather than the
   generic 55,000 default, even when the default telescope has the instrument's

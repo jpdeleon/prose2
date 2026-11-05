@@ -2669,6 +2669,90 @@ def _build_display_reference(
     return display
 
 
+def _band_saturation_indices(
+    files, ref, target_index, aperture_radius, *, ccd_trim_size_yx,
+    max_num_stars, min_star_separation, min_area, bad_pixel_map,
+):
+    """Screen shared IDs on one native band frame, without resampling pixels.
+
+    Use the middle frame, independently of display stacking. The largest
+    requested aperture is checked so no candidate aperture includes a saturated
+    pixel. Unmeasurable comparison apertures are excluded as unverified.
+    """
+    path = _select_stack_frames(files, 1)[0]
+    image = FITSImage(path)
+    limit, origin = resolve_saturation(
+        image.header, get_instrument(image.header), image.telescope
+    )
+    if limit is None:
+        logger.warning(
+            f"[{Path(path).name}] per-band saturation unknown; "
+            "not borrowing the shared reference band's limit or exclusions"
+        )
+        return []
+    if not np.isfinite(aperture_radius) or aperture_radius <= 0:
+        raise ValueError("per-band saturation requires a positive aperture radius")
+    _frame_alignment_sequence(
+        ccd_trim_size_yx=ccd_trim_size_yx,
+        max_num_stars=max_num_stars,
+        min_star_separation=min_star_separation,
+        min_area=min_area,
+        bad_pixel_map=bad_pixel_map,
+    ).run(image, show_progress=False)
+    blocks.ComputeTransformTwirl(ref, n=max_num_stars).run(image)
+    transform = getattr(image, "transform", None)
+    if image.discard or transform is None:
+        raise ValueError(f"per-band saturation alignment failed for {path}")
+    coords = transform.inverse(ref.sources.coords)
+    saturated, unknown = [], []
+    ny, nx = image.data.shape
+    for idx, (x, y) in enumerate(coords):
+        if not np.isfinite([x, y]).all():
+            unknown.append(idx)
+            continue
+        x0, x1 = (
+            max(0, int(np.floor(x - aperture_radius))),
+            min(nx, int(np.ceil(x + aperture_radius)) + 1),
+        )
+        y0, y1 = (
+            max(0, int(np.floor(y - aperture_radius))),
+            min(ny, int(np.ceil(y + aperture_radius)) + 1),
+        )
+        if x0 >= x1 or y0 >= y1:
+            unknown.append(idx)
+            continue
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        pixels = image.data[y0:y1, x0:x1][
+            (xx - x) ** 2 + (yy - y) ** 2 <= aperture_radius**2
+        ]
+        if np.any(pixels >= limit):
+            saturated.append(idx)
+        elif (
+            pixels.size == 0
+            or not np.isfinite(pixels).all()
+            or (
+                x - aperture_radius < 0
+                or x + aperture_radius > nx - 1
+                or y - aperture_radius < 0
+                or y + aperture_radius > ny - 1
+            )
+        ):
+            unknown.append(idx)
+    if target_index in saturated:
+        logger.warning(
+            f"[{Path(path).name}] target {target_index} is saturated; retaining target"
+        )
+    if unknown:
+        logger.warning(f"[{Path(path).name}] unverified per-band apertures: {unknown}")
+    excluded = sorted((set(saturated) | set(unknown)) - {target_index})
+    logger.info(
+        f"[{Path(path).name}] per-band saturation screening: "
+        f"limit={limit} {pixel_unit(image.header)} ({origin}), "
+        f"saturated IDs={saturated}, excluded comparison IDs={excluded}"
+    )
+    return excluded
+
+
 def run_band(
     band,
     files,
@@ -2701,10 +2785,12 @@ def run_band(
     display_stack_nframes: int = 1,
     workers: int | None = None,
     chunksize: int = 1,
+    shared_reference: bool = False,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
-    inside ``build_reference``.
+    inside ``build_reference``. With ``shared_reference``, saturation exclusions
+    are replaced by screening a native science frame from this band.
 
     When ``avoid_cids`` is given and ``ref_source_positions`` is set, the
     index list is cross-matched from the reference band's source catalog
@@ -2899,7 +2985,23 @@ def run_band(
                     )
                     cids = None
 
-    saturated_cids = reference.get("saturated_cids") or []
+    if shared_reference:
+        radius = float(np.max(reference["aper_radii"]))
+        if reference["scale"]:
+            radius *= float(ref.fwhm)
+        saturated_cids = _band_saturation_indices(
+            files,
+            ref,
+            target_index,
+            radius,
+            ccd_trim_size_yx=ccd_trim_size_yx,
+            max_num_stars=max_num_stars,
+            min_star_separation=min_star_separation,
+            min_area=min_area,
+            bad_pixel_map=bad_pixel_map,
+        )
+    else:
+        saturated_cids = reference.get("saturated_cids") or []
     if saturated_cids:
         current_avoid = set(mapped_avoid or [])
         target_idx = target_index
@@ -2909,6 +3011,10 @@ def run_band(
         ]
         after_sat = [i for i in candidates if i not in set(saturated_cids)]
         if candidates and not after_sat:
+            if shared_reference:
+                raise ValueError(
+                    f"[{band}] per-band saturation screening leaves no usable comparison stars"
+                )
             logger.warning(
                 f"[{band}] saturation exclusion would remove all comparison stars; "
                 f"relaxing saturation exclusion to preserve comparison pool"
@@ -3050,6 +3156,7 @@ def run_band(
         gaia_df=reference.get("gaia_df"),
         defaulted_to_brightest=reference.get("defaulted_to_brightest", False),
         display_ref=display_ref,
+        saturated_cids=saturated_cids,
     )
 
 
@@ -6492,6 +6599,7 @@ def main(argv=None) -> int:
                 display_stack_nframes=args.display_stack_nframes,
                 workers=args.workers,
                 chunksize=args.chunksize,
+                shared_reference=not self_reference,
             )
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
