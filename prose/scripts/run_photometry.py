@@ -6609,7 +6609,9 @@ def main(argv=None) -> int:
         else:
             csv_path = args.results_dir / f"{stem}.csv"
             unit = pixel_unit(_read_quality_header(r["files"][0]))
-            photometry_df(r["diff"], bjds[band], unit=unit).to_csv(csv_path, index=False)
+            photometry_df(r["diff"], bjds[band], unit=unit).to_csv(
+                csv_path, index=False
+            )
             logger.info(f"wrote {csv_path}")
 
         if args.plots in ("all", "reference"):
