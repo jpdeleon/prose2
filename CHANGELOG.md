@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.5.2](https://github.com/jpdeleon/prose2/compare/v3.5.1...v3.5.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* compare photometry saturation in native pixel units ([b55b357](https://github.com/jpdeleon/prose2/commit/b55b357443d20c6b253db2da53fd0fe16ebe2fdb))
+* reject generic telescope defaults as saturation configuration ([b2d922d](https://github.com/jpdeleon/prose2/commit/b2d922d387774ec600e717bde00834853a01ef4f))
+
 ## [3.5.1](https://github.com/jpdeleon/prose2/compare/v3.5.0...v3.5.1) (2026-10-27)
 
 
