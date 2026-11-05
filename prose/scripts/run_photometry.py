@@ -103,7 +103,7 @@ from prose.utils import (
     coord_cache_path,
     easy_median,
     frames_from_obslog,
-    get_saturation_from_header,
+    get_frame_saturation,
     get_simbad_data,
     header_jd,
     load_cached_df,
@@ -222,8 +222,8 @@ REF_QUALITY_HEADER_KEYS: dict[str, str] = {
     "airmass": "AIRMASS",
     "focus": "FOCPOSN",  # focuser position; scored as deviation from the run's median
     "humidity": "WMSHUMID",  # weather-station humidity %, cloud/transparency proxy
-    "background": "L1MEAN",  # BANZAI sky-level estimate [ADU]
-    "saturate": "SATURATE",  # ADU full well for this frame's readout mode
+    "background": "L1MEAN",  # BANZAI sky-level estimate [native pixel units]
+    "saturate": "SATURATE",  # this frame's limit [native pixel units]
 }
 REF_SELECT_DEFAULT_TOP_K = 5
 REF_PERSISTENCE_FRACTION = 0.6
@@ -444,7 +444,7 @@ TELESCOPE_FILE_SATURATION_INSTRUMENTS = ("muscat", "muscat2")
 def resolve_saturation(header, instrument: str, telescope) -> tuple[float | None, str]:
     """Saturation limit for a frame, and where it came from.
 
-    LCO headers are read via :func:`get_saturation_from_header`. MuSCAT and
+    LCO headers are read via :func:`get_frame_saturation`. MuSCAT and
     MuSCAT2 headers have no gain/saturation keywords, so they fall back to the
     matched ``.telescope`` file's ``saturation``. The fallback is limited to
     those instruments and to a telescope actually matched for them: an
@@ -452,16 +452,13 @@ def resolve_saturation(header, instrument: str, telescope) -> tuple[float | None
     measured limit. Returns ``(None, "unknown")`` when neither applies.
     """
     try:
-        sat_all = get_saturation_from_header(header)
-        band = header.get("FILTER", "")
-        saturation = sat_all.get(band) if isinstance(sat_all, dict) else None
-    except Exception:  # noqa: BLE001 - non-LCO headers lack TELID/GAIN
-        saturation = None
-    if saturation is not None:
-        return saturation, "header"
+        return get_frame_saturation(header), "header"
+    except Exception:  # noqa: BLE001 - non-LCO headers lack TELID/SATURATE
+        pass
     name = str(getattr(telescope, "name", "") or "").lower()
     if (
         instrument in TELESCOPE_FILE_SATURATION_INSTRUMENTS
+        and not getattr(telescope, "_default", True)
         and name.split("_")[0] == instrument
         and getattr(telescope, "saturation", None) is not None
     ):
@@ -1284,15 +1281,9 @@ def pixel_validate_candidates(
         return _target_index_or_none(im, target_coord)
 
     def _target_saturated_getter(im):
-        try:
-            sat_all = get_saturation_from_header(im.header)
-            saturation = (
-                sat_all.get(im.header.get("FILTER", ""))
-                if isinstance(sat_all, dict)
-                else None
-            )
-        except Exception:
-            saturation = None
+        saturation, _ = resolve_saturation(
+            im.header, get_instrument(im.header), im.telescope
+        )
         return _target_is_saturated(
             im, _target_index_or_none(im, target_coord), saturation
         )
@@ -2425,7 +2416,8 @@ def build_reference(
     saturated_cids = _saturated_source_indices(ref, saturation, target_index)
     if saturated_cids:
         logger.info(
-            f"saturation exclusion ({saturation} ADU): {len(saturated_cids)} "
+            f"saturation exclusion ({saturation} {pixel_unit(ref.header)}): "
+            f"{len(saturated_cids)} "
             f"comparison star(s) flagged as saturated: {saturated_cids}"
         )
     return dict(
@@ -2633,7 +2625,7 @@ def _build_display_reference(
     if not files:
         return None
     warped = []
-    own_header = None
+    own_frame = None
     detect = _frame_alignment_sequence(
         ccd_trim_size_yx=ccd_trim_size_yx,
         max_num_stars=max_num_stars,
@@ -2651,8 +2643,8 @@ def _build_display_reference(
             continue
         if w is not None:
             warped.append(w)
-            if own_header is None:
-                own_header = img.header
+            if own_frame is None:
+                own_frame = img
     if not warped:
         return None
 
@@ -2661,17 +2653,12 @@ def _build_display_reference(
     display.data = np.asarray(data, dtype=float)
     # Actual stack depth (frames can fail alignment), for the _stacks caption.
     display.computed["n_stacked"] = len(warped)
-    if own_header is not None:
-        display.header = own_header
+    if own_frame is not None:
+        display.header = own_frame.header
         # Show this band's own saturation level on the radial-profile plots.
-        try:
-            band_key = own_header.get("FILTER", "")
-            sat_all = get_saturation_from_header(own_header)
-            sat = sat_all.get(band_key) if isinstance(sat_all, dict) else None
-            if sat is not None:
-                display.telescope.saturation = sat
-        except Exception:  # noqa: BLE001
-            pass
+        display.telescope.saturation, _ = resolve_saturation(
+            own_frame.header, get_instrument(own_frame.header), own_frame.telescope
+        )
     # Per-source cutout thumbnails must reflect the band's own data, not the
     # shared reference frame carried over by ``copy()``.
     display.computed.pop("cutouts", None)
@@ -3322,17 +3309,18 @@ CSV_RENAME = {
     "airmass": "Airmass",
     "dx": "Dx(pix)",
     "dy": "Dy(pix)",
-    "bkg": "Bkg(ADU)",
     "fwhm": "FWHM(pix)",
-    "peak": "Peak(ADU)",
 }
 
 
-def photometry_df(diff: Fluxes, bjd: np.ndarray) -> pd.DataFrame:
+def photometry_df(diff: Fluxes, bjd: np.ndarray, unit: str = "ADU") -> pd.DataFrame:
+    """Export dimensionless differential flux and native-unit pixel diagnostics."""
     df = diff.df.copy()
     df["BJD_TDB"] = bjd
     df["Err"] = diff.error
-    df = df.rename(CSV_RENAME, axis=1)
+    df = df.rename(
+        {**CSV_RENAME, "bkg": f"Bkg({unit})", "peak": f"Peak({unit})"}, axis=1
+    )
     cols = df.columns.tolist()
     left = ["BJD_TDB", "Flux", "Err"]
     rest = [c for c in cols if c not in left]
@@ -6621,7 +6609,10 @@ def main(argv=None) -> int:
             logger.info(f"test-run: skipping {stem}.csv")
         else:
             csv_path = args.results_dir / f"{stem}.csv"
-            photometry_df(r["diff"], bjds[band]).to_csv(csv_path, index=False)
+            unit = pixel_unit(_read_quality_header(r["files"][0]))
+            photometry_df(r["diff"], bjds[band], unit=unit).to_csv(
+                csv_path, index=False
+            )
             logger.info(f"wrote {csv_path}")
 
         if args.plots in ("all", "reference"):

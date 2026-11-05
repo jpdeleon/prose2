@@ -3568,6 +3568,7 @@ def _example_shared_reference(seed=3):
 
     shared = example_image(seed=seed)
     ny, nx = shared.data.shape
+    shared.telescope = SimpleNamespace(saturation=None)
     shared._sources = _fake_sources([[nx / 2, ny / 2], [nx / 3, ny / 3]])
     w = WCS(naxis=2)
     w.wcs.crpix = [nx / 2, ny / 2]
@@ -3591,6 +3592,7 @@ def test_build_display_reference_single_frame_real_construction(monkeypatch):
     class FakeImg:
         def __init__(self, _path):
             self.header = own_header
+            self.telescope = SimpleNamespace(saturation=None)
             self.data = np.ones(shared.data.shape)
 
     monkeypatch.setattr(rp, "FITSImage", FakeImg)
@@ -3628,6 +3630,7 @@ def test_build_display_reference_median_stacks_aligned_frames(monkeypatch):
             from astropy.io.fits import Header
 
             self.header = Header()
+            self.telescope = SimpleNamespace(saturation=None)
             self.data = np.ones(shared.data.shape)
 
     warps = iter(
@@ -3672,6 +3675,7 @@ def test_build_display_reference_real_detection_and_warp(monkeypatch):
         w.wcs.crval = [10.0, 20.0]
         w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
         im.wcs = w
+        im.telescope = SimpleNamespace(saturation=None)
         return im
 
     shared = make_frame()
@@ -4408,20 +4412,20 @@ _MUSCAT2_HEADER = {"TELESCOP": "TCS 1.52m tel.", "INSTRUME": "MuSCAT2", "FILTER"
         (
             _MUSCAT2_HEADER,
             "muscat2",
-            SimpleNamespace(name="MuSCAT2_i", saturation=62000),
+            SimpleNamespace(name="MuSCAT2_i", saturation=62000, _default=False),
             (62000.0, "MuSCAT2_i telescope file"),
         ),
         (
             {"INSTRUME": "MuSCAT", "FILTER": "g"},
             "muscat",
-            SimpleNamespace(name="MuSCAT_g", saturation=55000),
+            SimpleNamespace(name="MuSCAT_g", saturation=55000, _default=False),
             (55000.0, "MuSCAT_g telescope file"),
         ),
         # "muscat" must not borrow a MuSCAT2 file (prefix match is exact).
         (
             {"INSTRUME": "MuSCAT", "FILTER": "g"},
             "muscat",
-            SimpleNamespace(name="MuSCAT2_g", saturation=62000),
+            SimpleNamespace(name="MuSCAT2_g", saturation=62000, _default=False),
             (None, "unknown"),
         ),
         # Unmatched camera: Telescope()'s generic 55000 is not a real limit.
@@ -4447,10 +4451,7 @@ def test_resolve_saturation_falls_back_to_telescope_file_for_muscat(
     assert rp.resolve_saturation(header, instrument, telescope) == expected
 
 
-def test_resolve_saturation_prefers_header_value(monkeypatch):
-    monkeypatch.setattr(rp, "get_saturation_from_header", lambda h: {"g": 50000})
+def test_resolve_saturation_prefers_header_value():
     telescope = SimpleNamespace(name="MuSCAT2_g", saturation=62000)
-    assert rp.resolve_saturation({"FILTER": "g"}, "muscat2", telescope) == (
-        50000,
-        "header",
-    )
+    header = {"TELID": "1m0a", "SITEID": "coj", "FILTER": "g", "SATURATE": 50000}
+    assert rp.resolve_saturation(header, "muscat2", telescope) == (50000, "header")
