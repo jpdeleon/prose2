@@ -80,6 +80,108 @@ def test_invalid_lco_limit_is_unknown(bad_limit):
     assert rp.resolve_saturation(header, "muscat3", telescope) == (None, "unknown")
 
 
+@pytest.mark.parametrize(
+    "telid, site, instrument, band",
+    [
+        ("1m0a", "coj", "sinistro", "V"),
+        ("1m0a", "lsc", "sinistro", "rp*diffuser"),
+        ("2m0a", "ogg", "muscat3", "unlisted"),
+        ("0m4a", "elp", "qhy600", "Y"),
+    ],
+)
+def test_lco_frame_limit_applies_to_any_filter(telid, site, instrument, band):
+    header = fits.Header(
+        dict(TELID=telid, SITEID=site, FILTER=band, GAIN=1.0, SATURATE=286000)
+    )
+    limit, origin = rp.resolve_saturation(header, instrument, None)
+    ref = SimpleNamespace(
+        sources=[SimpleNamespace(peak=p) for p in (1, 285000, 286000)]
+    )
+    assert (limit, origin) == (286000, "header")
+    assert rp._saturated_source_indices(ref, limit, target_index=0) == [2]
+
+
+def test_lco_frame_limit_does_not_require_filter_keyword():
+    header = fits.Header(dict(TELID="1m0a", SITEID="coj", SATURATE=286000))
+    assert rp.resolve_saturation(header, "sinistro", None) == (286000, "header")
+
+
+def _display_reference(monkeypatch, shared_telescope, own_header, own_telescope):
+    from prose import Image
+
+    shared = Image(data=np.zeros((20, 20)))
+    shared.telescope = shared_telescope
+    frame = SimpleNamespace(header=own_header, telescope=own_telescope)
+    monkeypatch.setattr(rp, "FITSImage", lambda _path: frame)
+    monkeypatch.setattr(
+        rp,
+        "_frame_alignment_sequence",
+        lambda **_kw: SimpleNamespace(run=lambda img, show_progress=False: None),
+    )
+    monkeypatch.setattr(
+        rp, "_warp_onto_reference", lambda img, shared_ref: np.ones((20, 20))
+    )
+    display = rp._build_display_reference(
+        ["frame.fits"],
+        shared,
+        ccd_trim_size_yx=(0, 0),
+        max_num_stars=12,
+        min_star_separation=5.0,
+        cutout_size=5,
+        min_area=3,
+        bad_pixel_map=None,
+        n_stack=1,
+    )
+    return display, shared
+
+
+_MUSCAT3_ZS = dict(INSTRUME="ep03", TELID="2m0a", SITEID="ogg", FILTER="zs", GAIN=1.0)
+
+
+@pytest.mark.parametrize(
+    "saturate, expected",
+    [(84000, 84000), (None, None), (0, None), (-1, None)],
+    ids=["valid", "missing", "zero", "negative"],
+)
+def test_display_reference_uses_only_its_own_frame_limit(
+    monkeypatch, saturate, expected
+):
+    header = dict(_MUSCAT3_ZS)
+    if saturate is not None:
+        header["SATURATE"] = saturate
+    display, shared = _display_reference(
+        monkeypatch,
+        SimpleNamespace(name="LCO-2m/MuSCAT3_gp", saturation=121600),
+        fits.Header(header),
+        SimpleNamespace(name="LCO-2m/MuSCAT3_zs", saturation=55000),
+    )
+    assert display.telescope.saturation == expected
+    assert shared.telescope.saturation == 121600
+
+
+def test_display_reference_keeps_limit_for_unlisted_filter(monkeypatch):
+    header = fits.Header(
+        dict(TELID="1m0a", SITEID="coj", FILTER="V", GAIN=1.0, SATURATE=286000)
+    )
+    display, _ = _display_reference(
+        monkeypatch,
+        SimpleNamespace(name="LCO-1m_gp", saturation=244000),
+        header,
+        SimpleNamespace(name="LCO-1m_V", saturation=55000),
+    )
+    assert display.telescope.saturation == 286000
+
+
+def test_display_reference_muscat2_falls_back_to_own_band_telescope(monkeypatch):
+    display, _ = _display_reference(
+        monkeypatch,
+        SimpleNamespace(name="MuSCAT2_g", saturation=61000),
+        fits.Header(dict(INSTRUME="MuSCAT2", FILTER="i")),
+        SimpleNamespace(name="MuSCAT2_i", saturation=62000),
+    )
+    assert display.telescope.saturation == 62000
+
+
 @pytest.mark.parametrize("instrument, limit", [("muscat", 55000), ("muscat2", 62000)])
 def test_muscat_adu_comparison_exclusion(instrument, limit):
     header = fits.Header(dict(INSTRUME=instrument, FILTER="g"))

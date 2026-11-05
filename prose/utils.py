@@ -181,9 +181,8 @@ def pixel_unit(h) -> str:
 
     The pipeline never applies gain, so pixels keep the unit of the input FITS.
     ``BUNIT`` wins when present. Otherwise BANZAI-reduced LCO frames are
-    recognised the same way :func:`get_saturation_from_header` does: ``GAIN``
-    of 1 with a ``SATURATE`` keyword means the data were normalized to
-    electrons. Anything else is treated as raw ADU.
+    recognised by ``GAIN`` of 1 with a ``SATURATE`` keyword, which means the
+    data were normalized to electrons. Anything else is treated as raw ADU.
     """
     bunit = str(h.get("BUNIT", "") or "").strip()
     if bunit:
@@ -201,12 +200,13 @@ def pixel_unit(h) -> str:
     return "ADU"
 
 
-def get_saturation_from_header(h) -> dict:
-    """LCO saturation limits in the units of the stored pixels.
+def _lco_frame_saturation(h) -> tuple[float, tuple[str, ...]]:
+    """Validated LCO frame limit and the bands its camera can schedule.
 
-    BANZAI scales SATURATE alongside the image when normalizing gain, so
-    the header value must not be divided by the original detector gain.
-    Raw frames likewise use their own SATURATE (in ADU). Missing or invalid
+    The limit is in the units of the stored pixels: BANZAI scales SATURATE
+    alongside the image when normalizing gain, so the header value must not be
+    divided by the original detector gain. Raw frames likewise use their own
+    SATURATE (in ADU). Missing or invalid
     limits are unknown, never replaced with another camera's full well.
     MAXLIN is diagnostic only; this function describes saturation.
     """
@@ -220,7 +220,7 @@ def get_saturation_from_header(h) -> dict:
         url = "https://lco.global/observatory/instruments/muscat/"
         if h["SITEID"] not in ("coj", "ogg"):
             raise ValueError("Site ID must be 'coj' or 'ogg' for 2m0a telescopes")
-        saturation_limits = {b: base_limit for b in bb_names + nb_names}
+        band_names = bb_names + nb_names
 
     # 1m0a telescopes (Sinistro)
     elif h["TELID"] == "1m0a":
@@ -233,9 +233,7 @@ def get_saturation_from_header(h) -> dict:
         url = "https://lco.global/observatory/instruments/sinistro/"
         # up/Y/w are schedulable on the SOPHIA-equipped units (ep60+); one limit
         # per frame comes from SATURATE, so it is the same for every band.
-        saturation_limits = {
-            b: base_limit for b in ("up", "gp", "rp", "ip", "zs", "Y", "w")
-        }
+        band_names = ["up", "gp", "rp", "ip", "zs", "Y", "w"]
 
     # 0m4x telescopes (LCO 0.4m network: SBIG STL-6303 and QHY600+DeltaRho 350)
     elif h["TELID"].startswith("0m4"):
@@ -249,7 +247,7 @@ def get_saturation_from_header(h) -> dict:
         # Union of both camera generations' schedulable filters (LCO
         # instrument pages + live configdb); base_limit is the same across
         # bands since it comes straight from the per-frame SATURATE keyword.
-        filter_names = [
+        band_names = [
             "up",
             "gp",
             "rp",
@@ -263,7 +261,6 @@ def get_saturation_from_header(h) -> dict:
             "Astrodon-Exo",
             "H-Alpha",
         ]
-        saturation_limits = {f: base_limit for f in filter_names}
 
     else:
         raise ValueError(
@@ -277,7 +274,18 @@ def get_saturation_from_header(h) -> dict:
     )
     print(f"Reference: {url}")
 
-    return saturation_limits
+    return base_limit, tuple(band_names)
+
+
+def get_frame_saturation(h) -> float:
+    """LCO frame saturation limit in stored pixel units, for any filter."""
+    return _lco_frame_saturation(h)[0]
+
+
+def get_saturation_from_header(h) -> dict:
+    """The frame's saturation limit keyed by each schedulable camera band."""
+    limit, band_names = _lco_frame_saturation(h)
+    return {band: limit for band in band_names}
 
 
 # common FITS header FILTER value -> canonical band name aliases
