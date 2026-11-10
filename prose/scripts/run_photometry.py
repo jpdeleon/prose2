@@ -781,57 +781,16 @@ def ref_header_desc(ref, label: str, details: list[str] | None = None) -> str:
     return f"{label} ({' '.join(parts)})"
 
 
-MIN_PEAK_RADIUS_PIX = 1.0  # smallest peak-search radius [pix]
+class MeasurePeaks(blocks.Peaks):
+    """Pipeline peak block: :class:`prose.blocks.Peaks` with a required radius.
 
-
-def _peak_in_circle(data: np.ndarray, x: float, y: float, radius: float) -> float:
-    """Max finite pixel within ``radius`` of ``(x, y)``; NaN if none.
-
-    The value includes the sky (not background-subtracted).
-    """
-    ny, nx = data.shape
-    x0, x1 = max(0, int(np.floor(x - radius))), min(nx, int(np.ceil(x + radius)) + 1)
-    y0, y1 = max(0, int(np.floor(y - radius))), min(ny, int(np.ceil(y + radius)) + 1)
-    if x0 >= x1 or y0 >= y1:
-        return float("nan")
-    yy, xx = np.mgrid[y0:y1, x0:x1]
-    inside = np.hypot(xx - x, yy - y) <= radius
-    values = data[y0:y1, x0:x1][inside]
-    values = values[np.isfinite(values)]
-    return float(values.max()) if values.size else float("nan")
-
-
-class MeasurePeaks(Block):
-    """Peak pixel of each source within a circular aperture.
-
-    The circle (not a fixed box) follows the photometric aperture, so the
-    bright ring of a defocused star is always included while neighbours
-    outside the aperture are not (issue #53).
-
-    Parameters
-    ----------
-    radius : float
-        Search radius; pixels, or FWHM units when ``scale`` is True. The
-        pipeline passes its largest photometric aperture radius.
-    scale : bool
-        Multiply ``radius`` by the image FWHM, matching ``AperturePhotometry``.
+    The pipeline passes its largest photometric aperture radius (FWHM units
+    when ``scale`` is True), so the bright ring of a defocused star is always
+    included while neighbours outside the aperture are not (issue #53).
     """
 
     def __init__(self, radius: float, scale: bool = False, name=None):
-        super().__init__(name=name)
-        self.radius = float(radius)
-        self.scale = scale
-
-    def _radius_pix(self, image) -> float:
-        r = self.radius * float(image.fwhm) if self.scale else self.radius
-        return max(MIN_PEAK_RADIUS_PIX, r)
-
-    def run(self, image):
-        radius = self._radius_pix(image)
-        image.computed["peaks"] = np.array(
-            [_peak_in_circle(image.data, x, y, radius) for x, y in image.sources.coords]
-        )
-        image.computed["peak_radius"] = radius
+        super().__init__(radius=radius, scale=scale, name=name)
 
 
 class FilterPointSources(Block):
@@ -2564,6 +2523,9 @@ def photometry_sequence(
                     and len(im.computed["peaks"]) > target_index
                     else float("nan")
                 ),
+                peak_radius=lambda im: float(
+                    im.computed.get("peak_radius", float("nan"))
+                ),
             ),
         ],
     )
@@ -3450,6 +3412,7 @@ CSV_RENAME = {
     "dx": "Dx(pix)",
     "dy": "Dy(pix)",
     "fwhm": "FWHM(pix)",
+    "peak_radius": "PeakRadius(pix)",  # search radius behind Peak (issue #53)
 }
 
 

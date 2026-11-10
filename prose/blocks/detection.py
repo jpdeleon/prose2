@@ -1,4 +1,6 @@
 import logging
+import warnings
+from typing import Optional
 import numpy as np
 from astropy.stats import sigma_clipped_stats
 from photutils.detection import DAOStarFinder
@@ -364,27 +366,76 @@ class SegmentedPeaks(PointSourceDetection):
         self.minor_length = minor_length
 
 
-# TODO: document
-class Peaks(Block):
-    def __init__(self, shape=11, **kwargs):
-        """Computation of peak values for the detected stars (in ADUs).
+MIN_PEAK_RADIUS_PIX = 1.0  # smallest peak-search radius [pix]
+DEFAULT_PEAK_RADIUS_PIX = 5.0  # half-width of the former fixed 11x11 box [pix]
 
-        Parameters
-        ----------
-        shape : int, optional
-            size of the cutout image within which the peak is calculated, by default 11
-        """
+
+def peak_in_circle(data: np.ndarray, x: float, y: float, radius: float) -> float:
+    """Max finite pixel within ``radius`` of ``(x, y)``; NaN if none.
+
+    The value includes the sky (not background-subtracted).
+    """
+    ny, nx = data.shape
+    x0, x1 = max(0, int(np.floor(x - radius))), min(nx, int(np.ceil(x + radius)) + 1)
+    y0, y1 = max(0, int(np.floor(y - radius))), min(ny, int(np.ceil(y + radius)) + 1)
+    if x0 >= x1 or y0 >= y1:
+        return float("nan")
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    inside = np.hypot(xx - x, yy - y) <= radius
+    values = data[y0:y1, x0:x1][inside]
+    values = values[np.isfinite(values)]
+    return float(values.max()) if values.size else float("nan")
+
+
+class Peaks(Block):
+    """Peak pixel of each source within a circular aperture.
+
+    A circle (not a fixed box) lets the search follow the photometric
+    aperture, so the bright ring of a defocused star is included while
+    neighbours outside the aperture are not.
+
+    |write| ``Image.peaks`` (NaN for sources with no finite pixel) and
+    ``Image.peak_radius`` (the radius used, in pixels)
+
+    Parameters
+    ----------
+    radius : float, optional
+        Search radius; pixels, or FWHM units when ``scale`` is True. By
+        default 5 px, the half-width of the former fixed 11x11 box.
+    scale : bool, optional
+        Multiply ``radius`` by ``Image.fwhm``, as ``AperturePhotometry`` does.
+    shape : int, optional
+        Deprecated. Former square-box size; mapped to ``radius = shape // 2``.
+    """
+
+    def __init__(
+        self,
+        radius: float = DEFAULT_PEAK_RADIUS_PIX,
+        scale: bool = False,
+        shape: Optional[int] = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
-        self.shape = shape
+        if shape is not None:
+            warnings.warn(
+                "Peaks(shape=...) is deprecated; pass radius=... (pixels) instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            radius = shape // 2
+        self.radius = float(radius)
+        self.scale = scale
+
+    def _radius_pix(self, image) -> float:
+        r = self.radius * float(image.fwhm) if self.scale else self.radius
+        return max(MIN_PEAK_RADIUS_PIX, r)
 
     def run(self, image, **kwargs):
-        idxs = np.arange(len(image.sources))
-        peaks = np.ones(len(idxs)) * -1
-        for j in idxs:
-            cut = image.cutout(image.sources.coords[j], shape=self.shape)
-            if cut is not None:
-                peaks[j] = cut.data.max()
-        image.peaks = peaks
+        radius = self._radius_pix(image)
+        image.computed["peaks"] = np.array(
+            [peak_in_circle(image.data, x, y, radius) for x, y in image.sources.coords]
+        )
+        image.computed["peak_radius"] = radius
 
 
 class _SimplePointSourceDetection(_SourceDetection):
