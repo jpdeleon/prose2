@@ -781,24 +781,57 @@ def ref_header_desc(ref, label: str, details: list[str] | None = None) -> str:
     return f"{label} ({' '.join(parts)})"
 
 
+MIN_PEAK_RADIUS_PIX = 1.0  # smallest peak-search radius [pix]
+
+
+def _peak_in_circle(data: np.ndarray, x: float, y: float, radius: float) -> float:
+    """Max finite pixel within ``radius`` of ``(x, y)``; NaN if none.
+
+    The value includes the sky (not background-subtracted).
+    """
+    ny, nx = data.shape
+    x0, x1 = max(0, int(np.floor(x - radius))), min(nx, int(np.ceil(x + radius)) + 1)
+    y0, y1 = max(0, int(np.floor(y - radius))), min(ny, int(np.ceil(y + radius)) + 1)
+    if x0 >= x1 or y0 >= y1:
+        return float("nan")
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    inside = np.hypot(xx - x, yy - y) <= radius
+    values = data[y0:y1, x0:x1][inside]
+    values = values[np.isfinite(values)]
+    return float(values.max()) if values.size else float("nan")
+
+
 class MeasurePeaks(Block):
-    def __init__(self, name=None):
+    """Peak pixel of each source within a circular aperture.
+
+    The circle (not a fixed box) follows the photometric aperture, so the
+    bright ring of a defocused star is always included while neighbours
+    outside the aperture are not (issue #53).
+
+    Parameters
+    ----------
+    radius : float
+        Search radius; pixels, or FWHM units when ``scale`` is True. The
+        pipeline passes its largest photometric aperture radius.
+    scale : bool
+        Multiply ``radius`` by the image FWHM, matching ``AperturePhotometry``.
+    """
+
+    def __init__(self, radius: float, scale: bool = False, name=None):
         super().__init__(name=name)
+        self.radius = float(radius)
+        self.scale = scale
+
+    def _radius_pix(self, image) -> float:
+        r = self.radius * float(image.fwhm) if self.scale else self.radius
+        return max(MIN_PEAK_RADIUS_PIX, r)
 
     def run(self, image):
-        peaks = []
-        for x, y in image.sources.coords:
-            ix, iy = int(round(x)), int(round(y))
-            h = 5
-            cutout = image.data[
-                max(0, iy - h) : min(image.shape[0], iy + h + 1),
-                max(0, ix - h) : min(image.shape[1], ix + h + 1),
-            ]
-            if cutout.size > 0:
-                peaks.append(float(np.nanmax(cutout)))
-            else:
-                peaks.append(float("nan"))
-        image.computed["peaks"] = np.array(peaks)
+        radius = self._radius_pix(image)
+        image.computed["peaks"] = np.array(
+            [_peak_in_circle(image.data, x, y, radius) for x, y in image.sources.coords]
+        )
+        image.computed["peak_radius"] = radius
 
 
 class FilterPointSources(Block):
@@ -2493,7 +2526,7 @@ def photometry_sequence(
             _centroid_block(centroid_method),
             blocks.AperturePhotometry(aper_radii, scale=scale),
             blocks.AnnulusBackground(rin=rin, rout=rout, scale=scale),
-            MeasurePeaks(),
+            MeasurePeaks(radius=float(np.max(aper_radii)), scale=scale),
             blocks.Del("data", "cutouts"),
         ]
     )
