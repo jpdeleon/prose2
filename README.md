@@ -165,8 +165,14 @@ Everything is written to `--results_dir`:
 Raw aperture flux and pixel diagnostics keep the input FITS units: electrons
 for BANZAI-reduced Sinistro, QHY600, MuSCAT3 and MuSCAT4; ADU for MuSCAT
 and MuSCAT2. CSV background/peak columns are named `Bkg(e-)`/`Peak(e-)`
-or `Bkg(ADU)`/`Peak(ADU)` accordingly. Exported differential `Flux` and
-`Err` remain dimensionless.
+or `Bkg(ADU)`/`Peak(ADU)` accordingly. `Peak` is the brightest pixel within
+the largest photometric aperture radius around the source, so it captures the
+ring of a defocused star while excluding neighbours outside the aperture. It
+includes the sky; subtract `Bkg` for the peak above background.
+`PeakRadius(pix)` records that search radius per frame; products exported
+before this column existed used a fixed 11×11 box and under-report `Peak` for
+frames with a ring radius above ~7 px. Exported
+differential `Flux` and `Err` remain dimensionless.
 
 How to read `…_stacks.png` (one row per band):
 

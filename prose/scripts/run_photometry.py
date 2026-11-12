@@ -781,24 +781,16 @@ def ref_header_desc(ref, label: str, details: list[str] | None = None) -> str:
     return f"{label} ({' '.join(parts)})"
 
 
-class MeasurePeaks(Block):
-    def __init__(self, name=None):
-        super().__init__(name=name)
+class MeasurePeaks(blocks.Peaks):
+    """Pipeline peak block: :class:`prose.blocks.Peaks` with a required radius.
 
-    def run(self, image):
-        peaks = []
-        for x, y in image.sources.coords:
-            ix, iy = int(round(x)), int(round(y))
-            h = 5
-            cutout = image.data[
-                max(0, iy - h) : min(image.shape[0], iy + h + 1),
-                max(0, ix - h) : min(image.shape[1], ix + h + 1),
-            ]
-            if cutout.size > 0:
-                peaks.append(float(np.nanmax(cutout)))
-            else:
-                peaks.append(float("nan"))
-        image.computed["peaks"] = np.array(peaks)
+    The pipeline passes its largest photometric aperture radius (FWHM units
+    when ``scale`` is True), so the bright ring of a defocused star is always
+    included while neighbours outside the aperture are not (issue #53).
+    """
+
+    def __init__(self, radius: float, scale: bool = False, name=None):
+        super().__init__(radius=radius, scale=scale, name=name)
 
 
 class FilterPointSources(Block):
@@ -2493,7 +2485,7 @@ def photometry_sequence(
             _centroid_block(centroid_method),
             blocks.AperturePhotometry(aper_radii, scale=scale),
             blocks.AnnulusBackground(rin=rin, rout=rout, scale=scale),
-            MeasurePeaks(),
+            MeasurePeaks(radius=float(np.max(aper_radii)), scale=scale),
             blocks.Del("data", "cutouts"),
         ]
     )
@@ -2530,6 +2522,9 @@ def photometry_sequence(
                     if "peaks" in im.computed
                     and len(im.computed["peaks"]) > target_index
                     else float("nan")
+                ),
+                peak_radius=lambda im: float(
+                    im.computed.get("peak_radius", float("nan"))
                 ),
             ),
         ],
@@ -3417,6 +3412,7 @@ CSV_RENAME = {
     "dx": "Dx(pix)",
     "dy": "Dy(pix)",
     "fwhm": "FWHM(pix)",
+    "peak_radius": "PeakRadius(pix)",  # search radius behind Peak (issue #53)
 }
 
 
