@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.6.0](https://github.com/jpdeleon/prose2/compare/v3.5.3...v3.6.0) (2026-11-12)
+
+
+### Features
+
+* share circular peak search with blocks.Peaks and export PeakRadius(pix) ([b853466](https://github.com/jpdeleon/prose2/commit/b853466d1b9f675cbcb47c447cf64f6b1adf5ae4))
+
+
+### Bug Fixes
+
+* measure source peak within the photometric aperture, not a fixed box ([c0ba3bd](https://github.com/jpdeleon/prose2/commit/c0ba3bdd7ef815e8fab347c713df16c4bccff78c))
+* measure source peak within the photometric aperture, not a fixed box ([62acbad](https://github.com/jpdeleon/prose2/commit/62acbad00f20f34a7f9344e9caaf07ab3cfab50b)), closes [#53](https://github.com/jpdeleon/prose2/issues/53)
+
 ## [3.5.3](https://github.com/jpdeleon/prose2/compare/v3.5.2...v3.5.3) (2026-11-05)
 
 
