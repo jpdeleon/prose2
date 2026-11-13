@@ -13,7 +13,9 @@ from scipy import interpolate
 from prose import utils
 
 
-def impute_nans(fluxes: np.ndarray, method: str = "linear") -> np.ndarray:
+def impute_nans(
+    fluxes: np.ndarray, method: str = "linear", x: np.ndarray = None
+) -> np.ndarray:
     """Impute NaN values in flux matrix using specified method.
 
     The Broeg et al. 2005 algorithm requires no NaNs in the flux matrix.
@@ -28,6 +30,9 @@ def impute_nans(fluxes: np.ndarray, method: str = "linear") -> np.ndarray:
         Imputation method: "mean" (star-wise mean), "median" (star-wise median),
         "linear" (linear interpolation), "spline" (cubic spline),
         "forward_fill" (forward/backward fill). Default: "linear"
+    x : np.ndarray, optional
+        Sample positions (e.g. observation times) along the last axis, used by
+        "linear" and "spline". Defaults to the frame index.
 
     Returns
     -------
@@ -36,6 +41,10 @@ def impute_nans(fluxes: np.ndarray, method: str = "linear") -> np.ndarray:
 
     Notes
     -----
+    "linear" and "spline" interpolate between observed samples only. Before
+    the first or after the last observed sample the nearest observed value is
+    held; values are never extrapolated.
+
     Completely masked stars (all NaNs) should be removed from the dataset
     in preprocessing, not imputed. This function handles partial gaps only.
     """
@@ -43,12 +52,14 @@ def impute_nans(fluxes: np.ndarray, method: str = "linear") -> np.ndarray:
         raise ValueError(f"Unknown imputation method: {method}")
 
     result = fluxes.copy()
-    x = np.arange(result.shape[-1])
+    x = np.arange(result.shape[-1], dtype=float) if x is None else np.asarray(x, float)
+    if x.shape != (result.shape[-1],):
+        raise ValueError("x must have one value per sample along the last axis")
 
     # Handle multi-dimensional (aperture, star, flux)
     if result.ndim == 3:
         for a in range(result.shape[0]):
-            result[a, :, :] = impute_nans(result[a, :, :], method)
+            result[a, :, :] = impute_nans(result[a, :, :], method, x=x)
         return result
 
     # 2D (star, flux)
@@ -65,26 +76,8 @@ def impute_nans(fluxes: np.ndarray, method: str = "linear") -> np.ndarray:
             median_val = np.nanmedian(result[i, :])
             if np.isfinite(median_val):
                 result[i, mask] = median_val
-        elif method == "linear":
-            if np.sum(~mask) >= 2:
-                f = interpolate.interp1d(
-                    x[~mask], result[i, ~mask],
-                    kind="linear", bounds_error=False, fill_value="extrapolate"
-                )
-                result[i, mask] = f(x[mask])
-        elif method == "spline":
-            if np.sum(~mask) >= 4:
-                try:
-                    f = interpolate.CubicSpline(x[~mask], result[i, ~mask])
-                    result[i, mask] = f(x[mask])
-                except (ValueError, np.linalg.LinAlgError):
-                    # Fallback to linear if spline fails
-                    if np.sum(~mask) >= 2:
-                        f = interpolate.interp1d(
-                            x[~mask], result[i, ~mask],
-                            kind="linear", bounds_error=False, fill_value="extrapolate"
-                        )
-                        result[i, mask] = f(x[mask])
+        elif method in ("linear", "spline"):
+            result[i, mask] = _interpolate_gaps(x, result[i, :], mask, method)
         elif method == "forward_fill":
             idx = np.where(~mask, np.arange(len(mask)), 0)
             idx = np.maximum.accumulate(idx)
@@ -96,6 +89,27 @@ def impute_nans(fluxes: np.ndarray, method: str = "linear") -> np.ndarray:
             result[i, mask] = result[i, idx[mask]]
 
     return result
+
+
+def _interpolate_gaps(x, values, mask, method):
+    """Values at ``x[mask]`` from the observed samples, holding edge values.
+
+    Returns NaN for every gap when fewer than two samples are observed.
+    """
+    order = np.argsort(x[~mask], kind="stable")
+    xo, yo = x[~mask][order], values[~mask][order]
+    xq = x[mask]
+    if len(xo) < 2:
+        return np.full(len(xq), np.nan)
+    # np.interp holds the first/last observed value outside [xo[0], xo[-1]].
+    filled = np.interp(xq, xo, yo)
+    if method == "spline" and len(xo) >= 4:
+        inside = (xq > xo[0]) & (xq < xo[-1])
+        try:
+            filled[inside] = interpolate.CubicSpline(xo, yo)(xq[inside])
+        except ValueError:
+            pass  # duplicate sample positions: keep the linear values
+    return filled
 
 
 def weights(

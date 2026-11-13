@@ -1805,8 +1805,10 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
                     def fluxes(self):
                         class FakeFluxes:
                             def __init__(self):
-                                self._fluxes = np.ones((5, 2, 2))
+                                # (aperture, star, time), matching time
+                                self._fluxes = np.ones((2, 2, 5))
                                 self._time = np.arange(5)
+                                self.errors = None
 
                             def copy(self):
                                 return self
