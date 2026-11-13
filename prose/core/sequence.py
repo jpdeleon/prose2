@@ -1,6 +1,8 @@
 import pickle
 import sys
 from collections import OrderedDict
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from io import BytesIO
 from functools import partial
 from pathlib import Path
@@ -335,22 +337,39 @@ class SequenceParallel(Sequence):
         # made the parent process the bottleneck however many workers ran.
         payload = bytes(ForkingPickler.dumps((self.blocks, loader)))
 
-        with mp.Pool(
-            processes=self.processes, initializer=_init_worker, initargs=(payload,)
-        ) as pool:
-            for image in self.progress(
-                pool.imap(_run_all_in_worker, images_i, chunksize=self.chunksize),
-                total=n,
-            ):
-                if not image.discard:
-                    if self._has_data:
-                        self.data.run(image, terminate=False, show_progress=False)
-                else:
-                    self._add_discard(image.discard_block, image.i)
-                    frame_error = getattr(image, "frame_error", None)
-                    if frame_error is not None:
-                        self.errors.append(frame_error)
-                        warning(f"frame {image.i} discarded: {frame_error}")
+        # ProcessPoolExecutor rather than Pool.imap: if a worker process dies
+        # (OOM kill, segfault in native code) Pool replaces it but never
+        # returns the lost task, so the parent waits forever. The executor
+        # raises BrokenProcessPool instead. The multiprocess context keeps the
+        # dill-based pickling that blocks and images rely on.
+        n_returned = 0
+        try:
+            with ProcessPoolExecutor(
+                max_workers=self.processes,
+                mp_context=mp.get_context(),
+                initializer=_init_worker,
+                initargs=(payload,),
+            ) as pool:
+                for image in self.progress(
+                    pool.map(_run_all_in_worker, images_i, chunksize=self.chunksize),
+                    total=n,
+                ):
+                    n_returned += 1
+                    if not image.discard:
+                        if self._has_data:
+                            self.data.run(image, terminate=False, show_progress=False)
+                    else:
+                        self._add_discard(image.discard_block, image.i)
+                        frame_error = getattr(image, "frame_error", None)
+                        if frame_error is not None:
+                            self.errors.append(frame_error)
+                            warning(f"frame {image.i} discarded: {frame_error}")
+        except BrokenProcessPool as exc:
+            raise RuntimeError(
+                "a worker process died (e.g. killed for memory, or crashed in "
+                f"native code) after {n_returned} of {n} frames returned; "
+                "the sequence cannot complete"
+            ) from exc
 
         if n > 0 and len(self.errors) == n:
             # Every frame failing points at a systemic problem (bad input set,

@@ -553,6 +553,10 @@ Parallel workers initialize their immutable array store once. Each frame still u
 
 In a parallel sequence, a frame that raises while loading or in any block is discarded and the rest of the band continues. The stage and error are logged per frame with the file name (`frame 3 discarded: …/f003.fits: load raised OSError: …`) and kept in `SequenceParallel.errors`. If every frame fails, the sequence raises with the first error, because that points at the input set or a block rather than one bad frame.
 
+### Worker process failures
+
+Science frames run in a `concurrent.futures.ProcessPoolExecutor` (with the `multiprocess` context). If a worker process dies, e.g. killed for memory or crashed in native code, the sequence raises at once and the band fails. The old `multiprocessing.Pool` replaced the dead worker but never returned its task, so the run hung until it was killed from outside.
+
 ### Ensemble calculation cost
 
 Differential ensemble sums use a total-minus-self reduction instead of constructing a dense star-by-star exclusion matrix. Arithmetic scales linearly in the number of stars per time sample; output dimensions and the existing uncertainty behavior are preserved. The separate uncertainty correction addresses its scientific formula.
