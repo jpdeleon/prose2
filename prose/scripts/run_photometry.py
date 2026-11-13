@@ -165,6 +165,9 @@ CURVE_LABEL_HEADROOM_FRAC = 0.06  # y-range fraction reserved above top label
 
 # reference-image / detection defaults (mirror the template notebook)
 MAX_NUM_STARS = 20  # nth brightest stars to keep
+# Exit code when some, but not all, bands were reduced. 1 means nothing was
+# reduced (or bad input) and 2 is argparse's usage error.
+EXIT_PARTIAL_FAILURE = 3
 DETECT_NUM_STARS_FACTOR = 1.5  # detect more stars initially to capture faint targets
 CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
 
@@ -1645,23 +1648,47 @@ def format_ref_selection_report(band: str, diagnostics: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+class TargetNotFoundError(ValueError):
+    """The target could not be located among the reference frame's sources.
+
+    Raised instead of guessing (e.g. reducing the brightest source), so the
+    band fails visibly and the user supplies ``--tID``.
+    """
+
+
 def find_target_index(ref: FITSImage, target_coord: SkyCoord) -> int:
+    """Return the index of the detected source within 5 arcsec of the target.
+
+    Raises :class:`TargetNotFoundError` when no source matches, naming the
+    nearest detected source and its separation so the user can choose ``--tID``.
+    """
+    reason = "the reference frame has no usable WCS"
     try:
         wcs = ref.wcs
         if wcs is not None and hasattr(wcs, "pixel_to_world"):
             coords = np.array([s.coords for s in ref.sources])
-            if len(coords) > 0:
+            if len(coords) == 0:
+                reason = "no sources were detected on the reference frame"
+            else:
                 stars_radec = wcs.pixel_to_world(*coords.T)
-                if _skycoord_has_finite_data(stars_radec):
+                if not _skycoord_has_finite_data(stars_radec):
+                    reason = "the WCS projection of the detected sources is not finite"
+                else:
                     idx, d2d, _ = target_coord.match_to_catalog_sky(stars_radec)
-                    if float(np.atleast_1d(d2d.arcsec)[0]) < 5.0:
+                    sep = float(np.atleast_1d(d2d.arcsec)[0])
+                    if sep < 5.0:
                         return int(idx)
+                    reason = (
+                        f"the nearest detected source (idx {int(idx)}) is "
+                        f"{sep:.1f} arcsec from the target coordinate, beyond the "
+                        "5 arcsec match radius"
+                    )
     except Exception as e:
-        logger.warning(
-            f"WCS-based target cross-match failed ({e}); use --tID for manual override"
-        )
-    logger.warning("defaulting to source 0 (brightest); verify with --tID")
-    return 0
+        reason = f"the WCS-based target cross-match failed ({e})"
+    raise TargetNotFoundError(
+        f"target not located on the reference frame: {reason}. "
+        "Set the target's source index with --tID (Target ID in muscat-db)."
+    )
 
 
 def _contaminant_seps(
@@ -1919,8 +1946,8 @@ def _target_pixel_fallback_for_band(
 
     A band whose WCS is technically usable (invertible) but locally
     inaccurate for its particular reference frame can still miss the 5 arcsec
-    astrometric-match tolerance and would otherwise silently default to
-    source 0. ``build_reference`` only consults this fallback when that
+    astrometric-match tolerance and would otherwise fail the band with
+    :class:`TargetNotFoundError`. ``build_reference`` only consults this fallback when that
     band's own match actually fails, so it never overrides a good match.
     """
     if manual_target_index is not None:
@@ -2201,9 +2228,12 @@ def build_reference(
     band *has* a usable WCS but the astrometric cross-match against it still
     misses (separation > 5 arcsec for every detected source) -- e.g. a WCS
     solution that is present and invertible but locally inaccurate for this
-    particular frame. Rather than defaulting to source 0, the nearest
-    detected source to ``target_pixel_fallback`` (typically the median target
-    pixel already located by other bands) is used instead.
+    particular frame. Rather than failing the band, the nearest detected
+    source to ``target_pixel_fallback`` (typically the median target pixel
+    already located by other bands) is used instead.
+
+    When neither the astrometric match nor a fallback locates the target,
+    :class:`TargetNotFoundError` is raised; no source is guessed.
 
     When ``plot_gaia_sources`` is set and the reference WCS can project the
     target coordinate, the Gaia catalog around the target is fetched (or reused
@@ -2279,16 +2309,6 @@ def build_reference(
                     "and WCS-based localization failed; trying a pixel-position "
                     "fallback from other bands. Use --tID to override."
                 )
-            else:
-                logger.warning(
-                    "Target not found in detected sources (separation > 5 arcsec) "
-                    "and WCS-based localization failed. Falling back to source 0 "
-                    "(brightest detected star). Use --tID to override."
-                )
-
-    defaulted_to_brightest = False
-    if target_index_override is None and target_pixel_override is None:
-        defaulted_to_brightest = not match_found
 
     if target_index_override is not None:
         if target_index_override == len(ref.sources) and target_coord is not None:
@@ -2312,13 +2332,9 @@ def build_reference(
                 ref, target_pixel_fallback
             )
         except ValueError as exc:
-            logger.warning(
-                f"target pixel fallback also unusable ({exc}); "
-                "defaulting to source 0 (brightest); verify with --tID"
-            )
+            logger.warning(f"target pixel fallback also unusable ({exc})")
             target_index = find_target_index(ref, target_coord)
         else:
-            defaulted_to_brightest = False
             logger.info(
                 f"own WCS-based match missed the target; inferred target idx "
                 f"{target_index} instead from other bands' pixel position "
@@ -2428,7 +2444,6 @@ def build_reference(
         nearby_cids=nearby_cids,
         nearby_sep_arcsec=nearby_sep_arcsec,
         nearby_sep_pix=nearby_sep_pix,
-        defaulted_to_brightest=defaulted_to_brightest,
     )
 
 
@@ -3152,7 +3167,6 @@ def run_band(
         rout=reference["rout"],
         scale=reference["scale"],
         gaia_df=reference.get("gaia_df"),
-        defaulted_to_brightest=reference.get("defaulted_to_brightest", False),
         display_ref=display_ref,
         saturated_cids=saturated_cids,
     )
@@ -3737,9 +3751,8 @@ def plot_ref_image(
         ]
     if tpix is not None:
         ax.scatter(tpix[0], tpix[1], s=120, ec=colors["target"], fc="none", zorder=10)
-        label = "Target???" if r.get("defaulted_to_brightest", False) else "Target"
         ax.annotate(
-            label,
+            "Target",
             (tpix[0], tpix[1]),
             xytext=(8, 8),
             textcoords="offset points",
@@ -6609,7 +6622,7 @@ def main(argv=None) -> int:
             )
         # Offered even when this band's own WCS is nominally "usable": a
         # locally inaccurate solve can still miss the 5 arcsec match and
-        # would otherwise default to source 0 (see build_reference).
+        # would otherwise fail the band (see build_reference).
         target_pixel_fallback = _target_pixel_fallback_for_band(
             args.tID, self_reference, inferred_target_positions
         )
@@ -6648,6 +6661,10 @@ def main(argv=None) -> int:
                 chunksize=args.chunksize,
                 shared_reference=not self_reference,
             )
+        except TargetNotFoundError as exc:
+            logger.error(f"[{band}] reduction failed: {exc}")
+            failed_bands.append(band)
+            continue
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
             failed_bands.append(band)
@@ -6657,12 +6674,7 @@ def main(argv=None) -> int:
             failed_bands.append(band)
             continue
         band_results[band] = res
-        if (
-            args.tID is None
-            and self_reference
-            and ref_wcs_ok_by_band.get(band, False)
-            and not res.get("defaulted_to_brightest", False)
-        ):
+        if args.tID is None and self_reference and ref_wcs_ok_by_band.get(band, False):
             target_pos = np.asarray(
                 res["ref"].sources[int(res["target_index"])].coords, dtype=float
             )
@@ -7050,17 +7062,27 @@ def main(argv=None) -> int:
     except Exception as e:
         logger.warning(f"could not write reference selection report: {e}")
 
-    n_fail = len(failed_bands)
-    if n_fail:
+    return _final_status(band_results, failed_bands, len(ordered_bands), elapsed)
+
+
+def _final_status(
+    band_results: dict, failed_bands: list, n_bands: int, elapsed: float
+) -> int:
+    """Log the run's final status line and return the process exit code.
+
+    A run that lost any band exits with :data:`EXIT_PARTIAL_FAILURE` so that
+    wrappers and schedulers do not mistake it for a full success.
+    """
+    if failed_bands:
         logger.error(
-            f"photometry PARTIAL FAILURE: {len(band_results)}/{len(ordered_bands)} "
+            f"photometry PARTIAL FAILURE: {len(band_results)}/{n_bands} "
             f"bands reduced ({elapsed:.0f}s elapsed); failed/skipped={failed_bands}"
         )
-    else:
-        logger.info(
-            f"photometry SUCCEEDED: {len(band_results)}/{len(ordered_bands)} bands "
-            f"({elapsed:.0f}s elapsed)"
-        )
+        return EXIT_PARTIAL_FAILURE
+    logger.info(
+        f"photometry SUCCEEDED: {len(band_results)}/{n_bands} bands "
+        f"({elapsed:.0f}s elapsed)"
+    )
     return 0
 
 
