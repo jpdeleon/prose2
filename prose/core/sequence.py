@@ -327,6 +327,7 @@ class SequenceParallel(Sequence):
         self.check_data_blocks()
 
         self.n_processed_images = 0
+        self.errors = []
         n = len(self.images)
         images_i = list(enumerate(self.images))
         # Serialize the blocks once here rather than once per image: they can
@@ -346,6 +347,15 @@ class SequenceParallel(Sequence):
                         self.data.run(image, terminate=False, show_progress=False)
                 else:
                     self._add_discard(image.discard_block, image.i)
+                    frame_error = getattr(image, "frame_error", None)
+                    if frame_error is not None:
+                        self.errors.append(frame_error)
+                        warning(f"frame {image.i} discarded: {frame_error}")
+
+        if n > 0 and len(self.errors) == n:
+            # Every frame failing points at a systemic problem (bad input set,
+            # a bug in a block) rather than a bad frame: fail with its reason.
+            raise RuntimeError(f"all {n} frames failed; first error: {self.errors[0]}")
 
     def terminate(self):
         super().terminate()
@@ -390,10 +400,20 @@ def _run_all_in_worker(image_i):
 
 
 def _run_all(image_i, blocks=None, loader=None):
+    """Run ``blocks`` on one frame.
+
+    An exception while loading the frame or in any block discards that frame
+    (recording the stage and the error) instead of propagating, so one bad
+    frame cannot abort the whole sequence.
+    """
     i, image = image_i
+    label = str(image) if isinstance(image, (str, Path)) else f"image {i}"
 
     if isinstance(image, (str, Path)):
-        image = loader(image)
+        try:
+            image = loader(image)
+        except Exception as exc:
+            return _failed_frame(i, label, "load", exc)
 
     image.i = i
 
@@ -401,9 +421,21 @@ def _run_all(image_i, blocks=None, loader=None):
         # This allows to discard image in any Block
         if image.discard:
             return image
-        else:
+        try:
             block._run(image)
-            if image.discard:
-                image.discard_block = type(block).__name__
+        except Exception as exc:
+            return _failed_frame(i, label, type(block).__name__, exc)
+        if image.discard:
+            image.discard_block = type(block).__name__
 
+    return image
+
+
+def _failed_frame(i, label, stage, exc):
+    """A discarded placeholder for frame ``i`` that raised in ``stage``."""
+    image = Image(np.zeros((1, 1)))
+    image.i = i
+    image.discard = True
+    image.discard_block = stage
+    image.frame_error = f"{label}: {stage} raised {type(exc).__name__}: {exc}"
     return image

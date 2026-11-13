@@ -540,6 +540,10 @@ Use `--workers N --chunksize M` to tune science-frame multiprocessing. Defaults 
 
 Parallel workers initialize their immutable array store once. Each frame still unpickles block and loader state, including fresh closure state, but arrays a block lists in `worker_shared_arrays` are resolved from that store instead of being copied per frame. Those arrays become read-only within each worker. Twirl alignment retains a lightweight reference WCS instead of CCD pixels and opts its reference arrays into reuse. No memory is shared across independent runs.
 
+### Failing frames
+
+In a parallel sequence, a frame that raises while loading or in any block is discarded and the rest of the band continues. The stage and error are logged per frame with the file name (`frame 3 discarded: …/f003.fits: load raised OSError: …`) and kept in `SequenceParallel.errors`. If every frame fails, the sequence raises with the first error, because that points at the input set or a block rather than one bad frame.
+
 ### Ensemble calculation cost
 
 Differential ensemble sums use a total-minus-self reduction instead of constructing a dense star-by-star exclusion matrix. Arithmetic scales linearly in the number of stars per time sample; output dimensions and the existing uncertainty behavior are preserved. The separate uncertainty correction addresses its scientific formula.
