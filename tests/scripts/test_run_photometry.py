@@ -921,13 +921,16 @@ def test_build_reference_target_override_rejects_larger_missing_index(
 def test_build_reference_target_index_override_None_still_calls_find(
     tmp_path, monkeypatch
 ):
-    """When ``target_index_override`` is None the normal Gaia path runs."""
+    """When ``target_index_override`` is None the WCS cross-match picks the
+    detected source at the target coordinate."""
     _patch_ref_seq(monkeypatch)
     fpath = _write_minimal_fits(tmp_path)
 
-    from astropy.coordinates import SkyCoord
+    from astropy.io import fits
+    from astropy.wcs import WCS
 
-    coord = SkyCoord(0, 0, unit="deg")
+    # Source 1 of _FakeRefSeq sits at pixel (10, 10).
+    coord = WCS(fits.getheader(fpath)).pixel_to_world(10.0, 10.0)
     result = rp.build_reference(
         fpath,
         coord,
@@ -936,24 +939,20 @@ def test_build_reference_target_index_override_None_still_calls_find(
         rout=12.0,
         target_index_override=None,
     )
-    assert isinstance(result["target_index"], int)
-    assert result["target_index"] >= 0
+    assert result["target_index"] == 1
 
 
-def test_build_reference_falls_back_to_source0_when_target_unmatched(
-    tmp_path, monkeypatch, caplog
-):
+def test_build_reference_fails_when_target_unmatched(tmp_path, monkeypatch):
     """When the target can't be matched to a detected source (here it sits ~180
-    deg away / the TAN projection is degenerate), build_reference warns and falls
-    back to a real detected source instead of fabricating one at the center. The
-    kept source coordinates stay finite and the returned index is in range."""
+    deg away), build_reference must fail the band and ask for --tID instead of
+    silently reducing source 0 (#55 A2)."""
     _patch_ref_seq(monkeypatch)
     fpath = _write_minimal_fits(tmp_path)
 
     from astropy.coordinates import SkyCoord
 
-    with caplog.at_level("WARNING", logger="prose_run_photometry"):
-        result = rp.build_reference(
+    with pytest.raises(rp.TargetNotFoundError, match="--tID"):
+        rp.build_reference(
             fpath,
             SkyCoord(180, 0, unit="deg"),
             aper_radii=np.array([3.0, 4.0, 5.0]),
@@ -961,11 +960,6 @@ def test_build_reference_falls_back_to_source0_when_target_unmatched(
             rout=12.0,
             target_index_override=None,
         )
-
-    coords = np.array([s.coords for s in result["ref"].sources], dtype=float)
-    assert np.all(np.isfinite(coords))
-    assert 0 <= result["target_index"] < len(result["ref"].sources)
-    assert any("Falling back to source 0" in r.message for r in caplog.records)
 
 
 def test_plot_ref_image_handles_empty_simbad_and_omits_avoided_sources(
@@ -1052,10 +1046,8 @@ def test_plot_ref_image_labels_defaulted_target(tmp_path, monkeypatch):
     ref.sources = Sources(np.array([[10, 10], [5, 5]]))
     target_coord = __import__("astropy").coordinates.SkyCoord(0, 0, unit="deg")
     out1 = tmp_path / "ref1.png"
-    out2 = tmp_path / "ref2.png"
 
-    # Test case 1: defaulted_to_brightest=False -> should annotate "Target"
-    r1 = {"ref": ref, "band": "gp", "target_index": 0, "defaulted_to_brightest": False}
+    r1 = {"ref": ref, "band": "gp", "target_index": 0}
     # Mock ax.annotate to capture the label
     annotations = []
     import matplotlib.pyplot as plt
@@ -1070,12 +1062,7 @@ def test_plot_ref_image_labels_defaulted_target(tmp_path, monkeypatch):
 
     rp.plot_ref_image(r1, target_coord, "muscat4", out1)
     assert "Target" in annotations
-
-    # Test case 2: defaulted_to_brightest=True -> should annotate "Target???"
-    annotations.clear()
-    r2 = {"ref": ref, "band": "gp", "target_index": 0, "defaulted_to_brightest": True}
-    rp.plot_ref_image(r2, target_coord, "muscat4", out2)
-    assert "Target???" in annotations
+    assert "Target???" not in annotations
 
 
 def test_plot_ref_image_simbad_eclbin_color(tmp_path, monkeypatch):
@@ -1548,7 +1535,7 @@ def test_build_reference_warns_when_target_near_edge(tmp_path, monkeypatch, capl
     assert any("within 6 px of a CCD edge" in r.message for r in caplog.records)
 
 
-def test_find_target_index_falls_back_when_over_5_arcsec(monkeypatch):
+def test_find_target_index_raises_when_over_5_arcsec(monkeypatch):
     class FakeRef:
         def __init__(self):
             self.sources = [_FakeSrc([10.0, 10.0])]
@@ -1567,7 +1554,42 @@ def test_find_target_index_falls_back_when_over_5_arcsec(monkeypatch):
 
     ref = FakeRef()
     target_coord = SkyCoord(0.0, 0.0, unit="deg")
-    assert rp.find_target_index(ref, target_coord) == 0
+    with pytest.raises(rp.TargetNotFoundError) as excinfo:
+        rp.find_target_index(ref, target_coord)
+    message = str(excinfo.value)
+    assert "--tID" in message
+    # The nearest detected source and its separation are named so the user
+    # can pick the target ID without re-running.
+    assert "idx 0" in message and "arcsec" in message
+
+
+def test_find_target_index_raises_without_wcs():
+    class NoWcsRef:
+        sources = [_FakeSrc([10.0, 10.0])]
+        wcs = None
+
+    from astropy.coordinates import SkyCoord
+
+    with pytest.raises(rp.TargetNotFoundError, match="no usable WCS"):
+        rp.find_target_index(NoWcsRef(), SkyCoord(0.0, 0.0, unit="deg"))
+
+
+def test_find_target_index_returns_match_within_5_arcsec():
+    class Ref:
+        sources = [_FakeSrc([1.0, 1.0]), _FakeSrc([10.0, 10.0])]
+
+        @property
+        def wcs(self):
+            return self
+
+        def pixel_to_world(self, x, y):
+            from astropy.coordinates import SkyCoord
+
+            return SkyCoord([5.0, 0.0], [5.0, 0.0005], unit="deg")
+
+    from astropy.coordinates import SkyCoord
+
+    assert rp.find_target_index(Ref(), SkyCoord(0.0, 0.0, unit="deg")) == 1
 
 
 def test_order_bands_for_target_id_inference_delays_no_wcs_bands():
@@ -1683,7 +1705,6 @@ def test_build_reference_target_pixel_override_uses_nearest_source(
     )
 
     assert result["target_index"] == 1
-    assert result["defaulted_to_brightest"] is False
     assert not called
 
 
@@ -1737,22 +1758,19 @@ def test_build_reference_uses_pixel_fallback_when_own_wcs_match_fails(
     )
 
     assert result["target_index"] == 1
-    assert result["defaulted_to_brightest"] is False
     assert not called
 
 
-def test_build_reference_pixel_fallback_too_far_defaults_to_source0(
-    tmp_path, monkeypatch, caplog
-):
+def test_build_reference_pixel_fallback_too_far_fails(tmp_path, monkeypatch):
     """When even the borrowed pixel position is too far from any detected
-    source, fall back to source 0 exactly as with no fallback at all."""
+    source, the band fails and asks for --tID exactly as with no fallback."""
     _patch_ref_seq(monkeypatch)
     fpath = _write_minimal_fits(tmp_path)
 
     from astropy.coordinates import SkyCoord
 
-    with caplog.at_level("WARNING", logger="prose_run_photometry"):
-        result = rp.build_reference(
+    with pytest.raises(rp.TargetNotFoundError, match="--tID"):
+        rp.build_reference(
             fpath,
             SkyCoord(180, 0, unit="deg"),
             aper_radii=np.array([3.0, 4.0, 5.0]),
@@ -1760,12 +1778,6 @@ def test_build_reference_pixel_fallback_too_far_defaults_to_source0(
             rout=12.0,
             target_pixel_fallback=np.array([200.0, 200.0]),
         )
-
-    assert result["target_index"] == 0
-    assert result["defaulted_to_brightest"] is True
-    assert any(
-        "target pixel fallback also unusable" in r.message for r in caplog.records
-    )
 
 
 def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkeypatch):
@@ -1890,7 +1902,6 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
         "scale": False,
         "edge_cids": [],
         "gaia_df": None,
-        "defaulted_to_brightest": False,
     }
 
     monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
@@ -1970,7 +1981,6 @@ def test_run_band_remaps_cids_and_avoid_cids_from_reference_band(tmp_path, monke
         "scale": False,
         "edge_cids": [],
         "gaia_df": None,
-        "defaulted_to_brightest": False,
     }
 
     monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
@@ -2293,9 +2303,7 @@ def test_main_exclude_after_jd_drops_only_matching_frames(tmp_path, caplog):
     with caplog.at_level("INFO", logger="prose_run_photometry"):
         rp.main(argv)
 
-    assert any(
-        "excluded 1 of 2 frame" in r.message for r in caplog.records
-    )
+    assert any("excluded 1 of 2 frame" in r.message for r in caplog.records)
     # the filter itself did not abort the run (only 'drop.fits' was excluded,
     # 'keep.fits' survives) -- any eventual failure is downstream (MAST/etc.)
     assert not any(
@@ -2306,9 +2314,7 @@ def test_main_exclude_after_jd_drops_only_matching_frames(tmp_path, caplog):
 
 def test_main_exclude_before_jd_excludes_everything_aborts(tmp_path, caplog):
     _write_minimal_fits(tmp_path, "a.fits")
-    fits.setval(
-        tmp_path / "a.fits", "DATE-OBS", value="2025-04-16T00:00:00"
-    )
+    fits.setval(tmp_path / "a.fits", "DATE-OBS", value="2025-04-16T00:00:00")
 
     argv = [
         "--target_name",
@@ -2330,9 +2336,7 @@ def test_main_exclude_before_jd_excludes_everything_aborts(tmp_path, caplog):
     )
 
 
-def test_main_exclude_jd_paired_window_drops_only_frames_inside_it(
-    tmp_path, caplog
-):
+def test_main_exclude_jd_paired_window_drops_only_frames_inside_it(tmp_path, caplog):
     before_path = _write_sinistro_fits(tmp_path, "before.fits", "lsc")
     inside_path = _write_sinistro_fits(tmp_path, "inside.fits", "lsc")
     after_path = _write_sinistro_fits(tmp_path, "after.fits", "lsc")
@@ -2356,14 +2360,10 @@ def test_main_exclude_jd_paired_window_drops_only_frames_inside_it(
     with caplog.at_level("INFO", logger="prose_run_photometry"):
         rp.main(argv)
 
-    assert any(
-        "excluded 1 of 3 frame" in r.message for r in caplog.records
-    )
+    assert any("excluded 1 of 3 frame" in r.message for r in caplog.records)
 
 
-def test_main_exclude_jd_window_outside_data_span_warns_but_continues(
-    tmp_path, caplog
-):
+def test_main_exclude_jd_window_outside_data_span_warns_but_continues(tmp_path, caplog):
     fpath = _write_sinistro_fits(tmp_path, "a.fits", "lsc")
     fits.setval(fpath, "DATE-OBS", value="2025-04-16T00:00:00")
     # JD(a) = 2460781.5 -- nowhere near the window below
@@ -2382,9 +2382,7 @@ def test_main_exclude_jd_window_outside_data_span_warns_but_continues(
         rp.main(argv)
 
     # always logged, even when the count is zero
-    assert any(
-        "excluded 0 of 1 frame" in r.message for r in caplog.records
-    )
+    assert any("excluded 0 of 1 frame" in r.message for r in caplog.records)
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert any(
         "excluded 0 frames" in r.message and "do not overlap" in r.message
@@ -2431,8 +2429,7 @@ def test_main_exclude_before_jd_applies_before_test_run_truncation(tmp_path, cap
     # truncated 2-frame test-run sample
     assert any("excluded 3 of 6 frame" in r.message for r in caplog.records)
     assert any(
-        "test-run: limiting to 2 frames per band" in r.message
-        for r in caplog.records
+        "test-run: limiting to 2 frames per band" in r.message for r in caplog.records
     )
     assert not any(
         "after --exclude_after_jd/--exclude_before_jd; aborting" in r.message
@@ -3791,7 +3788,6 @@ def test_run_band_forwards_display_stack_nframes(tmp_path, monkeypatch):
         "scale": False,
         "edge_cids": [],
         "gaia_df": None,
-        "defaulted_to_brightest": False,
     }
     monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
 
@@ -3871,7 +3867,6 @@ def test_run_band_skips_display_reference_for_reference_band(tmp_path, monkeypat
         "scale": False,
         "edge_cids": [],
         "gaia_df": None,
-        "defaulted_to_brightest": False,
     }
     monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
 
@@ -4000,9 +3995,7 @@ def test_check_refid_exptime_consistency_warns_for_bands_without_exptime(
     assert "rp" in warnings[0] and "EXPTIME" in warnings[0]
 
 
-def test_check_refid_exptime_consistency_no_warning_when_all_present(
-    tmp_path, caplog
-):
+def test_check_refid_exptime_consistency_no_warning_when_all_present(tmp_path, caplog):
     refs = {
         "gp": _write_fits_with_exptime(tmp_path / "a.fits", 30.0),
         "rp": _write_fits_with_exptime(tmp_path / "b.fits", 30.0),
@@ -4239,7 +4232,10 @@ def test_enclosed_flux_profile_returns_none_for_flat_sky():
     "display, expected",
     [
         (None, "radial profile"),
-        (SimpleNamespace(computed={"n_stacked": 1}), "radial profile (1 aligned frame)"),
+        (
+            SimpleNamespace(computed={"n_stacked": 1}),
+            "radial profile (1 aligned frame)",
+        ),
         (
             SimpleNamespace(computed={"n_stacked": 7}),
             "radial profile (median of 7 aligned frames)",
@@ -4263,9 +4259,7 @@ def _gaia_at_offsets(offsets_pix, mags, w):
     """Gaia-like table placing sources at pixel offsets from the cutout centre."""
     xy = np.array([[30.0 + dx, 30.0 + dy] for dx, dy in offsets_pix])
     sky = w.pixel_to_world(xy[:, 0], xy[:, 1])
-    return pd.DataFrame(
-        {"ra": sky.ra.deg, "dec": sky.dec.deg, "phot_g_mean_mag": mags}
-    )
+    return pd.DataFrame({"ra": sky.ra.deg, "dec": sky.dec.deg, "phot_g_mean_mag": mags})
 
 
 def _stacks_result(header, saturation, pixel_scale=None, wcs=None, gaia_df=None):

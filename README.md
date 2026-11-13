@@ -344,6 +344,16 @@ python -m prose.scripts.run_photometry ... \
   warning and fall back to automatic selection rather than crashing.
 - **Avoided stars.** With `--ref_band`, IDs passed to `--avoid_cids` are
   excluded from comparison-star selection and omitted from each `…_ref.png`.
+- **Unlocated target.** If no detected source lies within 5 arcsec of the
+  target coordinate, a self-referenced band is retried once after the other
+  bands, using the target pixel position they found. If that also fails, or
+  no band located the target, the band fails with an error naming the nearest
+  source and its separation. The pipeline no longer reduces the brightest
+  source in its place. Pass `--tID` to choose the target.
+- **Exit status.** `0` when every band was reduced, `1` when none was (or the
+  input was invalid), and `3` when only some bands were reduced. The final
+  `photometry PARTIAL FAILURE` / `photometry FAILED` line names each failed
+  band with a short reason, e.g. `target not located, set --tID: gp, rp`.
 
 ### Time handling (GJD-UTC → BJD-TDB)
 
