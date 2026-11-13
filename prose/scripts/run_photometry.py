@@ -317,6 +317,9 @@ SIGMA_DY = None
 # flux-cleaning — None disables; otherwise a polynomial is fitted to the raw
 # target flux time series and residuals are sigma clipped (see Fluxes.sigma_clip_flux_poly)
 SIGMA_FLUX = None
+# A comparison candidate missing in more than this fraction of frames is
+# excluded instead of imputed (#55 A3).
+MAX_COMPARISON_MISSING_FRACTION = 0.10
 POLY_DEG = 2
 BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
@@ -3155,6 +3158,67 @@ def run_band(
     )
 
 
+def _too_sparse_comparisons(fluxes: Fluxes, target_index: int) -> np.ndarray:
+    """Stars (never the target) missing in more than
+    :data:`MAX_COMPARISON_MISSING_FRACTION` of frames, in any aperture."""
+    missing = ~np.isfinite(fluxes.fluxes)
+    fraction = missing.any(axis=0).mean(axis=-1)
+    too_sparse = fraction > MAX_COMPARISON_MISSING_FRACTION
+    too_sparse[target_index] = False
+    if too_sparse.any():
+        detail = ", ".join(
+            f"{i} ({fraction[i]:.0%})" for i in np.flatnonzero(too_sparse)
+        )
+        logger.warning(
+            f"excluding comparison candidate(s) missing in more than "
+            f"{MAX_COMPARISON_MISSING_FRACTION:.0%} of frames: {detail}"
+        )
+    return too_sparse
+
+
+def _impute_comparisons(fluxes: Fluxes, method: str, too_sparse: np.ndarray) -> Fluxes:
+    """Impute comparison-star gaps in fluxes and errors along the time axis,
+    logging how many frames were imputed per star.
+
+    Stars in ``too_sparse`` are left as they are; they are excluded later.
+    """
+    if method == "none":
+        return fluxes
+    from prose.fluxes import impute_nans
+
+    gaps = (~np.isfinite(fluxes.fluxes)).any(axis=0).sum(axis=-1)
+    counts = {int(i): int(gaps[i]) for i in np.flatnonzero((gaps > 0) & ~too_sparse)}
+    logger.info(
+        f"imputing NaNs using method='{method}' before comparison star "
+        f"selection; frames imputed per star: "
+        f"{', '.join(f'{i}: {n}' for i, n in counts.items()) or 'none'}"
+    )
+    out = fluxes.copy()
+    out.fluxes = impute_nans(fluxes.fluxes, method=method, x=fluxes.time)
+    if fluxes.errors is not None:
+        out.errors = impute_nans(fluxes.errors, method=method, x=fluxes.time)
+    return out
+
+
+def _validate_explicit_cids(
+    fluxes: Fluxes, cids: list[int], too_sparse: np.ndarray
+) -> list[int]:
+    """Drop explicit comparisons that are too sparse or still non-finite, so
+    they get the same checks as the automatic pool. An empty result makes the
+    caller fall back to automatic selection."""
+    finite = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2))
+    rejected = [c for c in cids if too_sparse[c] or not finite[c]]
+    if rejected:
+        kept = [c for c in cids if c not in rejected]
+        logger.warning(
+            f"rejecting explicit comparison ID(s) {rejected}: missing in more "
+            f"than {MAX_COMPARISON_MISSING_FRACTION:.0%} of frames or not finite "
+            f"after imputation; using {kept or 'auto-selection'}"
+        )
+        return kept
+    return cids
+
+
 def differential_photometry(
     fluxes: Fluxes,
     target_index: int,
@@ -3197,21 +3261,8 @@ def differential_photometry(
         )
         fluxes = fluxes.mask(valid_target)
 
-    # Impute NaNs before filtering, to recover partially-valid comparison stars
-    if nan_imputation_method != "none":
-        from prose.fluxes import impute_nans
-
-        logger.info(
-            f"imputing NaNs using method='{nan_imputation_method}' "
-            f"before comparison star selection"
-        )
-        imputed_fluxes = impute_nans(fluxes.fluxes, method=nan_imputation_method)
-        # Create new Fluxes instance with imputed data
-        from copy import deepcopy
-
-        fluxes_copy = deepcopy(fluxes)
-        fluxes_copy.fluxes = imputed_fluxes
-        fluxes = fluxes_copy
+    too_sparse = _too_sparse_comparisons(fluxes, target_index)
+    fluxes = _impute_comparisons(fluxes, nan_imputation_method, too_sparse)
 
     n_sources = fluxes.fluxes.shape[1]
     if cids is not None:
@@ -3222,7 +3273,7 @@ def differential_photometry(
                 f"ignoring comparison ID(s) {dropped} out of range "
                 f"(only {n_sources} sources detected); using {valid_cids or 'auto-selection'}"
             )
-        cids = valid_cids
+        cids = _validate_explicit_cids(fluxes, valid_cids, too_sparse)
     if cids:
         mask = np.zeros(n_sources, dtype=bool)
         mask[target_index] = True
@@ -3236,7 +3287,7 @@ def differential_photometry(
             f"after masking target + explicit comparisons"
         )
     else:
-        keep = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2))
+        keep = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2)) & ~too_sparse
         logger.info(
             f"comparison pool (auto): {int(np.sum(keep)) - 1 if keep[target_index] else int(np.sum(keep))} "
             f"candidates after NaN filtering"
