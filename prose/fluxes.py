@@ -361,6 +361,21 @@ def auto_diff(fluxes: np.array, i: int = None, errors=None):
             return auto_diff_1d(fluxes, i)
 
 
+# Scale factor turning a median absolute deviation into a Gaussian sigma.
+MAD_TO_SIGMA = 1.4826
+
+
+def _robust_center_scatter(values, axis=-1):
+    """NaN-ignoring median and MAD-based sigma along ``axis`` (kept as a dim)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN slices
+        center = np.nanmedian(values, axis=axis, keepdims=True)
+        scatter = MAD_TO_SIGMA * np.nanmedian(
+            np.abs(values - center), axis=axis, keepdims=True
+        )
+    return center, scatter
+
+
 def optimal_flux(diff_fluxes, method="stddiff", sigma=4):
     """
     Compute the optimal flux for a given array of differential fluxes.
@@ -382,17 +397,20 @@ def optimal_flux(diff_fluxes, method="stddiff", sigma=4):
     Raises
     ------
     ValueError
-        if method is not a valid method
+        if method is not a valid method, or if no aperture yields a finite
+        criterion (instead of silently returning index 0)
     """
-    fluxes = diff_fluxes.copy()
-    fluxes = fluxes[
-        ...,
-        np.all(
-            (fluxes - np.median(fluxes, 1)[..., None])
-            < sigma * np.std(fluxes, 1)[..., None],
-            0,
-        ),
-    ]
+    fluxes = np.asarray(diff_fluxes, dtype=float)
+    # Frames are kept when every aperture with data is finite and within
+    # sigma robust standard deviations of its median, on either side.
+    # Apertures with no finite value at all are left out of the frame cut
+    # (their criterion is NaN and they cannot be selected).
+    has_data = np.any(np.isfinite(fluxes), axis=-1)
+    center, scatter = _robust_center_scatter(fluxes)
+    with np.errstate(invalid="ignore"):
+        within = np.abs(fluxes - center) <= sigma * scatter
+    keep = np.all(within[has_data], axis=0)
+    fluxes = fluxes[..., keep]
     if method == "binned":
         white_noise = utils.binned_nanstd(fluxes)
         criterion = white_noise(fluxes)
@@ -403,8 +421,13 @@ def optimal_flux(diff_fluxes, method="stddiff", sigma=4):
     else:
         raise ValueError("{} is not a valid method".format(method))
 
-    i = np.argmin(criterion)
-    return i
+    criterion = np.asarray(criterion, dtype=float)
+    if fluxes.shape[-1] == 0 or not np.any(np.isfinite(criterion)):
+        raise ValueError(
+            "no finite aperture-selection criterion: no frame has finite, "
+            "non-outlier fluxes in every aperture"
+        )
+    return int(np.nanargmin(criterion))
 
 
 def flux_sigma_clip_mask(
@@ -859,14 +882,32 @@ class Fluxes:
         -------
         Fluxes
             sigma clipped Fluxes
+
+        Each criterion clips around its median using a MAD-based sigma, so a
+        few large outliers cannot inflate their own threshold. A NaN value is
+        not clipped by that criterion. A column that is constant or has no
+        finite value is skipped with a warning instead of removing every frame.
         """
         mask = np.ones_like(self.time).astype(bool)
+        skipped = set()
         for _ in range(iterations):
             for name, sigma in kwargs.items():
-                value = self.data[name].copy()
+                value = np.asarray(self.data[name], dtype=float).copy()
                 value[~mask] = np.nan
-                m = np.abs(value - np.nanmean(value)) < np.nanstd(value) * sigma
-                mask = mask & m
+                center, scatter = _robust_center_scatter(value)
+                if not (np.isfinite(scatter).all() and np.all(scatter > 0)):
+                    skipped.add(name)
+                    continue
+                with np.errstate(invalid="ignore"):
+                    outlier = np.abs(value - center) > sigma * scatter
+                mask &= ~outlier
+        if skipped:
+            warnings.warn(
+                f"sigma clipping skipped {sorted(skipped)}: constant or no "
+                "finite values",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return self.mask(mask)
 
     def sigma_clip_flux(self, iterations: int = 5, sigma: float = 4.0):
@@ -968,11 +1009,12 @@ class Fluxes:
             if copy.errors is not None:
                 copy.errors = self.errors[..., mask, :]
             if copy.weights is not None:
-                copy.weights = self.weights[..., mask, :]
+                # weights are (star) or (aperture, star): stars are last
+                copy.weights = self.weights[..., mask]
         else:
             copy.fluxes[:, ~mask] = -1
             if copy.errors is not None:
                 copy.errors[:, ~mask] = -1
             if copy.weights is not None:
-                copy.errors[:, ~mask] = 0
+                copy.weights[..., ~mask] = 0
         return copy
