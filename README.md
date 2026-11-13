@@ -272,7 +272,16 @@ frame.
 The `--sig_*` flags sigma-clip the differential light curve on the sky
 background (`--sig_bkg`), FWHM (`--sig_fwhm`), and drift in X/Y (`--sig_dx`,
 `--sig_dy`). All four are **disabled by default**; pass a sigma threshold to
-clip outliers (e.g. cloud-affected frames) on that axis.
+clip outliers (e.g. cloud-affected frames) on that axis. Each clips around the
+median using a MAD-based sigma. A frame whose value is NaN is not clipped by
+that criterion, and a criterion that is constant or entirely NaN (e.g. `dx`
+when fewer than three stars are aligned) is skipped with a warning instead of
+removing every frame.
+
+The best aperture is the one with the smallest point-to-point scatter, after
+removing frames where any aperture is NaN or lies more than 4 MAD-based sigma
+from its median, on either side. If no aperture leaves a finite score, the
+selection raises instead of returning the first aperture.
 
 `--sig_flux` clips outliers on the **raw target flux time series**: a
 polynomial of degree `--flux_poly_deg` (default 2) is fitted to flux versus
