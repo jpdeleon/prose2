@@ -168,6 +168,9 @@ MAX_NUM_STARS = 20  # nth brightest stars to keep
 # Exit code when some, but not all, bands were reduced. 1 means nothing was
 # reduced (or bad input) and 2 is argparse's usage error.
 EXIT_PARTIAL_FAILURE = 3
+# Short per-band failure reasons for the final status line, which muscat-db
+# shows as the job's error (clipped at 200 characters).
+TARGET_NOT_LOCATED_REASON = "target not located, set --tID"
 DETECT_NUM_STARS_FACTOR = 1.5  # detect more stars initially to capture faint targets
 CUTOUT_SIZE = 35  # cutout size of detected stars [pix]
 
@@ -6447,7 +6450,7 @@ def main(argv=None) -> int:
             ordered_bands.insert(0, ref_band)
 
     band_results = {}
-    failed_bands = []
+    failures: dict[str, str] = {}  # band -> short reason
     ref_source_positions: np.ndarray | None = None
     inferred_target_positions: list[np.ndarray] = []
     inferred_target_bands: list[str] = []
@@ -6599,7 +6602,16 @@ def main(argv=None) -> int:
                 f"({', '.join(b for b in ordered_bands if ref_wcs_ok_by_band.get(b, False))})"
             )
 
-    for band in ordered_bands:
+    # A self-referenced band whose target is not located is retried once,
+    # after the other bands, with the target pixel those bands found.
+    pending = list(ordered_bands)
+    deferred: dict[str, TargetNotFoundError] = {}
+    while pending:
+        band = pending.pop(0)
+        if band in deferred and not inferred_target_positions:
+            logger.error(f"[{band}] reduction failed: {deferred[band]}")
+            failures[band] = TARGET_NOT_LOCATED_REASON
+            continue
         band_files = sciences[band]
         selection_diag = ref_selection_diagnostics.get(band, {})
         reference_source_indices = selection_diag.get("persistent_source_indices")
@@ -6662,16 +6674,24 @@ def main(argv=None) -> int:
                 shared_reference=not self_reference,
             )
         except TargetNotFoundError as exc:
+            if self_reference and args.tID is None and band not in deferred:
+                deferred[band] = exc
+                pending.append(band)
+                logger.warning(
+                    f"[{band}] {exc} Retrying after the other bands, using "
+                    "their target pixel position."
+                )
+                continue
             logger.error(f"[{band}] reduction failed: {exc}")
-            failed_bands.append(band)
+            failures[band] = TARGET_NOT_LOCATED_REASON
             continue
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
-            failed_bands.append(band)
+            failures[band] = f"{type(exc).__name__}"
             continue
         if res is None:
             logger.error(f"[{band}] reduction produced no output; marking band failed")
-            failed_bands.append(band)
+            failures[band] = "no output"
             continue
         band_results[band] = res
         if args.tID is None and self_reference and ref_wcs_ok_by_band.get(band, False):
@@ -6708,11 +6728,13 @@ def main(argv=None) -> int:
         if not self_reference and band == ref_band:
             ref_source_positions = np.array([s.coords for s in res["ref"].sources])
 
+    # Retried bands finish last; restore the requested band order for outputs.
+    band_results = {b: band_results[b] for b in ordered_bands if b in band_results}
     elapsed = time_module.time() - t0
     if not band_results:
         logger.error(
             f"photometry FAILED: 0/{len(ordered_bands)} bands reduced "
-            f"({elapsed:.0f}s elapsed)"
+            f"({elapsed:.0f}s elapsed); {_format_failures(failures)}"
         )
         return 1
 
@@ -7062,21 +7084,31 @@ def main(argv=None) -> int:
     except Exception as e:
         logger.warning(f"could not write reference selection report: {e}")
 
-    return _final_status(band_results, failed_bands, len(ordered_bands), elapsed)
+    return _final_status(band_results, failures, len(ordered_bands), elapsed)
+
+
+def _format_failures(failures: dict[str, str]) -> str:
+    """``reason: band, band; reason: band`` for the final status line."""
+    by_reason: dict[str, list[str]] = {}
+    for band, reason in failures.items():
+        by_reason.setdefault(reason, []).append(band)
+    return "; ".join(
+        f"{reason}: {', '.join(bands)}" for reason, bands in by_reason.items()
+    )
 
 
 def _final_status(
-    band_results: dict, failed_bands: list, n_bands: int, elapsed: float
+    band_results: dict, failures: dict[str, str], n_bands: int, elapsed: float
 ) -> int:
     """Log the run's final status line and return the process exit code.
 
     A run that lost any band exits with :data:`EXIT_PARTIAL_FAILURE` so that
     wrappers and schedulers do not mistake it for a full success.
     """
-    if failed_bands:
+    if failures:
         logger.error(
             f"photometry PARTIAL FAILURE: {len(band_results)}/{n_bands} "
-            f"bands reduced ({elapsed:.0f}s elapsed); failed/skipped={failed_bands}"
+            f"bands reduced ({elapsed:.0f}s elapsed); {_format_failures(failures)}"
         )
         return EXIT_PARTIAL_FAILURE
     logger.info(
