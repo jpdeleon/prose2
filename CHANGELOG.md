@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.6.1](https://github.com/jpdeleon/prose2/compare/v3.6.0...v3.6.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* cap comparison-star imputation, never extrapolate, validate explicit cIDs ([b075b22](https://github.com/jpdeleon/prose2/commit/b075b226ca048ab455c54089654b53108200cb33))
+* cap comparison-star imputation, never extrapolate, validate explicit cIDs ([17a9308](https://github.com/jpdeleon/prose2/commit/17a93089896696c9f82082deaaeb6ed0a6d721d1)), closes [#55](https://github.com/jpdeleon/prose2/issues/55)
+* discard a frame that raises instead of aborting the parallel sequence ([757c5cc](https://github.com/jpdeleon/prose2/commit/757c5cc29d0c0384dbd3d9b545c7d692b2c38983))
+* discard a frame that raises instead of aborting the parallel sequence ([aca1402](https://github.com/jpdeleon/prose2/commit/aca1402a6a9a06589e514c8cc49270526ff651f7)), closes [#55](https://github.com/jpdeleon/prose2/issues/55)
+* NaN-safe, symmetric, MAD-based clipping in aperture selection and data clipping ([9ac7427](https://github.com/jpdeleon/prose2/commit/9ac7427cd93930d855ffa06046df912a6d220765))
+* NaN-safe, symmetric, MAD-based clipping in aperture selection and data clipping ([0648af1](https://github.com/jpdeleon/prose2/commit/0648af1e32ab45bd341975a653e839729ff474a2)), closes [#55](https://github.com/jpdeleon/prose2/issues/55)
+* raise when a parallel worker dies instead of hanging forever ([19b3c9d](https://github.com/jpdeleon/prose2/commit/19b3c9d16da0a958241c190f6119d72195992b41))
+* raise when a parallel worker dies instead of hanging forever ([188aa34](https://github.com/jpdeleon/prose2/commit/188aa3433ed446970df7a773cc31884040bffe0a)), closes [#55](https://github.com/jpdeleon/prose2/issues/55)
+
 ## [3.6.0](https://github.com/jpdeleon/prose2/compare/v3.5.3...v3.6.0) (2026-11-12)
 
 
