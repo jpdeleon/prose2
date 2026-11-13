@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.2](https://github.com/jpdeleon/prose2/compare/v3.6.1...v3.6.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* fail the band when the target is not located; exit 3 on partial failure ([9522b3f](https://github.com/jpdeleon/prose2/commit/9522b3f05592340d8a21c3be95439f18f3155640))
+
 ## [3.6.1](https://github.com/jpdeleon/prose2/compare/v3.6.0...v3.6.1) (2026-11-13)
 
 
