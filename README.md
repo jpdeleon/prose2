@@ -350,6 +350,20 @@ python -m prose.scripts.run_photometry ... \
   no band located the target, the band fails with an error naming the nearest
   source and its separation. The pipeline no longer reduces the brightest
   source in its place. Pass `--tID` to choose the target.
+- **Proper motion.** Name resolvers (MAST, SIMBAD) return J2000 positions, so a
+  star moving faster than ~0.2 arcsec/yr is more than 5 arcsec from that
+  position by now. Before any matching, the target is identified as the Gaia
+  DR2 source whose proper-motion track passes within 2 arcsec of the input
+  coordinate (J2000, Gaia J2015.5, or the observing night all match), and its
+  position on the night of the first frame is used everywhere: source
+  matching, Gaia aperture sizing, nearby-star screening, plots and BJD. The log
+  names the Gaia source, its proper motion, and how far it moved. If Gaia is
+  unreachable, the frame has no date, or no source matches, the input
+  coordinate is used unchanged with a warning. Where a step needs the target's
+  Gaia row (annulus contamination, the nearby-stars table, the cutout
+  overlay), it accepts only a row within 2 arcsec of the target, never just
+  the nearest one; with no such row, aperture sizing falls back to FWHM-only
+  geometry and the nearby-stars table is left empty, each with a warning.
 - **Exit status.** `0` when every band was reduced, `1` when none was (or the
   input was invalid), and `3` when only some bands were reduced. The final
   `photometry PARTIAL FAILURE` / `photometry FAILED` line names each failed

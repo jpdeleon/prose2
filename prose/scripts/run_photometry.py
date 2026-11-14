@@ -96,6 +96,14 @@ from prose.scripts import calibrate_muscat, calibrate_muscat2
 from prose.scripts.plot_labels import LabelPoint, place_labels
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
 from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
+from prose.target_epoch import (
+    GAIA_DR2_EPOCH,
+    TARGET_GAIA_MATCH_ARCSEC,
+    gaia_target_row,
+    normalize_gaia_columns,
+    propagate_linear,
+    select_gaia_target,
+)
 from prose.utils import (
     LCO_SITES,
     PIXSCALES,
@@ -103,6 +111,7 @@ from prose.utils import (
     coord_cache_path,
     easy_median,
     frames_from_obslog,
+    gaia_query,
     get_frame_saturation,
     get_simbad_data,
     header_jd,
@@ -1836,11 +1845,19 @@ def gaia_aperture_radii(
     if df is not None and len(df):
         try:
             gaia_coords = SkyCoord(df.ra.values, df.dec.values, unit="deg")
+            target_row = gaia_target_row(target_coord, gaia_coords)
+            if target_row is None:
+                # Without the target's own magnitude, which neighbours
+                # contaminate is unknown; never borrow a neighbour's (#55 A1).
+                raise ValueError(
+                    f"no Gaia source within {TARGET_GAIA_MATCH_ARCSEC:g} arcsec "
+                    "of the target"
+                )
             sep_pix = target_coord.separation(gaia_coords).arcsec / pixscale
-            mags = df.phot_g_mean_mag.values
-            order = np.argsort(sep_pix)  # nearest first; row 0 = the target itself
-            target_mag = float(mags[order][0])
-            contam = _contaminant_seps(sep_pix[order][1:], mags[order][1:], target_mag)
+            mags = np.asarray(df.phot_g_mean_mag.values, dtype=float)
+            target_mag = float(mags[target_row])
+            others = np.arange(len(df)) != target_row
+            contam = _contaminant_seps(sep_pix[others], mags[others], target_mag)
         except Exception as exc:  # noqa: BLE001 - bad catalog must not be fatal
             logger.warning(
                 f"contamination computation failed ({exc}); using FWHM-only geometry"
@@ -3578,16 +3595,17 @@ def _project_gaia_to_cutout(cutout, gaia_df, target_coord=None):
     if "phot_g_mean_mag" in gaia_df:
         mags = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[inside]
 
-    # Identify the target among the visible Gaia sources (nearest to target_coord).
+    # Identify the target among the visible Gaia sources: the one within
+    # TARGET_GAIA_MATCH_ARCSEC of target_coord, never merely the nearest.
     target_mask = np.zeros(len(x), dtype=bool)
     target_mag = np.nan
     if target_coord is not None:
         try:
-            seps = target_coord.separation(coords[inside])
-            nearest = int(np.argmin(seps))
-            target_mask[nearest] = True
-            if mags is not None:
-                target_mag = mags[nearest]
+            row = gaia_target_row(target_coord, coords[inside])
+            if row is not None:
+                target_mask[row] = True
+                if mags is not None:
+                    target_mag = mags[row]
         except Exception:  # noqa: BLE001
             pass
 
@@ -5175,6 +5193,88 @@ def _resolve_simbad_target(name: str) -> SkyCoord:
     return SkyCoord(result["ra"][0], result["dec"][0], unit=u.deg, frame="icrs")
 
 
+# Gaia search radius around the input coordinate when identifying the target.
+# Covers proper motions up to ~2 arcsec/yr between J2000 and the 2020s.
+TARGET_GAIA_SEARCH_ARCSEC = 60.0
+TARGET_GAIA_QUERY_LIMIT = 2000
+
+
+def _observation_time(source) -> Time | None:
+    """Observation date of an ``Image`` or FITS path as a ``Time``, or ``None``."""
+    try:
+        image = source if isinstance(source, Image) else FITSImage(source)
+        date = image.date
+        return Time(date) if date is not None else None
+    except Exception as exc:  # noqa: BLE001 - caller degrades to no propagation
+        logger.warning(f"observation date unreadable for {source!r:.80} ({exc})")
+        return None
+
+
+def _gaia_df_at_epoch(df: pd.DataFrame, obs_time: Time | None) -> pd.DataFrame:
+    """Copy of a raw ``gaia_query`` frame with ``ra``/``dec`` moved to ``obs_time``."""
+    if obs_time is None:
+        logger.warning("observation date unknown; Gaia positions left at J2015.5")
+        return df
+    canon = normalize_gaia_columns(df)
+    coords = SkyCoord(canon.ra.to_numpy(), canon.dec.to_numpy(), unit="deg")
+    moved = propagate_linear(coords, canon.pmra, canon.pmdec, GAIA_DR2_EPOCH, obs_time)
+    return df.assign(ra=moved.ra.deg, dec=moved.dec.deg)
+
+
+def resolve_target_at_epoch(target_coord: SkyCoord, obs_time: Time | None) -> SkyCoord:
+    """Target position on the observing night (#55 A1).
+
+    Identifies the target as the Gaia DR2 source whose proper-motion track
+    passes within ``TARGET_GAIA_MATCH_ARCSEC`` of ``target_coord`` and returns
+    its position at ``obs_time``. Every later match (detected sources, Gaia
+    aperture sizing, nearby-star screening) compares against frames and Gaia
+    rows at the observation epoch, so they need this position, not the J2000
+    one a name resolver returns.
+
+    Falls back to ``target_coord`` unchanged, with a warning, when the date is
+    unknown, Gaia is unreachable, or no Gaia source matches; a fast-moving
+    target then fails to match on the frame and the band fails visibly
+    (``TargetNotFoundError``) rather than reducing another star.
+    """
+    if obs_time is None:
+        logger.warning(
+            "observation date unknown; target coordinate not propagated for "
+            "proper motion"
+        )
+        return target_coord
+    try:
+        table = gaia_query(
+            target_coord,
+            2 * TARGET_GAIA_SEARCH_ARCSEC / 3600.0,
+            "*",
+            limit=TARGET_GAIA_QUERY_LIMIT,
+        )
+        gaia = normalize_gaia_columns(table.to_pandas())
+    except Exception as exc:  # noqa: BLE001 - network/catalog errors degrade
+        logger.warning(
+            f"Gaia query for target identification failed ({exc}); using the "
+            "input coordinate without proper-motion propagation"
+        )
+        return target_coord
+    match = select_gaia_target(target_coord, gaia, obs_time)
+    if match is None:
+        logger.warning(
+            f"no Gaia DR2 source passes within {TARGET_GAIA_MATCH_ARCSEC:g} arcsec "
+            f"of the target coordinate ({len(gaia)} searched within "
+            f"{TARGET_GAIA_SEARCH_ARCSEC:g} arcsec); using it without "
+            "proper-motion propagation"
+        )
+        return target_coord
+    coord = match.at(obs_time)
+    shift = float(target_coord.separation(coord).arcsec)
+    logger.info(
+        f"target = Gaia DR2 {match.source_id} (G={match.g_mag:.2f}, "
+        f"pm={match.pm_total_masyr:.1f} mas/yr); position on "
+        f"{obs_time.datetime.date()} is {shift:.2f} arcsec from the input coordinate"
+    )
+    return coord
+
+
 def _calibration_args(
     args: argparse.Namespace, calib_dir: Path, bands: list[str] | None
 ) -> list[str]:
@@ -6411,6 +6511,9 @@ def main(argv=None) -> int:
                     )
                     raise e
         logger.info(f"target radec: {target_coord}")
+    target_coord = resolve_target_at_epoch(
+        target_coord, _observation_time(sciences[active_bands[0]][0])
+    )
 
     # reference seeding: without --ref_band each band self-references its first
     # frame (within-camera alignment, correct for multi-camera instruments);
@@ -6907,8 +7010,6 @@ def main(argv=None) -> int:
                     break
             if ref is not None and target_coord is not None:
                 try:
-                    from prose.utils import gaia_query
-
                     fallback_radius_deg = (
                         180.0 / 3600.0
                     )  # 180 arcseconds = 3 arcminutes
@@ -6917,7 +7018,11 @@ def main(argv=None) -> int:
                     )
                     if table is not None and len(table) > 0:
                         table.rename_column("DESIGNATION", "id")
-                        gaia_df = table.to_pandas()
+                        # gaia_query returns J2015.5 positions; the target
+                        # coordinate is at the observation epoch (#55 A1).
+                        gaia_df = _gaia_df_at_epoch(
+                            table.to_pandas(), _observation_time(ref)
+                        )
                         logger.info(
                             f"Fallback small-region Gaia query succeeded: {len(gaia_df)} rows"
                         )
@@ -6929,7 +7034,12 @@ def main(argv=None) -> int:
                 gaia_coords = SkyCoord(
                     gaia_df.ra.values, gaia_df.dec.values, unit="deg"
                 )
-                target_idx_in_gaia = target_coord.separation(gaia_coords).argmin()
+                target_idx_in_gaia = gaia_target_row(target_coord, gaia_coords)
+                if target_idx_in_gaia is None:
+                    raise ValueError(
+                        f"no Gaia source within {TARGET_GAIA_MATCH_ARCSEC:g} arcsec "
+                        "of the target, so its magnitude is unknown"
+                    )
                 target_g_mag = float(gaia_df.phot_g_mean_mag.values[target_idx_in_gaia])
 
                 # Project detected sources to RA/Dec
