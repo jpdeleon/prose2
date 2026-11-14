@@ -487,6 +487,66 @@ def resolve_saturation(header, instrument: str, telescope) -> tuple[float | None
     return None, "unknown"
 
 
+PIXSCALE_GUESS_ARCSEC = 0.267  # MuSCAT3/4 value; used only when nothing is known
+
+
+def resolve_pixel_scale(header, pix_key: str) -> tuple[float, str]:
+    """Pixel scale [arcsec/px] and where it came from.
+
+    Header ``PIXSCALE``, then the instrument table, then
+    ``PIXSCALE_GUESS_ARCSEC`` (reported as a guess so the caller can warn).
+    """
+    try:
+        value = float(header.get("PIXSCALE"))
+        if np.isfinite(value) and value > 0:
+            return value, "header PIXSCALE"
+    except (TypeError, ValueError):
+        pass
+    if pix_key in PIXSCALES:
+        return float(PIXSCALES[pix_key]), f"instrument table ({pix_key})"
+    return PIXSCALE_GUESS_ARCSEC, "guess (MuSCAT3/4 value)"
+
+
+def _noise_param_source(header, keyword: str | None, value, telescope) -> str:
+    """Where a gain/read-noise value used for ``Err`` came from."""
+    if keyword:
+        try:
+            if float(header.get(keyword)) == float(value):
+                return f"header {keyword}"
+        except (TypeError, ValueError):
+            pass
+    if not getattr(telescope, "_default", True):
+        return f"{getattr(telescope, 'name', '?')} telescope file"
+    return "generic default, not measured"
+
+
+def _log_noise_model(image, label: str) -> None:
+    """Log the gain and read noise behind the ``Err`` column (#55 A11).
+
+    Warns when either is a generic default rather than a header or telescope
+    file value, since ``Err`` then scales with an unmeasured number.
+    """
+    telescope = image.telescope
+    gain_source = _noise_param_source(
+        image.header, getattr(telescope, "keyword_gain", None), image.gain, telescope
+    )
+    read_noise_source = _noise_param_source(
+        image.header,
+        getattr(telescope, "keyword_read_noise", None),
+        image.read_noise,
+        telescope,
+    )
+    message = (
+        f"{label}: Err noise model gain={float(image.gain):g} "
+        f"e-/{pixel_unit(image.header)} ({gain_source}), "
+        f"read_noise={float(image.read_noise):g} e- ({read_noise_source})"
+    )
+    if "not measured" in gain_source + read_noise_source:
+        logger.warning(message)
+    else:
+        logger.info(message)
+
+
 def get_instrument(header) -> str:
     """Derive a short instrument label from a FITS header."""
     instrume = str(header.get("INSTRUME", "")).lower()
@@ -719,6 +779,25 @@ def parse_avoid_nearby_star(s: str) -> float | str:
     if value <= 0:
         raise argparse.ArgumentTypeError(
             f"--avoid_nearby_star must be > 0 arcsec, got {value}"
+        )
+    return value
+
+
+def parse_source_index(s: str) -> int:
+    """Parse a zero-based source index (``--tID``, ``--cID``, ``--avoid_cids``).
+
+    Rejects negative values: Python would index them from the end of the
+    source list and silently pick another star (#55 A11).
+    """
+    try:
+        value = int(s)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"source index must be an integer, got {s!r}"
+        ) from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError(
+            f"source index must be >= 0 (zero-based), got {value}"
         )
     return value
 
@@ -2277,16 +2356,23 @@ def build_reference(
         pix_key = "sinistro_2x2" if "2x2" in confmode else "sinistro_full"
     else:
         pix_key = instrument
-    pixel_scale = float(ref.header.get("PIXSCALE", PIXSCALES.get(pix_key, 0.267)))
+    pixel_scale, pixel_scale_source = resolve_pixel_scale(ref.header, pix_key)
     saturation, saturation_source = resolve_saturation(
         ref.header, instrument, ref.telescope
     )
     ref.telescope.saturation = saturation
     ref.telescope.pixel_scale = pixel_scale
     logger.info(
-        f"{Path(ref_file).name}: PIXSCALE={pixel_scale} "
+        f"{Path(ref_file).name}: PIXSCALE={pixel_scale} ({pixel_scale_source}) "
         f"saturation={saturation} ({saturation_source}) instrument={instrument}"
     )
+    if pixel_scale_source.startswith("guess"):
+        logger.warning(
+            f"{Path(ref_file).name}: pixel scale unknown for instrument "
+            f"{instrument!r}; assuming {pixel_scale} arcsec/px. Gaia matching "
+            "radii and arcsec labels depend on it"
+        )
+    _log_noise_model(ref, Path(ref_file).name)
     reference_sequence(
         ccd_trim_size_yx=ccd_trim_size_yx,
         max_num_stars=max_num_stars,
@@ -3026,7 +3112,7 @@ def run_band(
             tree = KDTree(this_positions)
             mapped_avoid = []
             for idx in avoid_cids:
-                if idx >= len(ref_source_positions):
+                if not 0 <= idx < len(ref_source_positions):
                     logger.warning(
                         f"[{band}] avoid_cid {idx}: out of range "
                         f"(ref band has {len(ref_source_positions)} sources)"
@@ -3054,7 +3140,7 @@ def run_band(
             tree = KDTree(this_positions)
             mapped_cids = []
             for idx in cids:
-                if idx >= len(ref_source_positions):
+                if not 0 <= idx < len(ref_source_positions):
                     logger.warning(
                         f"[{band}] cID {idx}: out of range "
                         f"(ref band has {len(ref_source_positions)} sources)"
@@ -3418,7 +3504,8 @@ def differential_photometry(
         mask[target_index] = True
         mask[list(cids)] = True
         if avoid_cids:
-            mask[list(avoid_cids)] = False
+            # negative IDs would index from the end (#55 A11)
+            mask[[a for a in avoid_cids if 0 <= a < n_sources]] = False
         fluxes = fluxes.mask_stars(mask)
         kept = int(np.sum(mask)) - 1 if mask[target_index] else int(np.sum(mask))
         logger.info(
@@ -3584,9 +3671,12 @@ def compute_bjd_tdb(
         offset = bjd - t.jd
 
     offset_min = float(np.median(offset)) * 24 * 60
-    if offset_min > MAX_TIME_OFFSET_MIN:
+    # The barycentric correction is negative for half the year, so check
+    # its magnitude (#55 A11).
+    if abs(offset_min) > MAX_TIME_OFFSET_MIN:
         logger.warning(
-            f"GJD->BJD offset {offset_min:.2f} min exceeds {MAX_TIME_OFFSET_MIN:.1f} min"
+            f"GJD->BJD offset {offset_min:.2f} min exceeds "
+            f"+/-{MAX_TIME_OFFSET_MIN:.1f} min"
         )
     else:
         logger.info(f"GJD_UTC --> BJD_TDB offset {offset_min:.2f} min")
@@ -4104,13 +4194,27 @@ def _binned(time, flux, bin_size_days: float = BIN_SIZE_DAYS):
     return bt, bf, be
 
 
+def target_id_label(band_results: dict) -> int | str:
+    """Target index for multi-band plot titles.
+
+    In self-reference mode each band has its own source catalog, so the
+    target index can differ per band (#55 A11): returns the shared index when
+    all bands agree, else ``"g:5 r:7"``.
+    """
+    ids = {band: r["target_index"] for band, r in band_results.items()}
+    unique = set(ids.values())
+    if len(unique) == 1:
+        return unique.pop()
+    return " ".join(f"{band}:{tid}" for band, tid in ids.items())
+
+
 def plot_lightcurves(
     band_results,
     path: Path,
     target_name: str,
     instrument: str,
     date: str,
-    target_index: int,
+    target_index: int | str,
     bin_size_days: float = BIN_SIZE_DAYS,
 ) -> None:
     bands = sort_bands_canonical(band_results.keys())
@@ -4182,7 +4286,7 @@ def plot_raw_flux(
     target_name: str,
     instrument: str,
     date: str,
-    target_index: int,
+    target_index: int | str,
 ) -> None:
     """Plot comparison stars raw flux for each band."""
     bands = sort_bands_canonical(band_results.keys())
@@ -4258,7 +4362,7 @@ def plot_covariates(
     target_name: str,
     instrument: str,
     date: str,
-    target_index: int,
+    target_index: int | str,
 ) -> None:
     bands = sort_bands_canonical(band_results.keys())
     fig, axes = plt.subplots(
@@ -4375,7 +4479,7 @@ def plot_stacks(
     target_name: str,
     instrument: str,
     date: str,
-    target_index: int,
+    target_index: int | str,
     plot_gaia_sources: bool = False,
     target_coord=None,
     cmap: str = "Greys",
@@ -5558,13 +5662,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--tID",
-        type=int,
+        type=parse_source_index,
         default=None,
         help="Target source index (default: auto-detected from Gaia).",
     )
     ap.add_argument(
         "--cID",
-        type=int,
+        type=parse_source_index,
         nargs="+",
         default=None,
         help="Comparison star indices for differential photometry (default: auto-selected).",
@@ -5572,7 +5676,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument(
         "--avoid_cids",
         "--avoid-cids",
-        type=int,
+        type=parse_source_index,
         nargs="+",
         default=None,
         help="Star indices to exclude as comparisons and from ref.png. "
@@ -7211,7 +7315,7 @@ def main(argv=None) -> int:
         logger.info(f"wrote {nearby_csv_path}")
 
     bin_size_days = args.bin_size_minutes / (24 * 60)
-    target_index = next(iter(band_results.values()))["target_index"]
+    target_index = target_id_label(band_results)
     if args.test_run or args.plots not in ("all", "summary"):
         reason = "test run" if args.test_run else f"--plots={args.plots}"
         logger.info(f"skipping combined lightcurve plot ({reason})")

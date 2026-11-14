@@ -347,6 +347,19 @@ python -m prose.scripts.run_photometry ... \
   tried before the band continues without astrometry.
 - **Comparison-star bounds.** Out-of-range `--cID` values are dropped with a
   warning and fall back to automatic selection rather than crashing.
+  `--tID`, `--cID` and `--avoid_cids` are zero-based and reject negative
+  values at parse time (Python would otherwise count them from the end of the
+  source list and pick another star).
+- **Noise model and pixel scale.** Each band's reference logs the gain and
+  read noise behind the `Err` column and where each came from (header
+  keyword, `.telescope` file, or generic default); a generic default, which
+  is not a measured value, is logged as a warning. The pixel scale is taken
+  from `PIXSCALE`, then the instrument table; if neither exists, the MuSCAT3/4
+  value 0.267 arcsec/px is assumed with a warning.
+- **BJD offset.** The GJD-UTC → BJD-TDB offset warns when its magnitude
+  exceeds 16.8 min, whether it is positive or negative.
+- **Summary plot titles.** Multi-band figures show each band's target index
+  (`tID=g:5 r:7`) when self-referenced bands number their sources differently.
 - **Avoided stars.** With `--ref_band`, IDs passed to `--avoid_cids` are
   excluded from comparison-star selection and omitted from each `…_ref.png`.
 - **Unlocated target.** If no detected source lies within 5 arcsec of the
