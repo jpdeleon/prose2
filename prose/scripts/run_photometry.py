@@ -1856,7 +1856,12 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
     previous run's cached result. Returns ``None`` when neither is available.
     Queried once per process and reused across the run's bands.
     """
-    cache_path = coord_cache_path("gaia", target_coord, GAIA_CUTOUT[0])
+    # GaiaCatalog propagates rows to the image date, so a cache from another
+    # epoch holds moved positions; key it to 0.1 yr (a 1 arcsec/yr star moves
+    # 0.1 arcsec within one key) (#55 A1).
+    obs_time = _observation_time(ref)
+    epoch_key = f"ep{obs_time.jyear:.1f}" if obs_time is not None else "epNA"
+    cache_path = coord_cache_path("gaia", target_coord, GAIA_CUTOUT[0], epoch_key)
     if cache_path in _gaia_cache:  # same target, another band of this run
         return _gaia_cache[cache_path]
 
@@ -2722,6 +2727,9 @@ def _apply_saturation_exclusion(
         )
     avoid = sorted(current | set(saturated))
     if cids is not None:
+        removed = [c for c in cids if c in set(saturated)]
+        if removed:
+            logger.warning(f"[{band}] dropping saturated explicit cID(s) {removed}")
         cids = [c for c in cids if c not in set(saturated)]
         if not cids:
             logger.warning(
@@ -5445,6 +5453,8 @@ def resolve_target_at_epoch(target_coord: SkyCoord, obs_time: Time | None) -> Sk
     target then fails to match on the frame and the band fails visibly
     (``TargetNotFoundError``) rather than reducing another star.
     """
+    if target_coord is None:
+        return None
     if obs_time is None:
         logger.warning(
             "observation date unknown; target coordinate not propagated for "
@@ -5465,6 +5475,11 @@ def resolve_target_at_epoch(target_coord: SkyCoord, obs_time: Time | None) -> Sk
             "input coordinate without proper-motion propagation"
         )
         return target_coord
+    if len(gaia) >= TARGET_GAIA_QUERY_LIMIT:
+        logger.warning(
+            f"Gaia target search hit its {TARGET_GAIA_QUERY_LIMIT}-row limit "
+            "(brightest first); a faint target may be missing from it"
+        )
     match = select_gaia_target(target_coord, gaia, obs_time)
     if match is None:
         logger.warning(
@@ -5481,6 +5496,13 @@ def resolve_target_at_epoch(target_coord: SkyCoord, obs_time: Time | None) -> Sk
         f"pm={match.pm_total_masyr:.1f} mas/yr); position on "
         f"{obs_time.datetime.date()} is {shift:.2f} arcsec from the input coordinate"
     )
+    if match.n_candidates > 1:
+        logger.warning(
+            f"{match.n_candidates} Gaia sources pass within "
+            f"{TARGET_GAIA_MATCH_ARCSEC:g} arcsec of the target coordinate; chose "
+            f"{match.source_id} (closest at J2000, J2015.5 or the observing date). "
+            "Check the target on the _ref plot or set --tID"
+        )
     return coord
 
 

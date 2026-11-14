@@ -182,3 +182,75 @@ def test_photometry_sequence_wires_peak_getter(monkeypatch):
     ref = SimpleNamespace(telescope=SimpleNamespace(keyword_airmass="AIRMASS"))
     seq = rp.photometry_sequence(ref, np.array([3.0]), 5.0, 8.0, n_stars_align=0)
     assert seq.data[0].getters["_peaks"] is rp._frame_peaks
+
+
+# ------------------------------ run_band wiring ------------------------------
+
+
+def _run_band_with_peaks(tmp_path, monkeypatch, peaks, cids=None):
+    """Run ``run_band`` (self-reference) with stubbed reference/photometry and
+    return the avoid list and cIDs handed to ``differential_photometry``."""
+    from astropy.coordinates import SkyCoord
+
+    from prose import Fluxes
+    from prose.core.source import Sources
+
+    n_sources = peaks.shape[1]
+    ref = SimpleNamespace(
+        sources=Sources(np.array([[10.0 * i + 5, 5.0] for i in range(n_sources)])),
+        shape=(20, 60),
+        telescope=SimpleNamespace(jd_scale="jd"),
+        header={},
+        fwhm=3.0,
+    )
+    reference = {
+        "ref": ref,
+        "target_index": 0,
+        "aper_radii": np.array([3.0]),
+        "rin": 8.0,
+        "rout": 12.0,
+        "scale": False,
+        "edge_cids": [],
+        "gaia_df": None,
+    }
+    monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
+    data = SimpleNamespace(
+        values={"_peaks": peaks},
+        fluxes=Fluxes(np.ones((1, n_sources, len(peaks)))),
+    )
+    monkeypatch.setattr(
+        rp,
+        "photometry_sequence",
+        lambda *a, **kw: SimpleNamespace(run=lambda files: None, data=[data]),
+    )
+    captured = {}
+
+    def fake_diff(fluxes, target_index, cids=None, avoid_cids=None, **kw):
+        captured.update(cids=cids, avoid=avoid_cids)
+        return SimpleNamespace(time=np.arange(len(peaks), dtype=float))
+
+    monkeypatch.setattr(rp, "differential_photometry", fake_diff)
+    frame = str(_write_lco_frame(tmp_path / "science.fits"))
+    result = rp.run_band("gp", [frame], frame, SkyCoord(0, 0, unit="deg"), cids=cids)
+    return result, captured
+
+
+def test_run_band_feeds_per_frame_saturation_into_differential_photometry(
+    tmp_path, monkeypatch
+):
+    result, captured = _run_band_with_peaks(
+        tmp_path, monkeypatch, _peaks(saturated={2: 30, 0: 5}), cids=[1, 2]
+    )
+    assert captured["avoid"] == [2]
+    assert captured["cids"] == [1]
+    assert result["saturated_cids"] == [2]
+    assert result["target_saturated_fraction"] == pytest.approx(0.05)
+
+
+def test_run_band_fails_when_every_comparison_saturates_over_time(
+    tmp_path, monkeypatch
+):
+    with pytest.raises(ValueError, match="no usable comparison stars"):
+        _run_band_with_peaks(
+            tmp_path, monkeypatch, _peaks(saturated={1: 30, 2: 30, 3: 30})
+        )

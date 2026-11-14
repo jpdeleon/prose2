@@ -375,7 +375,11 @@ python -m prose.scripts.run_photometry ... \
   coordinate (J2000, Gaia J2015.5, or the observing night all match), and its
   position on the night of the first frame is used everywhere: source
   matching, Gaia aperture sizing, nearby-star screening, plots and BJD. The log
-  names the Gaia source, its proper motion, and how far it moved. If Gaia is
+  names the Gaia source, its proper motion, and how far it moved. When several
+  sources pass, the one closest to the coordinate at J2000, J2015.5 or the
+  observing date wins, and a warning asks you to check the target. The Gaia
+  field cache is keyed to the observation epoch (0.1 yr), because its rows
+  are propagated to the frame date. If Gaia is
   unreachable, the frame has no date, or no source matches, the input
   coordinate is used unchanged with a warning. Where a step needs the target's
   Gaia row (annulus contamination, the nearby-stars table, the cutout

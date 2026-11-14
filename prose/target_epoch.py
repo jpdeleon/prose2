@@ -137,6 +137,8 @@ class GaiaTarget:
     pmdec_masyr: float
     track_sep_arcsec: float
     coord_gaia_epoch: SkyCoord
+    # Gaia sources whose track passed the match gate (1 = unambiguous).
+    n_candidates: int = 1
 
     @property
     def pm_total_masyr(self) -> float:
@@ -159,33 +161,48 @@ def select_gaia_target(
     obs_time: Time,
     max_sep_arcsec: float = TARGET_GAIA_MATCH_ARCSEC,
 ) -> GaiaTarget | None:
-    """Gaia source whose track passes closest to ``target``, or ``None``.
+    """Gaia source identified as ``target``, or ``None``.
 
     The input coordinate may be at J2000.0 (name resolvers), J2015.5 (Gaia),
-    or the observation epoch (a user-measured position), so each source's
-    track is spanned over all three. Only a source within ``max_sep_arcsec``
-    is accepted; the caller must not fall back to the nearest row.
-    ``gaia`` must use canonical column names (see :func:`normalize_gaia_columns`).
+    or the observation epoch (a user-measured position). A source is a
+    candidate when its track between those epochs passes within
+    ``max_sep_arcsec`` of ``target``. Candidates are ranked by their
+    separation at whichever of the three epochs is closest, not by the track's
+    closest approach: a fast mover that merely crossed the coordinate in, say,
+    2008 must not beat a star that sits on it at one of the likely epochs.
+    ``n_candidates`` reports ambiguity; the caller must not fall back to the
+    nearest row when ``None`` is returned. ``gaia`` must use canonical column
+    names (see :func:`normalize_gaia_columns`).
     """
     if gaia is None or not len(gaia):
         return None
-    epochs = [RESOLVER_EPOCH.jyear, GAIA_DR2_EPOCH.jyear, obs_time.jyear]
-    start = Time(min(epochs), format="jyear")
-    end = Time(max(epochs), format="jyear")
-    seps = track_separation_arcsec(target, gaia, start, end)
-    if not np.isfinite(seps).any():
+    epochs = [RESOLVER_EPOCH, GAIA_DR2_EPOCH, obs_time]
+    start = Time(min(e.jyear for e in epochs), format="jyear")
+    end = Time(max(e.jyear for e in epochs), format="jyear")
+    track = track_separation_arcsec(target, gaia, start, end)
+    gate = np.isfinite(track) & (track <= max_sep_arcsec)
+    if not gate.any():
         return None
-    best = int(np.nanargmin(seps))
-    if seps[best] > max_sep_arcsec:
-        return None
+    coords = SkyCoord(gaia["ra"].to_numpy(), gaia["dec"].to_numpy(), unit="deg")
+    at_epochs = np.min(
+        [
+            target.separation(
+                propagate_linear(coords, gaia["pmra"], gaia["pmdec"], GAIA_DR2_EPOCH, e)
+            ).arcsec
+            for e in epochs
+        ],
+        axis=0,
+    )
+    best = int(np.nanargmin(np.where(gate, at_epochs, np.inf)))
     row = gaia.iloc[best]
     return GaiaTarget(
         source_id=str(row["source_id"]),
         g_mag=float(row["phot_g_mean_mag"]),
         pmra_masyr=float(_finite_or_zero(row["pmra"])),
         pmdec_masyr=float(_finite_or_zero(row["pmdec"])),
-        track_sep_arcsec=float(seps[best]),
+        track_sep_arcsec=float(track[best]),
         coord_gaia_epoch=SkyCoord(row["ra"], row["dec"], unit="deg"),
+        n_candidates=int(gate.sum()),
     )
 
 

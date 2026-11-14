@@ -268,3 +268,123 @@ def test_gaia_df_at_epoch_moves_raw_query_rows():
     assert TARGET_GAIA.separation(target).arcsec == pytest.approx(years, abs=1e-3)
     assert moved.ra[1] == pytest.approx(gaia.ra[1])
     assert gaia.dec[0] == TARGET_GAIA.dec.deg  # input left unchanged
+
+
+# ------------------------------ review follow-up ------------------------------
+
+
+def _crossing_field():
+    """A static target 0.3" from the J2000 input coordinate, and a fast mover
+    whose track crossed that coordinate exactly in 2008."""
+    coord = SkyCoord(150.0, 20.0, unit="deg")
+    target = _offset(coord, east_arcsec=0.3)
+    years = GAIA_DR2_EPOCH.jyear - 2008.0
+    mover = _offset(coord, north_arcsec=years * 0.5)  # 500 mas/yr north
+    gaia = pd.DataFrame(
+        {
+            "source_id": ["target", "mover"],
+            "ra": [target.ra.deg, mover.ra.deg],
+            "dec": [target.dec.deg, mover.dec.deg],
+            "pmra": [0.0, 0.0],
+            "pmdec": [0.0, 500.0],
+            "phot_g_mean_mag": [12.0, 10.0],
+        }
+    )
+    return coord, gaia
+
+
+def test_star_on_the_coordinate_beats_a_mover_that_crossed_it_earlier():
+    coord, gaia = _crossing_field()
+
+    match = select_gaia_target(coord, gaia, OBS)
+
+    assert match.source_id == "target"
+    assert match.n_candidates == 2
+
+
+@pytest.mark.gaia_resolution
+def test_ambiguous_gaia_match_is_warned(monkeypatch, caplog):
+    coord, gaia = _crossing_field()
+    monkeypatch.setattr(rp, "gaia_query", lambda *a, **kw: Table.from_pandas(gaia))
+    with caplog.at_level(logging.WARNING, logger=rp.logger.name):
+        rp.resolve_target_at_epoch(coord, OBS)
+    assert "2 Gaia sources pass within 2 arcsec" in caplog.text
+
+
+@pytest.mark.gaia_resolution
+def test_missing_target_coordinate_skips_the_query(monkeypatch):
+    monkeypatch.setattr(rp, "gaia_query", pytest.fail)
+    assert rp.resolve_target_at_epoch(None, OBS) is None
+
+
+def test_main_hands_the_propagated_coordinate_to_run_band(tmp_path, monkeypatch):
+    """main() must resolve the target at the first frame's date and reduce
+    with that position, not the input coordinate."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    header = w.to_header()
+    header.update(
+        TELID="1m0a",
+        INSTRUME="sinistro",
+        SITEID="lsc",
+        CONFMODE="central_2k_2x2",
+        OBJECT="audit",
+        EXPTIME=1.0,
+        FILTER="gp",
+        JD=2460000.0,
+        **{"DATE-OBS": "2025-04-16T00:00:00"},
+    )
+    fits.writeto(tmp_path / "science.fits", np.ones((20, 20)), header)
+    tonight = SkyCoord(0.01, 0.01, unit="deg")
+    calls = {}
+
+    def spy_resolver(coord, obs_time):
+        calls["input"], calls["time"] = coord, obs_time
+        return tonight
+
+    def capture_run_band(band, files, ref_file, target_coord, **kw):
+        calls["run_band"] = target_coord
+        raise rp.TargetNotFoundError("stop here")
+
+    monkeypatch.setattr(rp, "resolve_target_at_epoch", spy_resolver)
+    monkeypatch.setattr(rp, "run_band", capture_run_band)
+
+    rp.main(
+        [
+            "--target_name",
+            "audit",
+            "--target_coord",
+            "0",
+            "0",
+            "--data_dir",
+            str(tmp_path),
+            "--results_dir",
+            str(tmp_path / "out"),
+            "--bands",
+            "gp",
+            "--glob",
+            "*.fits",
+        ]
+    )
+
+    assert calls["input"].separation(SkyCoord(0, 0, unit="deg")).arcsec < 1e-6
+    assert calls["time"].datetime.date().isoformat() == "2025-04-16"
+    assert calls["run_band"] is tonight
+
+
+def test_gaia_cache_key_depends_on_observation_epoch(monkeypatch):
+    paths = []
+    monkeypatch.setattr(rp, "_gaia_cache", {})
+    monkeypatch.setattr(rp, "load_cached_df", lambda p: paths.append(p) or "df")
+    coord = SkyCoord(150.0, 20.0, unit="deg")
+    for date in ("2020-01-01", "2026-01-01"):
+        monkeypatch.setattr(rp, "_observation_time", lambda _ref, d=date: Time(d))
+        rp._gaia_catalog_df(object(), 0, coord, 1.0)
+    assert len(set(paths)) == 2
+    assert "ep2020.0" in paths[0].name and "ep2026.0" in paths[1].name
