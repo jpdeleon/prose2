@@ -96,6 +96,14 @@ from prose.scripts import calibrate_muscat, calibrate_muscat2
 from prose.scripts.plot_labels import LabelPoint, place_labels
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
 from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
+from prose.target_epoch import (
+    GAIA_DR2_EPOCH,
+    TARGET_GAIA_MATCH_ARCSEC,
+    gaia_target_row,
+    normalize_gaia_columns,
+    propagate_linear,
+    select_gaia_target,
+)
 from prose.utils import (
     LCO_SITES,
     PIXSCALES,
@@ -103,6 +111,7 @@ from prose.utils import (
     coord_cache_path,
     easy_median,
     frames_from_obslog,
+    gaia_query,
     get_frame_saturation,
     get_simbad_data,
     header_jd,
@@ -326,6 +335,9 @@ SIGMA_FLUX = None
 # A comparison candidate missing in more than this fraction of frames is
 # excluded instead of imputed (#55 A3).
 MAX_COMPARISON_MISSING_FRACTION = 0.10
+# A comparison reaching the saturation limit in more than this fraction of
+# frames (and in more than one frame) is excluded from the ensemble (#55 A10).
+MAX_SATURATED_FRAME_FRACTION = 0.02
 POLY_DEG = 2
 BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
@@ -473,6 +485,66 @@ def resolve_saturation(header, instrument: str, telescope) -> tuple[float | None
     ):
         return float(telescope.saturation), f"{telescope.name} telescope file"
     return None, "unknown"
+
+
+PIXSCALE_GUESS_ARCSEC = 0.267  # MuSCAT3/4 value; used only when nothing is known
+
+
+def resolve_pixel_scale(header, pix_key: str) -> tuple[float, str]:
+    """Pixel scale [arcsec/px] and where it came from.
+
+    Header ``PIXSCALE``, then the instrument table, then
+    ``PIXSCALE_GUESS_ARCSEC`` (reported as a guess so the caller can warn).
+    """
+    try:
+        value = float(header.get("PIXSCALE"))
+        if np.isfinite(value) and value > 0:
+            return value, "header PIXSCALE"
+    except (TypeError, ValueError):
+        pass
+    if pix_key in PIXSCALES:
+        return float(PIXSCALES[pix_key]), f"instrument table ({pix_key})"
+    return PIXSCALE_GUESS_ARCSEC, "guess (MuSCAT3/4 value)"
+
+
+def _noise_param_source(header, keyword: str | None, value, telescope) -> str:
+    """Where a gain/read-noise value used for ``Err`` came from."""
+    if keyword:
+        try:
+            if float(header.get(keyword)) == float(value):
+                return f"header {keyword}"
+        except (TypeError, ValueError):
+            pass
+    if not getattr(telescope, "_default", True):
+        return f"{getattr(telescope, 'name', '?')} telescope file"
+    return "generic default, not measured"
+
+
+def _log_noise_model(image, label: str) -> None:
+    """Log the gain and read noise behind the ``Err`` column (#55 A11).
+
+    Warns when either is a generic default rather than a header or telescope
+    file value, since ``Err`` then scales with an unmeasured number.
+    """
+    telescope = image.telescope
+    gain_source = _noise_param_source(
+        image.header, getattr(telescope, "keyword_gain", None), image.gain, telescope
+    )
+    read_noise_source = _noise_param_source(
+        image.header,
+        getattr(telescope, "keyword_read_noise", None),
+        image.read_noise,
+        telescope,
+    )
+    message = (
+        f"{label}: Err noise model gain={float(image.gain):g} "
+        f"e-/{pixel_unit(image.header)} ({gain_source}), "
+        f"read_noise={float(image.read_noise):g} e- ({read_noise_source})"
+    )
+    if "not measured" in gain_source + read_noise_source:
+        logger.warning(message)
+    else:
+        logger.info(message)
 
 
 def get_instrument(header) -> str:
@@ -707,6 +779,25 @@ def parse_avoid_nearby_star(s: str) -> float | str:
     if value <= 0:
         raise argparse.ArgumentTypeError(
             f"--avoid_nearby_star must be > 0 arcsec, got {value}"
+        )
+    return value
+
+
+def parse_source_index(s: str) -> int:
+    """Parse a zero-based source index (``--tID``, ``--cID``, ``--avoid_cids``).
+
+    Rejects negative values: Python would index them from the end of the
+    source list and silently pick another star (#55 A11).
+    """
+    try:
+        value = int(s)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"source index must be an integer, got {s!r}"
+        ) from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError(
+            f"source index must be >= 0 (zero-based), got {value}"
         )
     return value
 
@@ -1765,7 +1856,12 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
     previous run's cached result. Returns ``None`` when neither is available.
     Queried once per process and reused across the run's bands.
     """
-    cache_path = coord_cache_path("gaia", target_coord, GAIA_CUTOUT[0])
+    # GaiaCatalog propagates rows to the image date, so a cache from another
+    # epoch holds moved positions; key it to 0.1 yr (a 1 arcsec/yr star moves
+    # 0.1 arcsec within one key) (#55 A1).
+    obs_time = _observation_time(ref)
+    epoch_key = f"ep{obs_time.jyear:.1f}" if obs_time is not None else "epNA"
+    cache_path = coord_cache_path("gaia", target_coord, GAIA_CUTOUT[0], epoch_key)
     if cache_path in _gaia_cache:  # same target, another band of this run
         return _gaia_cache[cache_path]
 
@@ -1836,11 +1932,19 @@ def gaia_aperture_radii(
     if df is not None and len(df):
         try:
             gaia_coords = SkyCoord(df.ra.values, df.dec.values, unit="deg")
+            target_row = gaia_target_row(target_coord, gaia_coords)
+            if target_row is None:
+                # Without the target's own magnitude, which neighbours
+                # contaminate is unknown; never borrow a neighbour's (#55 A1).
+                raise ValueError(
+                    f"no Gaia source within {TARGET_GAIA_MATCH_ARCSEC:g} arcsec "
+                    "of the target"
+                )
             sep_pix = target_coord.separation(gaia_coords).arcsec / pixscale
-            mags = df.phot_g_mean_mag.values
-            order = np.argsort(sep_pix)  # nearest first; row 0 = the target itself
-            target_mag = float(mags[order][0])
-            contam = _contaminant_seps(sep_pix[order][1:], mags[order][1:], target_mag)
+            mags = np.asarray(df.phot_g_mean_mag.values, dtype=float)
+            target_mag = float(mags[target_row])
+            others = np.arange(len(df)) != target_row
+            contam = _contaminant_seps(sep_pix[others], mags[others], target_mag)
         except Exception as exc:  # noqa: BLE001 - bad catalog must not be fatal
             logger.warning(
                 f"contamination computation failed ({exc}); using FWHM-only geometry"
@@ -2257,16 +2361,23 @@ def build_reference(
         pix_key = "sinistro_2x2" if "2x2" in confmode else "sinistro_full"
     else:
         pix_key = instrument
-    pixel_scale = float(ref.header.get("PIXSCALE", PIXSCALES.get(pix_key, 0.267)))
+    pixel_scale, pixel_scale_source = resolve_pixel_scale(ref.header, pix_key)
     saturation, saturation_source = resolve_saturation(
         ref.header, instrument, ref.telescope
     )
     ref.telescope.saturation = saturation
     ref.telescope.pixel_scale = pixel_scale
     logger.info(
-        f"{Path(ref_file).name}: PIXSCALE={pixel_scale} "
+        f"{Path(ref_file).name}: PIXSCALE={pixel_scale} ({pixel_scale_source}) "
         f"saturation={saturation} ({saturation_source}) instrument={instrument}"
     )
+    if pixel_scale_source.startswith("guess"):
+        logger.warning(
+            f"{Path(ref_file).name}: pixel scale unknown for instrument "
+            f"{instrument!r}; assuming {pixel_scale} arcsec/px. Gaia matching "
+            "radii and arcsec labels depend on it"
+        )
+    _log_noise_model(ref, Path(ref_file).name)
     reference_sequence(
         ccd_trim_size_yx=ccd_trim_size_yx,
         max_num_stars=max_num_stars,
@@ -2547,9 +2658,130 @@ def photometry_sequence(
                 peak_radius=lambda im: float(
                     im.computed.get("peak_radius", float("nan"))
                 ),
+                # every source's peak, for per-frame saturation screening
+                # (#55 A10); "_" keeps it out of the CSV columns.
+                _peaks=_frame_peaks,
             ),
         ],
     )
+
+
+def _frame_peaks(im) -> np.ndarray:
+    """Peak of every source in ``im`` (NaN when not measured)."""
+    n_sources = len(im.sources)
+    peaks = im.computed.get("peaks")
+    if peaks is None or len(peaks) != n_sources:
+        return np.full(n_sources, np.nan)
+    return np.asarray(peaks, dtype=float)
+
+
+def _saturated_over_time(
+    peaks: np.ndarray, limit: float, target_index: int
+) -> tuple[list[int], float]:
+    """Comparisons saturated too often, and the target's saturated fraction.
+
+    ``peaks`` is ``(n_frames, n_sources)``. A source's fraction counts only
+    frames with a finite peak. A comparison is excluded when it reaches
+    ``limit`` in more than ``MAX_SATURATED_FRAME_FRACTION`` of frames and in
+    more than one frame, so a single cosmic-ray hit does not reject a star.
+    """
+    peaks = np.atleast_2d(np.asarray(peaks, dtype=float))
+    finite = np.isfinite(peaks)
+    n_valid = finite.sum(axis=0)
+    n_saturated = (finite & (peaks >= limit)).sum(axis=0)
+    fraction = np.divide(
+        n_saturated,
+        n_valid,
+        out=np.zeros(n_valid.shape, dtype=float),
+        where=n_valid > 0,
+    )
+    excluded = (n_saturated > 1) & (fraction > MAX_SATURATED_FRAME_FRACTION)
+    target_fraction = 0.0
+    if 0 <= target_index < excluded.size:
+        excluded[target_index] = False
+        target_fraction = float(fraction[target_index])
+    return sorted(int(i) for i in np.flatnonzero(excluded)), target_fraction
+
+
+def _apply_saturation_exclusion(
+    band: str,
+    saturated: list[int],
+    avoid: list[int] | None,
+    cids: list[int] | None,
+    target_index: int,
+    n_sources: int,
+) -> tuple[list[int] | None, list[int] | None]:
+    """Add saturated IDs to the avoid pool and strip them from explicit cIDs.
+
+    Raises ``ValueError`` when no comparison star would remain: saturated
+    stars are never re-admitted to keep a band alive (#55 A11).
+    """
+    if not saturated:
+        return avoid, cids
+    current = set(avoid or [])
+    candidates = [i for i in range(n_sources) if i != target_index and i not in current]
+    if candidates and all(i in set(saturated) for i in candidates):
+        raise ValueError(
+            f"[{band}] saturation screening leaves no usable comparison stars "
+            f"(saturated IDs {sorted(saturated)})"
+        )
+    avoid = sorted(current | set(saturated))
+    if cids is not None:
+        removed = [c for c in cids if c in set(saturated)]
+        if removed:
+            logger.warning(f"[{band}] dropping saturated explicit cID(s) {removed}")
+        cids = [c for c in cids if c not in set(saturated)]
+        if not cids:
+            logger.warning(
+                f"[{band}] all explicit cIDs are saturated; falling back to auto-selection"
+            )
+            cids = None
+    return avoid, cids
+
+
+def _screen_saturation_over_time(
+    band: str,
+    files,
+    phot,
+    avoid: list[int] | None,
+    cids: list[int] | None,
+    target_index: int,
+    n_sources: int,
+) -> tuple[list[int] | None, list[int] | None, list[int], float]:
+    """Exclude comparisons that saturate in too many frames (#55 A10).
+
+    The reference-frame screen sees one frame; a star can saturate later as
+    seeing or focus changes. Uses every frame's measured peaks against this
+    band's own saturation limit. Returns ``(avoid, cids, saturated_ids,
+    target_fraction)``; ``target_fraction`` is NaN when not screened.
+    """
+    first = FITSImage(files[0])
+    header = first.header
+    limit, origin = resolve_saturation(header, get_instrument(header), first.telescope)
+    values = getattr(phot.data[0], "values", None) or {}
+    peaks = np.asarray(values.get("_peaks", []), dtype=float)
+    if limit is None or peaks.ndim != 2 or peaks.shape[1] != n_sources:
+        logger.warning(
+            f"[{band}] per-frame saturation not screened "
+            f"({'limit unknown' if limit is None else 'peaks unavailable'})"
+        )
+        return avoid, cids, [], float("nan")
+    saturated, target_fraction = _saturated_over_time(peaks, limit, target_index)
+    unit = pixel_unit(header)
+    logger.info(
+        f"[{band}] per-frame saturation ({limit} {unit}, {origin}) over "
+        f"{len(peaks)} frames: comparison IDs saturated in "
+        f">{MAX_SATURATED_FRAME_FRACTION:.0%} of frames: {saturated or 'none'}"
+    )
+    if target_fraction > 0:
+        logger.warning(
+            f"[{band}] target {target_index} reaches the saturation limit "
+            f"({limit} {unit}) in {target_fraction:.1%} of frames"
+        )
+    avoid, cids = _apply_saturation_exclusion(
+        band, saturated, avoid, cids, target_index, n_sources
+    )
+    return avoid, cids, saturated, target_fraction
 
 
 def _select_stack_frames(files, n: int) -> list:
@@ -2888,7 +3120,7 @@ def run_band(
             tree = KDTree(this_positions)
             mapped_avoid = []
             for idx in avoid_cids:
-                if idx >= len(ref_source_positions):
+                if not 0 <= idx < len(ref_source_positions):
                     logger.warning(
                         f"[{band}] avoid_cid {idx}: out of range "
                         f"(ref band has {len(ref_source_positions)} sources)"
@@ -2916,7 +3148,7 @@ def run_band(
             tree = KDTree(this_positions)
             mapped_cids = []
             for idx in cids:
-                if idx >= len(ref_source_positions):
+                if not 0 <= idx < len(ref_source_positions):
                     logger.warning(
                         f"[{band}] cID {idx}: out of range "
                         f"(ref band has {len(ref_source_positions)} sources)"
@@ -3018,33 +3250,9 @@ def run_band(
         )
     else:
         saturated_cids = reference.get("saturated_cids") or []
-    if saturated_cids:
-        current_avoid = set(mapped_avoid or [])
-        target_idx = target_index
-        n_sources = len(ref.sources)
-        candidates = [
-            i for i in range(n_sources) if i != target_idx and i not in current_avoid
-        ]
-        after_sat = [i for i in candidates if i not in set(saturated_cids)]
-        if candidates and not after_sat:
-            if shared_reference:
-                raise ValueError(
-                    f"[{band}] per-band saturation screening leaves no usable comparison stars"
-                )
-            logger.warning(
-                f"[{band}] saturation exclusion would remove all comparison stars; "
-                f"relaxing saturation exclusion to preserve comparison pool"
-            )
-        else:
-            mapped_avoid = sorted(current_avoid | set(saturated_cids))
-            if cids is not None:
-                cids = [c for c in cids if c not in set(saturated_cids)]
-                if not cids:
-                    logger.warning(
-                        f"[{band}] all explicit cIDs are saturated; "
-                        f"falling back to auto-selection"
-                    )
-                    cids = None
+    mapped_avoid, cids = _apply_saturation_exclusion(
+        band, saturated_cids, mapped_avoid, cids, target_index, len(ref.sources)
+    )
 
     # ``target_index`` may be inferred from WCS, so parser-time validation of
     # an explicit --tID cannot protect this case.  Never mask the target as an
@@ -3100,6 +3308,13 @@ def run_band(
         )
         return None
     fluxes.target = target_index
+
+    mapped_avoid, cids, saturated_over_time, target_saturated_fraction = (
+        _screen_saturation_over_time(
+            band, files, phot, mapped_avoid, cids, target_index, len(ref.sources)
+        )
+    )
+    saturated_cids = sorted(set(saturated_cids) | set(saturated_over_time))
 
     diff = differential_photometry(
         fluxes,
@@ -3172,6 +3387,7 @@ def run_band(
         gaia_df=reference.get("gaia_df"),
         display_ref=display_ref,
         saturated_cids=saturated_cids,
+        target_saturated_fraction=target_saturated_fraction,
     )
 
 
@@ -3296,7 +3512,8 @@ def differential_photometry(
         mask[target_index] = True
         mask[list(cids)] = True
         if avoid_cids:
-            mask[list(avoid_cids)] = False
+            # negative IDs would index from the end (#55 A11)
+            mask[[a for a in avoid_cids if 0 <= a < n_sources]] = False
         fluxes = fluxes.mask_stars(mask)
         kept = int(np.sum(mask)) - 1 if mask[target_index] else int(np.sum(mask))
         logger.info(
@@ -3462,9 +3679,12 @@ def compute_bjd_tdb(
         offset = bjd - t.jd
 
     offset_min = float(np.median(offset)) * 24 * 60
-    if offset_min > MAX_TIME_OFFSET_MIN:
+    # The barycentric correction is negative for half the year, so check
+    # its magnitude (#55 A11).
+    if abs(offset_min) > MAX_TIME_OFFSET_MIN:
         logger.warning(
-            f"GJD->BJD offset {offset_min:.2f} min exceeds {MAX_TIME_OFFSET_MIN:.1f} min"
+            f"GJD->BJD offset {offset_min:.2f} min exceeds "
+            f"+/-{MAX_TIME_OFFSET_MIN:.1f} min"
         )
     else:
         logger.info(f"GJD_UTC --> BJD_TDB offset {offset_min:.2f} min")
@@ -3578,16 +3798,17 @@ def _project_gaia_to_cutout(cutout, gaia_df, target_coord=None):
     if "phot_g_mean_mag" in gaia_df:
         mags = np.asarray(gaia_df.phot_g_mean_mag.values, dtype=float)[inside]
 
-    # Identify the target among the visible Gaia sources (nearest to target_coord).
+    # Identify the target among the visible Gaia sources: the one within
+    # TARGET_GAIA_MATCH_ARCSEC of target_coord, never merely the nearest.
     target_mask = np.zeros(len(x), dtype=bool)
     target_mag = np.nan
     if target_coord is not None:
         try:
-            seps = target_coord.separation(coords[inside])
-            nearest = int(np.argmin(seps))
-            target_mask[nearest] = True
-            if mags is not None:
-                target_mag = mags[nearest]
+            row = gaia_target_row(target_coord, coords[inside])
+            if row is not None:
+                target_mask[row] = True
+                if mags is not None:
+                    target_mag = mags[row]
         except Exception:  # noqa: BLE001
             pass
 
@@ -3981,13 +4202,27 @@ def _binned(time, flux, bin_size_days: float = BIN_SIZE_DAYS):
     return bt, bf, be
 
 
+def target_id_label(band_results: dict) -> int | str:
+    """Target index for multi-band plot titles.
+
+    In self-reference mode each band has its own source catalog, so the
+    target index can differ per band (#55 A11): returns the shared index when
+    all bands agree, else ``"g:5 r:7"``.
+    """
+    ids = {band: r["target_index"] for band, r in band_results.items()}
+    unique = set(ids.values())
+    if len(unique) == 1:
+        return unique.pop()
+    return " ".join(f"{band}:{tid}" for band, tid in ids.items())
+
+
 def plot_lightcurves(
     band_results,
     path: Path,
     target_name: str,
     instrument: str,
     date: str,
-    target_index: int,
+    target_index: int | str,
     bin_size_days: float = BIN_SIZE_DAYS,
 ) -> None:
     bands = sort_bands_canonical(band_results.keys())
@@ -4059,7 +4294,7 @@ def plot_raw_flux(
     target_name: str,
     instrument: str,
     date: str,
-    target_index: int,
+    target_index: int | str,
 ) -> None:
     """Plot comparison stars raw flux for each band."""
     bands = sort_bands_canonical(band_results.keys())
@@ -4135,7 +4370,7 @@ def plot_covariates(
     target_name: str,
     instrument: str,
     date: str,
-    target_index: int,
+    target_index: int | str,
 ) -> None:
     bands = sort_bands_canonical(band_results.keys())
     fig, axes = plt.subplots(
@@ -4252,7 +4487,7 @@ def plot_stacks(
     target_name: str,
     instrument: str,
     date: str,
-    target_index: int,
+    target_index: int | str,
     plot_gaia_sources: bool = False,
     target_coord=None,
     cmap: str = "Greys",
@@ -5175,6 +5410,102 @@ def _resolve_simbad_target(name: str) -> SkyCoord:
     return SkyCoord(result["ra"][0], result["dec"][0], unit=u.deg, frame="icrs")
 
 
+# Gaia search radius around the input coordinate when identifying the target.
+# Covers proper motions up to ~2 arcsec/yr between J2000 and the 2020s.
+TARGET_GAIA_SEARCH_ARCSEC = 60.0
+TARGET_GAIA_QUERY_LIMIT = 2000
+
+
+def _observation_time(source) -> Time | None:
+    """Observation date of an ``Image`` or FITS path as a ``Time``, or ``None``."""
+    try:
+        image = source if isinstance(source, Image) else FITSImage(source)
+        date = image.date
+        return Time(date) if date is not None else None
+    except Exception as exc:  # noqa: BLE001 - caller degrades to no propagation
+        logger.warning(f"observation date unreadable for {source!r:.80} ({exc})")
+        return None
+
+
+def _gaia_df_at_epoch(df: pd.DataFrame, obs_time: Time | None) -> pd.DataFrame:
+    """Copy of a raw ``gaia_query`` frame with ``ra``/``dec`` moved to ``obs_time``."""
+    if obs_time is None:
+        logger.warning("observation date unknown; Gaia positions left at J2015.5")
+        return df
+    canon = normalize_gaia_columns(df)
+    coords = SkyCoord(canon.ra.to_numpy(), canon.dec.to_numpy(), unit="deg")
+    moved = propagate_linear(coords, canon.pmra, canon.pmdec, GAIA_DR2_EPOCH, obs_time)
+    return df.assign(ra=moved.ra.deg, dec=moved.dec.deg)
+
+
+def resolve_target_at_epoch(target_coord: SkyCoord, obs_time: Time | None) -> SkyCoord:
+    """Target position on the observing night (#55 A1).
+
+    Identifies the target as the Gaia DR2 source whose proper-motion track
+    passes within ``TARGET_GAIA_MATCH_ARCSEC`` of ``target_coord`` and returns
+    its position at ``obs_time``. Every later match (detected sources, Gaia
+    aperture sizing, nearby-star screening) compares against frames and Gaia
+    rows at the observation epoch, so they need this position, not the J2000
+    one a name resolver returns.
+
+    Falls back to ``target_coord`` unchanged, with a warning, when the date is
+    unknown, Gaia is unreachable, or no Gaia source matches; a fast-moving
+    target then fails to match on the frame and the band fails visibly
+    (``TargetNotFoundError``) rather than reducing another star.
+    """
+    if target_coord is None:
+        return None
+    if obs_time is None:
+        logger.warning(
+            "observation date unknown; target coordinate not propagated for "
+            "proper motion"
+        )
+        return target_coord
+    try:
+        table = gaia_query(
+            target_coord,
+            2 * TARGET_GAIA_SEARCH_ARCSEC / 3600.0,
+            "*",
+            limit=TARGET_GAIA_QUERY_LIMIT,
+        )
+        gaia = normalize_gaia_columns(table.to_pandas())
+    except Exception as exc:  # noqa: BLE001 - network/catalog errors degrade
+        logger.warning(
+            f"Gaia query for target identification failed ({exc}); using the "
+            "input coordinate without proper-motion propagation"
+        )
+        return target_coord
+    if len(gaia) >= TARGET_GAIA_QUERY_LIMIT:
+        logger.warning(
+            f"Gaia target search hit its {TARGET_GAIA_QUERY_LIMIT}-row limit "
+            "(brightest first); a faint target may be missing from it"
+        )
+    match = select_gaia_target(target_coord, gaia, obs_time)
+    if match is None:
+        logger.warning(
+            f"no Gaia DR2 source passes within {TARGET_GAIA_MATCH_ARCSEC:g} arcsec "
+            f"of the target coordinate ({len(gaia)} searched within "
+            f"{TARGET_GAIA_SEARCH_ARCSEC:g} arcsec); using it without "
+            "proper-motion propagation"
+        )
+        return target_coord
+    coord = match.at(obs_time)
+    shift = float(target_coord.separation(coord).arcsec)
+    logger.info(
+        f"target = Gaia DR2 {match.source_id} (G={match.g_mag:.2f}, "
+        f"pm={match.pm_total_masyr:.1f} mas/yr); position on "
+        f"{obs_time.datetime.date()} is {shift:.2f} arcsec from the input coordinate"
+    )
+    if match.n_candidates > 1:
+        logger.warning(
+            f"{match.n_candidates} Gaia sources pass within "
+            f"{TARGET_GAIA_MATCH_ARCSEC:g} arcsec of the target coordinate; chose "
+            f"{match.source_id} (closest at J2000, J2015.5 or the observing date). "
+            "Check the target on the _ref plot or set --tID"
+        )
+    return coord
+
+
 def _calibration_args(
     args: argparse.Namespace, calib_dir: Path, bands: list[str] | None
 ) -> list[str]:
@@ -5353,13 +5684,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     ap.add_argument(
         "--tID",
-        type=int,
+        type=parse_source_index,
         default=None,
         help="Target source index (default: auto-detected from Gaia).",
     )
     ap.add_argument(
         "--cID",
-        type=int,
+        type=parse_source_index,
         nargs="+",
         default=None,
         help="Comparison star indices for differential photometry (default: auto-selected).",
@@ -5367,7 +5698,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument(
         "--avoid_cids",
         "--avoid-cids",
-        type=int,
+        type=parse_source_index,
         nargs="+",
         default=None,
         help="Star indices to exclude as comparisons and from ref.png. "
@@ -6411,6 +6742,9 @@ def main(argv=None) -> int:
                     )
                     raise e
         logger.info(f"target radec: {target_coord}")
+    target_coord = resolve_target_at_epoch(
+        target_coord, _observation_time(sciences[active_bands[0]][0])
+    )
 
     # reference seeding: without --ref_band each band self-references its first
     # frame (within-camera alignment, correct for multi-camera instruments);
@@ -6907,8 +7241,6 @@ def main(argv=None) -> int:
                     break
             if ref is not None and target_coord is not None:
                 try:
-                    from prose.utils import gaia_query
-
                     fallback_radius_deg = (
                         180.0 / 3600.0
                     )  # 180 arcseconds = 3 arcminutes
@@ -6917,7 +7249,11 @@ def main(argv=None) -> int:
                     )
                     if table is not None and len(table) > 0:
                         table.rename_column("DESIGNATION", "id")
-                        gaia_df = table.to_pandas()
+                        # gaia_query returns J2015.5 positions; the target
+                        # coordinate is at the observation epoch (#55 A1).
+                        gaia_df = _gaia_df_at_epoch(
+                            table.to_pandas(), _observation_time(ref)
+                        )
                         logger.info(
                             f"Fallback small-region Gaia query succeeded: {len(gaia_df)} rows"
                         )
@@ -6929,7 +7265,12 @@ def main(argv=None) -> int:
                 gaia_coords = SkyCoord(
                     gaia_df.ra.values, gaia_df.dec.values, unit="deg"
                 )
-                target_idx_in_gaia = target_coord.separation(gaia_coords).argmin()
+                target_idx_in_gaia = gaia_target_row(target_coord, gaia_coords)
+                if target_idx_in_gaia is None:
+                    raise ValueError(
+                        f"no Gaia source within {TARGET_GAIA_MATCH_ARCSEC:g} arcsec "
+                        "of the target, so its magnitude is unknown"
+                    )
                 target_g_mag = float(gaia_df.phot_g_mean_mag.values[target_idx_in_gaia])
 
                 # Project detected sources to RA/Dec
@@ -6996,7 +7337,7 @@ def main(argv=None) -> int:
         logger.info(f"wrote {nearby_csv_path}")
 
     bin_size_days = args.bin_size_minutes / (24 * 60)
-    target_index = next(iter(band_results.values()))["target_index"]
+    target_index = target_id_label(band_results)
     if args.test_run or args.plots not in ("all", "summary"):
         reason = "test run" if args.test_run else f"--plots={args.plots}"
         logger.info(f"skipping combined lightcurve plot ({reason})")
