@@ -199,19 +199,24 @@ How to read `…_stacks.png` (one row per band):
   BANZAI has already converted both pixels and this limit to electrons, so
   no detector-gain division is applied. A missing/invalid LCO limit is unknown;
   it is not replaced with a hardcoded camera limit. `MAXLIN` is reported for
-  reference but is not used as the saturation cutoff. In self-reference mode,
-  comparison-star exclusion uses the reference frame, protects the target,
-  and is relaxed if it would empty the available comparison pool.
-  With `--ref_band`, each band instead screens its middle science frame using
-  its own limit and native, unstacked pixels. Shared source positions are
-  transformed onto that frame; a saturated pixel inside the largest requested
-  photometry aperture excludes that comparison ID from automatic and explicit
-  selection. Unmeasurable apertures are excluded too. The target is retained
-  with a warning if saturated. Failed alignment or an empty comparison pool
-  fails the band rather than re-admitting saturated stars. Missing saturation
-  metadata is logged as unknown, without borrowing another band's exclusions.
-  Neither mode masks saturation in every exposure; changing saturation over
-  the time series still requires inspection.
+  reference but is not used as the saturation cutoff. Comparison stars are
+  screened twice. Before photometry, self-reference mode checks the reference
+  frame's detection peaks; with `--ref_band`, each band instead screens its
+  middle science frame using its own limit and native, unstacked pixels
+  (shared source positions are transformed onto that frame, a saturated pixel
+  inside the largest requested aperture excludes that ID, and unmeasurable
+  apertures are excluded too). After photometry, every frame's `Peak` for
+  every source is compared with the band's own limit: a comparison at or
+  above it in more than 2% of frames, and in more than one frame (so a single
+  cosmic ray does not reject a star), is excluded from automatic and explicit
+  selection. This catches stars that saturate later in the night as seeing or
+  focus changes. The target is never excluded; the log warns with the
+  fraction of frames in which it reaches the limit, and the run result keeps
+  it as `target_saturated_fraction`. In both modes, a saturation screen that
+  would leave no comparison star fails the band rather than re-admitting
+  saturated stars, and failed `--ref_band` alignment fails the band too.
+  Missing saturation metadata is logged as unknown (the per-frame screen is
+  then skipped with a warning), without borrowing another band's exclusions.
   MuSCAT/MuSCAT2 fallback requires a loaded telescope configuration. If its
   `.telescope` file is not registered, saturation is unknown rather than the
   generic 55,000 default, even when the default telescope has the instrument's

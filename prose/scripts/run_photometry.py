@@ -335,6 +335,9 @@ SIGMA_FLUX = None
 # A comparison candidate missing in more than this fraction of frames is
 # excluded instead of imputed (#55 A3).
 MAX_COMPARISON_MISSING_FRACTION = 0.10
+# A comparison reaching the saturation limit in more than this fraction of
+# frames (and in more than one frame) is excluded from the ensemble (#55 A10).
+MAX_SATURATED_FRAME_FRACTION = 0.02
 POLY_DEG = 2
 BIN_SIZE_DAYS = 10 / 60 / 24  # 10-minute bins for plots
 
@@ -2564,9 +2567,127 @@ def photometry_sequence(
                 peak_radius=lambda im: float(
                     im.computed.get("peak_radius", float("nan"))
                 ),
+                # every source's peak, for per-frame saturation screening
+                # (#55 A10); "_" keeps it out of the CSV columns.
+                _peaks=_frame_peaks,
             ),
         ],
     )
+
+
+def _frame_peaks(im) -> np.ndarray:
+    """Peak of every source in ``im`` (NaN when not measured)."""
+    n_sources = len(im.sources)
+    peaks = im.computed.get("peaks")
+    if peaks is None or len(peaks) != n_sources:
+        return np.full(n_sources, np.nan)
+    return np.asarray(peaks, dtype=float)
+
+
+def _saturated_over_time(
+    peaks: np.ndarray, limit: float, target_index: int
+) -> tuple[list[int], float]:
+    """Comparisons saturated too often, and the target's saturated fraction.
+
+    ``peaks`` is ``(n_frames, n_sources)``. A source's fraction counts only
+    frames with a finite peak. A comparison is excluded when it reaches
+    ``limit`` in more than ``MAX_SATURATED_FRAME_FRACTION`` of frames and in
+    more than one frame, so a single cosmic-ray hit does not reject a star.
+    """
+    peaks = np.atleast_2d(np.asarray(peaks, dtype=float))
+    finite = np.isfinite(peaks)
+    n_valid = finite.sum(axis=0)
+    n_saturated = (finite & (peaks >= limit)).sum(axis=0)
+    fraction = np.divide(
+        n_saturated,
+        n_valid,
+        out=np.zeros(n_valid.shape, dtype=float),
+        where=n_valid > 0,
+    )
+    excluded = (n_saturated > 1) & (fraction > MAX_SATURATED_FRAME_FRACTION)
+    target_fraction = 0.0
+    if 0 <= target_index < excluded.size:
+        excluded[target_index] = False
+        target_fraction = float(fraction[target_index])
+    return sorted(int(i) for i in np.flatnonzero(excluded)), target_fraction
+
+
+def _apply_saturation_exclusion(
+    band: str,
+    saturated: list[int],
+    avoid: list[int] | None,
+    cids: list[int] | None,
+    target_index: int,
+    n_sources: int,
+) -> tuple[list[int] | None, list[int] | None]:
+    """Add saturated IDs to the avoid pool and strip them from explicit cIDs.
+
+    Raises ``ValueError`` when no comparison star would remain: saturated
+    stars are never re-admitted to keep a band alive (#55 A11).
+    """
+    if not saturated:
+        return avoid, cids
+    current = set(avoid or [])
+    candidates = [i for i in range(n_sources) if i != target_index and i not in current]
+    if candidates and all(i in set(saturated) for i in candidates):
+        raise ValueError(
+            f"[{band}] saturation screening leaves no usable comparison stars "
+            f"(saturated IDs {sorted(saturated)})"
+        )
+    avoid = sorted(current | set(saturated))
+    if cids is not None:
+        cids = [c for c in cids if c not in set(saturated)]
+        if not cids:
+            logger.warning(
+                f"[{band}] all explicit cIDs are saturated; falling back to auto-selection"
+            )
+            cids = None
+    return avoid, cids
+
+
+def _screen_saturation_over_time(
+    band: str,
+    files,
+    phot,
+    avoid: list[int] | None,
+    cids: list[int] | None,
+    target_index: int,
+    n_sources: int,
+) -> tuple[list[int] | None, list[int] | None, list[int], float]:
+    """Exclude comparisons that saturate in too many frames (#55 A10).
+
+    The reference-frame screen sees one frame; a star can saturate later as
+    seeing or focus changes. Uses every frame's measured peaks against this
+    band's own saturation limit. Returns ``(avoid, cids, saturated_ids,
+    target_fraction)``; ``target_fraction`` is NaN when not screened.
+    """
+    first = FITSImage(files[0])
+    header = first.header
+    limit, origin = resolve_saturation(header, get_instrument(header), first.telescope)
+    values = getattr(phot.data[0], "values", None) or {}
+    peaks = np.asarray(values.get("_peaks", []), dtype=float)
+    if limit is None or peaks.ndim != 2 or peaks.shape[1] != n_sources:
+        logger.warning(
+            f"[{band}] per-frame saturation not screened "
+            f"({'limit unknown' if limit is None else 'peaks unavailable'})"
+        )
+        return avoid, cids, [], float("nan")
+    saturated, target_fraction = _saturated_over_time(peaks, limit, target_index)
+    unit = pixel_unit(header)
+    logger.info(
+        f"[{band}] per-frame saturation ({limit} {unit}, {origin}) over "
+        f"{len(peaks)} frames: comparison IDs saturated in "
+        f">{MAX_SATURATED_FRAME_FRACTION:.0%} of frames: {saturated or 'none'}"
+    )
+    if target_fraction > 0:
+        logger.warning(
+            f"[{band}] target {target_index} reaches the saturation limit "
+            f"({limit} {unit}) in {target_fraction:.1%} of frames"
+        )
+    avoid, cids = _apply_saturation_exclusion(
+        band, saturated, avoid, cids, target_index, n_sources
+    )
+    return avoid, cids, saturated, target_fraction
 
 
 def _select_stack_frames(files, n: int) -> list:
@@ -3035,33 +3156,9 @@ def run_band(
         )
     else:
         saturated_cids = reference.get("saturated_cids") or []
-    if saturated_cids:
-        current_avoid = set(mapped_avoid or [])
-        target_idx = target_index
-        n_sources = len(ref.sources)
-        candidates = [
-            i for i in range(n_sources) if i != target_idx and i not in current_avoid
-        ]
-        after_sat = [i for i in candidates if i not in set(saturated_cids)]
-        if candidates and not after_sat:
-            if shared_reference:
-                raise ValueError(
-                    f"[{band}] per-band saturation screening leaves no usable comparison stars"
-                )
-            logger.warning(
-                f"[{band}] saturation exclusion would remove all comparison stars; "
-                f"relaxing saturation exclusion to preserve comparison pool"
-            )
-        else:
-            mapped_avoid = sorted(current_avoid | set(saturated_cids))
-            if cids is not None:
-                cids = [c for c in cids if c not in set(saturated_cids)]
-                if not cids:
-                    logger.warning(
-                        f"[{band}] all explicit cIDs are saturated; "
-                        f"falling back to auto-selection"
-                    )
-                    cids = None
+    mapped_avoid, cids = _apply_saturation_exclusion(
+        band, saturated_cids, mapped_avoid, cids, target_index, len(ref.sources)
+    )
 
     # ``target_index`` may be inferred from WCS, so parser-time validation of
     # an explicit --tID cannot protect this case.  Never mask the target as an
@@ -3117,6 +3214,13 @@ def run_band(
         )
         return None
     fluxes.target = target_index
+
+    mapped_avoid, cids, saturated_over_time, target_saturated_fraction = (
+        _screen_saturation_over_time(
+            band, files, phot, mapped_avoid, cids, target_index, len(ref.sources)
+        )
+    )
+    saturated_cids = sorted(set(saturated_cids) | set(saturated_over_time))
 
     diff = differential_photometry(
         fluxes,
@@ -3189,6 +3293,7 @@ def run_band(
         gaia_df=reference.get("gaia_df"),
         display_ref=display_ref,
         saturated_cids=saturated_cids,
+        target_saturated_fraction=target_saturated_fraction,
     )
 
 
