@@ -199,19 +199,24 @@ How to read `…_stacks.png` (one row per band):
   BANZAI has already converted both pixels and this limit to electrons, so
   no detector-gain division is applied. A missing/invalid LCO limit is unknown;
   it is not replaced with a hardcoded camera limit. `MAXLIN` is reported for
-  reference but is not used as the saturation cutoff. In self-reference mode,
-  comparison-star exclusion uses the reference frame, protects the target,
-  and is relaxed if it would empty the available comparison pool.
-  With `--ref_band`, each band instead screens its middle science frame using
-  its own limit and native, unstacked pixels. Shared source positions are
-  transformed onto that frame; a saturated pixel inside the largest requested
-  photometry aperture excludes that comparison ID from automatic and explicit
-  selection. Unmeasurable apertures are excluded too. The target is retained
-  with a warning if saturated. Failed alignment or an empty comparison pool
-  fails the band rather than re-admitting saturated stars. Missing saturation
-  metadata is logged as unknown, without borrowing another band's exclusions.
-  Neither mode masks saturation in every exposure; changing saturation over
-  the time series still requires inspection.
+  reference but is not used as the saturation cutoff. Comparison stars are
+  screened twice. Before photometry, self-reference mode checks the reference
+  frame's detection peaks; with `--ref_band`, each band instead screens its
+  middle science frame using its own limit and native, unstacked pixels
+  (shared source positions are transformed onto that frame, a saturated pixel
+  inside the largest requested aperture excludes that ID, and unmeasurable
+  apertures are excluded too). After photometry, every frame's `Peak` for
+  every source is compared with the band's own limit: a comparison at or
+  above it in more than 2% of frames, and in more than one frame (so a single
+  cosmic ray does not reject a star), is excluded from automatic and explicit
+  selection. This catches stars that saturate later in the night as seeing or
+  focus changes. The target is never excluded; the log warns with the
+  fraction of frames in which it reaches the limit, and the run result keeps
+  it as `target_saturated_fraction`. In both modes, a saturation screen that
+  would leave no comparison star fails the band rather than re-admitting
+  saturated stars, and failed `--ref_band` alignment fails the band too.
+  Missing saturation metadata is logged as unknown (the per-frame screen is
+  then skipped with a warning), without borrowing another band's exclusions.
   MuSCAT/MuSCAT2 fallback requires a loaded telescope configuration. If its
   `.telescope` file is not registered, saturation is unknown rather than the
   generic 55,000 default, even when the default telescope has the instrument's
@@ -342,6 +347,19 @@ python -m prose.scripts.run_photometry ... \
   tried before the band continues without astrometry.
 - **Comparison-star bounds.** Out-of-range `--cID` values are dropped with a
   warning and fall back to automatic selection rather than crashing.
+  `--tID`, `--cID` and `--avoid_cids` are zero-based and reject negative
+  values at parse time (Python would otherwise count them from the end of the
+  source list and pick another star).
+- **Noise model and pixel scale.** Each band's reference logs the gain and
+  read noise behind the `Err` column and where each came from (header
+  keyword, `.telescope` file, or generic default); a generic default, which
+  is not a measured value, is logged as a warning. The pixel scale is taken
+  from `PIXSCALE`, then the instrument table; if neither exists, the MuSCAT3/4
+  value 0.267 arcsec/px is assumed with a warning.
+- **BJD offset.** The GJD-UTC → BJD-TDB offset warns when its magnitude
+  exceeds 16.8 min, whether it is positive or negative.
+- **Summary plot titles.** Multi-band figures show each band's target index
+  (`tID=g:5 r:7`) when self-referenced bands number their sources differently.
 - **Avoided stars.** With `--ref_band`, IDs passed to `--avoid_cids` are
   excluded from comparison-star selection and omitted from each `…_ref.png`.
 - **Unlocated target.** If no detected source lies within 5 arcsec of the
@@ -350,6 +368,24 @@ python -m prose.scripts.run_photometry ... \
   no band located the target, the band fails with an error naming the nearest
   source and its separation. The pipeline no longer reduces the brightest
   source in its place. Pass `--tID` to choose the target.
+- **Proper motion.** Name resolvers (MAST, SIMBAD) return J2000 positions, so a
+  star moving faster than ~0.2 arcsec/yr is more than 5 arcsec from that
+  position by now. Before any matching, the target is identified as the Gaia
+  DR2 source whose proper-motion track passes within 2 arcsec of the input
+  coordinate (J2000, Gaia J2015.5, or the observing night all match), and its
+  position on the night of the first frame is used everywhere: source
+  matching, Gaia aperture sizing, nearby-star screening, plots and BJD. The log
+  names the Gaia source, its proper motion, and how far it moved. When several
+  sources pass, the one closest to the coordinate at J2000, J2015.5 or the
+  observing date wins, and a warning asks you to check the target. The Gaia
+  field cache is keyed to the observation epoch (0.1 yr), because its rows
+  are propagated to the frame date. If Gaia is
+  unreachable, the frame has no date, or no source matches, the input
+  coordinate is used unchanged with a warning. Where a step needs the target's
+  Gaia row (annulus contamination, the nearby-stars table, the cutout
+  overlay), it accepts only a row within 2 arcsec of the target, never just
+  the nearest one; with no such row, aperture sizing falls back to FWHM-only
+  geometry and the nearby-stars table is left empty, each with a warning.
 - **Exit status.** `0` when every band was reduced, `1` when none was (or the
   input was invalid), and `3` when only some bands were reduced. The final
   `photometry PARTIAL FAILURE` / `photometry FAILED` line names each failed
