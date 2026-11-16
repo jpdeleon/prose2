@@ -574,6 +574,21 @@ def get_instrument(header) -> str:
     return "unknown"
 
 
+def _simbad_for_plot(simbad_df, target_coord, instrument: str):
+    """SIMBAD objects to overlay: *simbad_df* if given, else a guarded query.
+
+    SIMBAD outages (e.g. its TAP endpoint returning 404) only cost the plot
+    its object markers; they must not abort the run.
+    """
+    if simbad_df is not None:
+        return simbad_df
+    try:
+        return get_simbad_data(target_coord, instrument)
+    except Exception as exc:  # noqa: BLE001 - astroquery/pyvo raise many types
+        logger.warning(f"SIMBAD query failed; plotting without SIMBAD objects: {exc}")
+        return None
+
+
 def _resolve_band(raw_filter: str, instrument: str, bands: list[str]) -> str | None:
     """Map raw filter value to canonical band name.
 
@@ -4023,11 +4038,7 @@ def plot_ref_image(
         except Exception:  # noqa: BLE001
             pass
 
-        simbad = (
-            simbad_df
-            if simbad_df is not None
-            else get_simbad_data(target_coord, instrument)
-        )
+        simbad = _simbad_for_plot(simbad_df, target_coord, instrument)
         if simbad is not None and not simbad.empty:
             simbad = simbad[simbad.OTYPE != "Star"]
             if not simbad.empty:
@@ -4763,11 +4774,7 @@ def plot_cutouts(
         except Exception:  # noqa: BLE001
             pass
 
-        simbad = (
-            simbad_df
-            if simbad_df is not None
-            else get_simbad_data(target_coord, instrument)
-        )
+        simbad = _simbad_for_plot(simbad_df, target_coord, instrument)
         if simbad is not None and not simbad.empty:
             simbad = simbad[simbad.OTYPE != "Star"]
             if not simbad.empty:
@@ -7098,6 +7105,9 @@ def main(argv=None) -> int:
             simbad_df = get_simbad_data(target_coord, instrument)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"SIMBAD query failed: {exc}")
+            # Empty, not None: the per-band plots would otherwise each retry
+            # the unreachable service.
+            simbad_df = pd.DataFrame()
 
     stem_multi = build_summary_stem(
         args.target_name,
