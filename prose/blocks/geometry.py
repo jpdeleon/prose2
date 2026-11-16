@@ -75,7 +75,9 @@ class Trim(Block):
             skip_wcs = not image.plate_solved
         else:
             skip_wcs = self.skip_wcs
-        cutout = image.cutout(center, shape, wcs=skip_wcs)
+        # cutout(wcs=True) crops the WCS along with the pixels; skipping it on
+        # a plate-solved image left the WCS unshifted by the trim offset.
+        cutout = image.cutout(center, shape, wcs=not skip_wcs)
         image.data = cutout.data
         image.sources = cutout.sources
         image.wcs = cutout.wcs
