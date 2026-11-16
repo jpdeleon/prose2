@@ -168,10 +168,15 @@ photometry --data_dir /data/kSIRIUS --target_name tic427460223 \
 - **Time.** `JD` is taken as the exposure start (`time_reference: start`), so
   half of `EXPTIME` is added to get mid-exposure. BJD uses the Iriki
   Observatory location.
-- **Detector values.** `gain` and `read_noise` in `data/ksirius_*.telescope`
-  are **placeholders (1.0)**, and `saturation` is unknown (null), so `Err`
-  and saturation screening are not meaningful until real values go into
-  those files. Copy the files into `~/.prose/` after editing them.
+- **Detector values.** `data/ksirius_*.telescope` carry the values supplied
+  by the observers: optcam (g, i) gain 6 e⁻/ADU, read noise 100 e⁻,
+  saturation 20000 ADU (quoted as ~20000–25000); kSIRIUS (J, H, Ks) gain
+  10 e⁻/ADU, read noise 30 e⁻, saturation 15000 ADU. The saturation values
+  are raw-frame limits, but the distributed frames are sky-subtracted, so a
+  star can saturate below them (its peak plus the removed sky reaches the
+  limit). Saturation screening is therefore optimistic, most of all in Ks,
+  where the sky is brightest. Copy the files into `~/.prose/` after editing
+  them.
 
 Multi-camera MuSCAT bands each self-reference their own first frame, which is
 correct when every band is a separate camera. Pass `--ref_band gp` to instead

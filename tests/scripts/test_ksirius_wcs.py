@@ -374,6 +374,20 @@ def test_telescope_files_agree_with_camera_pixel_scales():
         assert spec["time_reference"] == "start"
 
 
+def test_telescope_files_carry_the_observatory_detector_values():
+    """Gain, read noise and saturation as supplied by the observers."""
+    import yaml
+
+    data_dir = Path(__file__).resolve().parents[2] / "data"
+    optcam = {"gain": 6.0, "read_noise": 100.0, "saturation": 20000.0}
+    nir = {"gain": 10.0, "read_noise": 30.0, "saturation": 15000.0}
+    expected = {"g": optcam, "i": optcam, "J": nir, "H": nir, "Ks": nir}
+    for band, values in expected.items():
+        spec = yaml.safe_load((data_dir / f"ksirius_{band}.telescope").read_text())
+        for key, value in values.items():
+            assert spec[key] == value, (band, key)
+
+
 # ----------------------------------------------------- known-scale solver
 
 

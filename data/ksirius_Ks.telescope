@@ -2,8 +2,12 @@
 # optical (optcam: g, i) and near-infrared (kSIRIUS: J, H, Ks) imaging.
 # pixel_scale: measured by plate-solving /data/kSIRIUS frames against Gaia
 # (J: astrometry.net 0.694"/px; i/g: twirl on median stacks 0.62"/px).
-# gain, read_noise: PLACEHOLDERS, not measured -- replace with real values.
-# saturation: unknown (null); the headers carry no limit either.
+# gain (e-/ADU), read_noise (e-), saturation (ADU): supplied by the observers.
+# The observers' rounded pixel scales (optcam 0.6, kSIRIUS 0.69) agree with these.
+# saturation: the observers quote ~15000 ADU for kSIRIUS.
+# That is the raw-frame limit, but these frames are sky-subtracted: a star
+# saturates once its peak plus the removed sky reaches it, so screening
+# against this value is optimistic by the sky level.
 name: kSIRIUS_Ks
 names:
 - KU 1m telescope
@@ -34,12 +38,12 @@ time_reference: start
 bjd_scale: utc
 mjd: 0
 trimming: [0, 0]
-read_noise: 1.0
-gain: 1.0
+read_noise: 30.0
+gain: 10.0
 altitude: 574
 diameter: 100
 pixel_scale: 0.694
 latlong: [31.7479, 130.4399]
-saturation: null
+saturation: 15000.0
 hdu: 0
 camera_name: kSIRIUS (ch Ks)
