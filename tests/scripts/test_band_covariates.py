@@ -82,6 +82,17 @@ def test_one_axis_per_signal_sharing_time(tmp_path, captured):
     assert main_axes[-1].get_xlabel() == "time (JD) - 2460000"
 
 
+def test_every_panel_has_minor_ticks(tmp_path, captured):
+    from matplotlib.ticker import NullLocator
+
+    _plot(_make_df(), tmp_path)
+
+    panels = [ax for ax in captured["fig"].axes if ax.get_ylabel()]
+    for ax in panels:
+        assert not isinstance(ax.xaxis.get_minor_locator(), NullLocator)
+        assert not isinstance(ax.yaxis.get_minor_locator(), NullLocator)
+
+
 def test_pixel_unit_follows_the_csv(tmp_path, captured):
     _plot(_make_df(), tmp_path, unit="e-")
 

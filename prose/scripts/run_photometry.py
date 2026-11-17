@@ -4484,6 +4484,8 @@ def plot_band_covariates(
         ax.plot(t, np.asarray(df[col], dtype=float), "k-", lw=1)
         ax.set_ylabel(label.format(unit=unit))
 
+    for ax in axes:
+        ax.minorticks_on()
     axes[-1].set_xlabel(f"time (JD) - {t0}")
     secax = axes[0].secondary_xaxis(
         location="top",
