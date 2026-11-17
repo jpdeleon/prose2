@@ -1835,6 +1835,7 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
                                 class FakeDiff:
                                     def __init__(self):
                                         self.time = np.arange(5)
+                                        self.metadata = {}
 
                                 return FakeDiff()
 
@@ -1842,6 +1843,7 @@ def test_run_band_relaxes_edge_exclusion_when_empty_comparisons(tmp_path, monkey
                                 class FakeDiff:
                                     def __init__(self):
                                         self.time = np.arange(5)
+                                        self.metadata = {}
 
                                 return FakeDiff()
 
@@ -1933,6 +1935,7 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
         avoid_cids=None,
         nan_imputation_method="linear",
         keep_datacube=False,
+        precision=None,
     ):
         captured["diff_target_index"] = target_index
 
@@ -2015,6 +2018,7 @@ def test_run_band_remaps_cids_and_avoid_cids_from_reference_band(tmp_path, monke
         avoid_cids=None,
         nan_imputation_method="linear",
         keep_datacube=False,
+        precision=None,
     ):
         captured["diff_cids"] = cids
         captured["diff_avoid_cids"] = avoid_cids
@@ -3824,6 +3828,7 @@ def test_run_band_forwards_display_stack_nframes(tmp_path, monkeypatch):
         avoid_cids=None,
         nan_imputation_method="linear",
         keep_datacube=False,
+        precision=None,
     ):
         class FakeDiff:
             def __init__(self):
@@ -3908,6 +3913,7 @@ def test_run_band_skips_display_reference_for_reference_band(tmp_path, monkeypat
         avoid_cids=None,
         nan_imputation_method="linear",
         keep_datacube=False,
+        precision=None,
     ):
         return SimpleNamespace(time=np.arange(4, dtype=float), target=target_index)
 
