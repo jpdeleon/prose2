@@ -1,5 +1,26 @@
 # Changelog
 
+## [3.7.0](https://github.com/jpdeleon/prose2/compare/v3.6.2...v3.7.0) (2026-11-17)
+
+
+### Features
+
+* **run_photometry:** add a per-band covariate figure ([28a9c7e](https://github.com/jpdeleon/prose2/commit/28a9c7e0cdfa20afac531a5b1bd65fc4dce8ec3d))
+* **run_photometry:** add a per-band covariate figure ([e10cc0f](https://github.com/jpdeleon/prose2/commit/e10cc0f5b7aa5c5153ff73394ffdc06f41a4516e))
+* **run_photometry:** turn on minor ticks in the per-band covariate figure ([f1b6e1c](https://github.com/jpdeleon/prose2/commit/f1b6e1c4e221138b9cf1a0cae10049060f2efc30))
+* **run_photometry:** turn on minor ticks in the per-band covariate figure ([37eebb9](https://github.com/jpdeleon/prose2/commit/37eebb9251ad03658b75a6efc5b0927b530c8eea))
+* save a per-star flux datacube and re-difference from it ([e8c7cb4](https://github.com/jpdeleon/prose2/commit/e8c7cb40fff56702c04be0dc955cabe1b76acecd))
+* save a per-star flux datacube and re-difference from it ([ce1cac9](https://github.com/jpdeleon/prose2/commit/ce1cac9ec1512b9cf44f8fd412717711e4616b04))
+
+
+### Bug Fixes
+
+* address review of the [#55](https://github.com/jpdeleon/prose2/issues/55) A1/A10/A11 fixes ([0ebf62c](https://github.com/jpdeleon/prose2/commit/0ebf62c5673e4b10f344f3222791b29afe53531f))
+* close the smaller run_photometry audit items ([22309da](https://github.com/jpdeleon/prose2/commit/22309da572d6adee3800381f62f6e2a1775d6e1d))
+* identify the target in Gaia and use its position on the observing night ([43c2e2e](https://github.com/jpdeleon/prose2/commit/43c2e2e8994e98af4ca042432c327b561d720fdd))
+* screen comparison stars for saturation in every frame ([943f592](https://github.com/jpdeleon/prose2/commit/943f592fb568b1f486dc87157fe45004a223e2c4))
+* target epoch, per-frame saturation and smaller run_photometry audit items ([#55](https://github.com/jpdeleon/prose2/issues/55) A1/A10/A11) ([03e1c8a](https://github.com/jpdeleon/prose2/commit/03e1c8aeab57fe508cbcb2fa46ab066bb529600c))
+
 ## [3.6.2](https://github.com/jpdeleon/prose2/compare/v3.6.1...v3.6.2) (2026-11-13)
 
 
