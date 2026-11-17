@@ -1,0 +1,49 @@
+# Kagoshima University 1m telescope (Iriki Observatory): simultaneous
+# optical (optcam: g, i) and near-infrared (kSIRIUS: J, H, Ks) imaging.
+# pixel_scale: measured by plate-solving /data/kSIRIUS frames against Gaia
+# (J: astrometry.net 0.694"/px; i/g: twirl on median stacks 0.62"/px).
+# gain (e-/ADU), read_noise (e-), saturation (ADU): supplied by the observers.
+# The observers' rounded pixel scales (optcam 0.6, kSIRIUS 0.69) agree with these.
+# saturation: the observers quote ~20000-25000 ADU for optcam; the lower end is used.
+# That is the raw-frame limit, but these frames are sky-subtracted: a star
+# saturates once its peak plus the removed sky reaches it, so screening
+# against this value is optimistic by the sky level.
+name: kSIRIUS_i
+names:
+- KU 1m telescope
+- kSIRIUS
+- ksirius
+keyword_telescope: TELESCOP
+keyword_object: OBJECT
+keyword_image_type: IMAGETYP
+keyword_light_images: light
+keyword_dark_images: dark
+keyword_flat_images: flat
+keyword_bias_images: bias
+keyword_observation_date: DATE_UT
+keyword_exposure_time: EXPTIME
+keyword_filter: FILTER
+keyword_airmass: AIRMASS
+keyword_fwhm: FWHM
+keyword_seeing: SEEING
+keyword_ra: RA
+keyword_dec: DEC
+keyword_jd: JD
+keyword_bjd: BJD
+keyword_flip: PIERSIDE
+ra_unit: hourangle
+dec_unit: deg
+jd_scale: utc
+time_reference: start
+bjd_scale: utc
+mjd: 0
+trimming: [0, 0]
+read_noise: 100.0
+gain: 6.0
+altitude: 574
+diameter: 100
+pixel_scale: 0.62
+latlong: [31.7479, 130.4399]
+saturation: 20000.0
+hdu: 0
+camera_name: optcam (KAF1001_SG2, ch i)

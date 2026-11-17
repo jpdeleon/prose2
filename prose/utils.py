@@ -36,6 +36,7 @@ FOV_IN_ARCMIN = {
     'muscat4': 9.1,
     'sbig': 29.2,     # LCO SBIG STL-6303 page, longer chip axis
     'qhy600': 140.82, # LCO live configdb "science_fov" for 0M4-SCICAM-QHY600
+    'ksirius': 10.8,  # KU 1m optcam 1044 px x 0.62"/px (NIR kSIRIUS is 3.7')
 }
 
 PIXSCALES = {

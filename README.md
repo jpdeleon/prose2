@@ -130,6 +130,53 @@ For each photometric band it:
 | LCO Sinistro | calibrated BANZAI frames | single band (supply `--tID` manually for some datasets) |
 | MuSCAT (1) | raw frames | calibrated on the fly (dark/flat) and WCS-solved via twirl + Gaia; pass `--calib_dir` to keep the calibrated FITS |
 | MuSCAT2 | raw frames | calibrated on the fly and WCS-solved; pass `--calib_dir` |
+| kSIRIUS (KU 1m, Iriki) | sky-subtracted frames (`*skysub.fits`) | optcam g/i + kSIRIUS J/H/Ks; WCS solved per band on a median stack, written to WCS-tagged copies (see below) |
+
+#### kSIRIUS (Kagoshima University 1m)
+
+The KU 1m telescope at Iriki Observatory observes simultaneously with an
+optical camera (`INSTRMEN=optcam`, g/i, 1044×1032 px, 0.62″/px, 10.8′ field)
+and the kSIRIUS near-infrared camera (`INSTRMEN=kSIRIUS`, J/H/Ks, 320×255 px,
+0.694″/px, 3.7′×2.9′ field). Frames are detected as `ksirius` from
+`TELESCOP='KU 1m telescope'` plus `INSTRMEN`; when `--bands` is left at its
+default the run uses `gp ip J H Ks`.
+
+```shell
+photometry --data_dir /data/kSIRIUS --target_name tic427460223 \
+    --glob '*skysub.fits' --results_dir results/ksirius_261103
+```
+
+- **WCS.** The frames are already sky-subtracted but have no WCS, and a
+  single frame holds only ~5 stars. Each band is solved once against Gaia on
+  a median stack of 40 frames from mid-sequence (the pointing holds to
+  ~1–2 px through a night). The solve uses twirl first. If twirl fails, as
+  it does for the sparse NIR fields with ~4–8 stars, it falls back to a
+  search over rotation and parity at the camera's known pixel scale. That
+  search only accepts a unique best match covering most detected stars. The
+  stack always draws on the whole night, even under `--test_run`. The WCS and
+  `PIXSCALE` go into copies at `<data_dir>_wcs/*_wcs.fits` (or
+  `--calib_dir`). The solution is cached per target and band in
+  `<data_dir>_wcs/.wcs/`, together with the pointing and frame shape it was
+  solved for. It is reused only for a matching field, and copies are
+  rewritten if their WCS differs. The data directory is never modified;
+  delete `.wcs/` to force a re-solve. If a band cannot be solved or written
+  (for example, an unwritable output directory), its original frames are
+  used and you must pass `--tID`.
+- **Edge trim.** The optcam frames have a ~10 px border of garbage values
+  (up to ~10⁸), so `--ccd_trim` defaults to `16,16` for kSIRIUS. An
+  explicit `--ccd_trim` overrides it, including `--ccd_trim 0,0`.
+- **Time.** `JD` is taken as the exposure start (`time_reference: start`), so
+  half of `EXPTIME` is added to get mid-exposure. BJD uses the Iriki
+  Observatory location.
+- **Detector values.** `data/ksirius_*.telescope` carry the values supplied
+  by the observers: optcam (g, i) gain 6 e⁻/ADU, read noise 100 e⁻,
+  saturation 20000 ADU (quoted as ~20000–25000); kSIRIUS (J, H, Ks) gain
+  10 e⁻/ADU, read noise 30 e⁻, saturation 15000 ADU. The saturation values
+  are raw-frame limits, but the distributed frames are sky-subtracted, so a
+  star can saturate below them (its peak plus the removed sky reaches the
+  limit). Saturation screening is therefore optimistic, most of all in Ks,
+  where the sky is brightest. Copy the files into `~/.prose/` after editing
+  them.
 
 Multi-camera MuSCAT bands each self-reference their own first frame, which is
 correct when every band is a separate camera. Pass `--ref_band gp` to instead
@@ -404,6 +451,7 @@ files are configured per-convention:
 | MuSCAT2, all eras | `INSTRUME=MuSCAT2`, date-only `DATE-OBS` | `MJD-STRT` | `muscat2_*.telescope` |
 | MuSCAT3 (≤2020, OAO) | `INSTRUME=MuSCAT3`, date-only `DATE-OBS` | `MJD-STRT` | `muscat3_*.telescope` |
 | MuSCAT3 (≥2021, LCO) / MuSCAT4 | `INSTRUME=ep0x`, full-timestamp `DATE-OBS` | `MJD-OBS` | prose built-in `2m0-0x` |
+| kSIRIUS / optcam (KU 1m) | `INSTRMEN=optcam`/`kSIRIUS`, `DATE_UT` + `UT` | `JD` (exposure start) | `ksirius_*.telescope` |
 
 For the OAO-style MuSCAT/MuSCAT2/MuSCAT3 frames the only time in the header is
 `MJD-STRT` (`DATE-OBS` carries the **date only**), so those telescope files set

@@ -4451,3 +4451,60 @@ def test_resolve_saturation_prefers_header_value():
     telescope = SimpleNamespace(name="MuSCAT2_g", saturation=62000)
     header = {"TELID": "1m0a", "SITEID": "coj", "FILTER": "g", "SATURATE": 50000}
     assert rp.resolve_saturation(header, "muscat2", telescope) == (50000, "header")
+
+
+def test_plot_ref_image_survives_simbad_outage(tmp_path, monkeypatch, caplog):
+    """A SIMBAD service error must not abort plotting (or the whole run)."""
+    from astropy.coordinates import SkyCoord
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    from prose import FITSImage
+    from prose.core.source import Sources
+
+    def _outage(*args, **kwargs):
+        raise RuntimeError("Unable to access the capabilities endpoint: 404")
+
+    monkeypatch.setattr(rp, "get_simbad_data", _outage)
+    w = WCS(naxis=2)
+    w.wcs.crpix = [10, 10]
+    w.wcs.cdelt = [0.01, 0.01]
+    w.wcs.crval = [0.0, 0.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    hdr = w.to_header()
+    hdr.update(
+        TELESCOP="2m0a",
+        INSTRUME="ep09",
+        SITEID="coj",
+        OBJECT="test",
+        EXPTIME=1,
+        FILTER="gp",
+        AIRMASS=1.0,
+        JD=2460000.0,
+        **{"DATE-OBS": "2025-04-16T00:00:00"},
+    )
+    fpath = tmp_path / "test.fits"
+    fits.writeto(fpath, np.ones((20, 20)), header=hdr)
+    ref = FITSImage(fpath)
+    ref.sources = Sources(np.array([[10, 10], [5, 5]]))
+    out = tmp_path / "ref.png"
+
+    rp.plot_ref_image(
+        {"ref": ref, "band": "gp", "target_index": 0},
+        SkyCoord(0, 0, unit="deg"),
+        "muscat4",
+        out,
+    )
+
+    assert out.exists()
+    assert "SIMBAD query failed" in caplog.text
+
+
+def test_simbad_for_plot_reuses_given_table_without_querying(monkeypatch):
+    def _never(*args, **kwargs):
+        raise AssertionError("must not query SIMBAD when a table is given")
+
+    monkeypatch.setattr(rp, "get_simbad_data", _never)
+    table = pd.DataFrame({"OTYPE": []})
+
+    assert rp._simbad_for_plot(table, None, "muscat4") is table

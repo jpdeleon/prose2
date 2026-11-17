@@ -93,6 +93,14 @@ from prose.core.block import Block
 from prose.core.source import PointSource, Sources
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
+from prose.scripts.ksirius_wcs import EDGE_TRIM_PIX as KSIRIUS_EDGE_TRIM_PIX
+from prose.scripts.ksirius_wcs import (
+    KSIRIUS_BANDS,
+    KSIRIUS_FILTER_ALIASES,
+    KSIRIUS_LOCATION,
+    is_ksirius_header,
+    prepare_ksirius_frames,
+)
 from prose.scripts.plot_labels import LabelPoint, place_labels
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
 from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
@@ -134,6 +142,11 @@ INSTRUMENT_SITES: dict[str, str] = {
     "muscat2": "teide",  # Teide Observatory (TCS 1.52m), Tenerife
 }
 
+# Sites missing from astropy's site registry: (lat [deg], lon [deg E], height [m]).
+INSTRUMENT_LOCATIONS: dict[str, tuple[float, float, float]] = {
+    "ksirius": KSIRIUS_LOCATION,  # Iriki Observatory (KU 1m), Kagoshima
+}
+
 INSTRUMENT_MAP: dict[tuple[str, str], str] = {
     ("ep06", "coj2m002"): "muscat4",
     ("ep07", "coj2m002"): "muscat4",
@@ -154,16 +167,25 @@ INSTRUMENT_FILTER_ALIASES: dict[str, dict[str, str]] = {
         "i": "ip",
         "z_s": "zs",
     },  # standardized to p names
+    "ksirius": KSIRIUS_FILTER_ALIASES,  # optcam g/i + kSIRIUS J/H/Ks
 }
 
 DEFAULT_BROAD_BANDS = ["gp", "rp", "ip", "zs"]
 DEFAULT_NARROW_BANDS = ["g_narrow", "Na_D", "i_narrow", "z_narrow"]
+DEFAULT_NIR_BANDS = ["J", "H", "Ks"]
 DEFAULT_BANDS = DEFAULT_BROAD_BANDS
+# Bands used instead of DEFAULT_BANDS when --bands is left at its default.
+INSTRUMENT_DEFAULT_BANDS: dict[str, list[str]] = {"ksirius": list(KSIRIUS_BANDS)}
+# --ccd_trim used when it is left at its default. optcam frames carry a ~10 px
+# border of garbage values (up to ~1e8) that otherwise swamps source detection.
+INSTRUMENT_DEFAULT_TRIM_YX: dict[str, tuple[int, int]] = {
+    "ksirius": (KSIRIUS_EDGE_TRIM_PIX, KSIRIUS_EDGE_TRIM_PIX)
+}
 # Canonical wavelength order for any multi-axis figure that loops over bands, so
 # every plot lays bands out consistently regardless of processing order
 # (band_results is keyed by reduction order: reference band first) or user
 # --bands order. Unknown bands sort stably after the known ones.
-BAND_PLOT_ORDER = DEFAULT_BROAD_BANDS + DEFAULT_NARROW_BANDS
+BAND_PLOT_ORDER = DEFAULT_BROAD_BANDS + DEFAULT_NARROW_BANDS + DEFAULT_NIR_BANDS
 DEFAULT_GIF_STRIDE = 10
 TEST_RUN_FRAMES = 10  # frames per band used by --test_run
 FPS = 5
@@ -384,6 +406,10 @@ BAND_COLORS = {
     "B": "cyan",
     "V": "purple",
     "R": "brown",
+    # near-infrared (kSIRIUS)
+    "J": "darkred",
+    "H": "dimgray",
+    "Ks": "indigo",
 }
 
 # Fallback for unmapped tokens: color by the leading Sloan letter, else black.
@@ -459,7 +485,8 @@ def setup_logger(outdir: Path, verbose: bool = False) -> Path:
 
 # Instruments whose headers carry no saturation keyword but whose .telescope
 # file states a real per-instrument limit (ADU): MuSCAT 55000, MuSCAT2 62000.
-TELESCOPE_FILE_SATURATION_INSTRUMENTS = ("muscat", "muscat2")
+# kSIRIUS files leave it null until a limit is measured, which reads as unknown.
+TELESCOPE_FILE_SATURATION_INSTRUMENTS = ("muscat", "muscat2", "ksirius")
 
 
 def resolve_saturation(header, instrument: str, telescope) -> tuple[float | None, str]:
@@ -490,10 +517,12 @@ def resolve_saturation(header, instrument: str, telescope) -> tuple[float | None
 PIXSCALE_GUESS_ARCSEC = 0.267  # MuSCAT3/4 value; used only when nothing is known
 
 
-def resolve_pixel_scale(header, pix_key: str) -> tuple[float, str]:
+def resolve_pixel_scale(header, pix_key: str, telescope=None) -> tuple[float, str]:
     """Pixel scale [arcsec/px] and where it came from.
 
-    Header ``PIXSCALE``, then the instrument table, then
+    Header ``PIXSCALE``, then the instrument table, then a matched
+    ``.telescope`` file's ``pixel_scale`` (needed when one instrument has
+    cameras with different scales, e.g. kSIRIUS optcam vs NIR), then
     ``PIXSCALE_GUESS_ARCSEC`` (reported as a guess so the caller can warn).
     """
     try:
@@ -504,6 +533,13 @@ def resolve_pixel_scale(header, pix_key: str) -> tuple[float, str]:
         pass
     if pix_key in PIXSCALES:
         return float(PIXSCALES[pix_key]), f"instrument table ({pix_key})"
+    if telescope is not None and not getattr(telescope, "_default", True):
+        try:
+            value = float(telescope.pixel_scale)
+            if np.isfinite(value) and value > 0:
+                return value, f"{telescope.name} telescope file"
+        except (TypeError, ValueError):
+            pass
     return PIXSCALE_GUESS_ARCSEC, "guess (MuSCAT3/4 value)"
 
 
@@ -552,6 +588,9 @@ def get_instrument(header) -> str:
     instrume = str(header.get("INSTRUME", "")).lower()
     if instrume in ("muscat", "muscat2"):
         return instrume
+    if is_ksirius_header(header):
+        # KU 1m: camera in INSTRMEN (optcam g/i, kSIRIUS J/H/Ks), no INSTRUME.
+        return "ksirius"
     telid = str(header.get("TELID", "")).lower()
     site = str(header.get("SITEID", "")).lower()
     if telid == "2m0a":
@@ -572,6 +611,71 @@ def get_instrument(header) -> str:
         if instrume.startswith("sq"):
             return "qhy600"
     return "unknown"
+
+
+def _simbad_for_plot(simbad_df, target_coord, instrument: str):
+    """SIMBAD objects to overlay: *simbad_df* if given, else a guarded query.
+
+    SIMBAD outages (e.g. its TAP endpoint returning 404) only cost the plot
+    its object markers; they must not abort the run.
+    """
+    if simbad_df is not None:
+        return simbad_df
+    try:
+        return get_simbad_data(target_coord, instrument)
+    except Exception as exc:  # noqa: BLE001 - astroquery/pyvo raise many types
+        logger.warning(f"SIMBAD query failed; plotting without SIMBAD objects: {exc}")
+        return None
+
+
+def _instrument_location(instrument: str | None):
+    """Observatory ``EarthLocation`` for *instrument*, or ``None`` if unknown.
+
+    Explicit coordinates (:data:`INSTRUMENT_LOCATIONS`) come first, then the
+    astropy site registry name in :data:`INSTRUMENT_SITES`.
+    """
+    from astropy.coordinates import EarthLocation
+
+    if instrument in INSTRUMENT_LOCATIONS:
+        lat, lon, height = INSTRUMENT_LOCATIONS[instrument]
+        return EarthLocation.from_geodetic(lon * u.deg, lat * u.deg, height * u.m)
+    if instrument in INSTRUMENT_SITES:
+        return EarthLocation.of_site(INSTRUMENT_SITES[instrument])
+    return None
+
+
+# "Not given on the command line" is detected by identity: argparse stores the
+# default object itself, while an explicit value (even an equal one, such as
+# `--ccd_trim 0,0` or `--bands gp rp ip zs`) is a new object.
+
+
+def _instrument_default_bands(instrument: str, bands: list[str]) -> list[str]:
+    """*instrument*'s own bands when ``--bands`` was not given.
+
+    ``--bands`` defaults to the MuSCAT broadband set; instruments with other
+    filters (kSIRIUS: g, i, J, H, Ks) use theirs unless bands were given.
+    """
+    if bands is DEFAULT_BANDS and instrument in INSTRUMENT_DEFAULT_BANDS:
+        return list(INSTRUMENT_DEFAULT_BANDS[instrument])
+    return list(bands)
+
+
+def _instrument_default_trim(
+    instrument: str, trim_yx: tuple[int, int]
+) -> tuple[int, int]:
+    """*instrument*'s edge trim when ``--ccd_trim`` was not given."""
+    if trim_yx is CCD_TRIM_SIZE_YX:
+        return tuple(INSTRUMENT_DEFAULT_TRIM_YX.get(instrument, trim_yx))
+    return tuple(trim_yx)
+
+
+def _probe_instrument(path) -> str:
+    """Instrument label from one FITS header, ``"unknown"`` if unreadable."""
+    try:
+        return get_instrument(fits.getheader(path))
+    except (OSError, ValueError) as exc:
+        logger.warning(f"could not read {path} to identify the instrument: {exc}")
+        return "unknown"
 
 
 def _resolve_band(raw_filter: str, instrument: str, bands: list[str]) -> str | None:
@@ -2361,7 +2465,9 @@ def build_reference(
         pix_key = "sinistro_2x2" if "2x2" in confmode else "sinistro_full"
     else:
         pix_key = instrument
-    pixel_scale, pixel_scale_source = resolve_pixel_scale(ref.header, pix_key)
+    pixel_scale, pixel_scale_source = resolve_pixel_scale(
+        ref.header, pix_key, ref.telescope
+    )
     saturation, saturation_source = resolve_saturation(
         ref.header, instrument, ref.telescope
     )
@@ -3641,11 +3747,10 @@ def compute_bjd_tdb(
         # already an astropy site code written by our calibration scripts
         # (muscat/muscat2, e.g. "teide"/"OAO"). Accept both.
         loc = EarthLocation.of_site(LCO_SITES.get(site, site))
-    elif instrument in INSTRUMENT_SITES:
-        loc = EarthLocation.of_site(INSTRUMENT_SITES[instrument])
+    elif (loc := _instrument_location(instrument)) is not None:
         logger.info(
-            f"no SITE keyword; using {instrument} site "
-            f"'{INSTRUMENT_SITES[instrument]}' for BJD correction"
+            f"no SITE keyword; using the {instrument} observatory location "
+            f"({loc.lat.deg:.4f}, {loc.lon.deg:.4f}) for BJD correction"
         )
     else:
         loc = None
@@ -4023,11 +4128,7 @@ def plot_ref_image(
         except Exception:  # noqa: BLE001
             pass
 
-        simbad = (
-            simbad_df
-            if simbad_df is not None
-            else get_simbad_data(target_coord, instrument)
-        )
+        simbad = _simbad_for_plot(simbad_df, target_coord, instrument)
         if simbad is not None and not simbad.empty:
             simbad = simbad[simbad.OTYPE != "Star"]
             if not simbad.empty:
@@ -4763,11 +4864,7 @@ def plot_cutouts(
         except Exception:  # noqa: BLE001
             pass
 
-        simbad = (
-            simbad_df
-            if simbad_df is not None
-            else get_simbad_data(target_coord, instrument)
-        )
+        simbad = _simbad_for_plot(simbad_df, target_coord, instrument)
         if simbad is not None and not simbad.empty:
             simbad = simbad[simbad.OTYPE != "Star"]
             if not simbad.empty:
@@ -6285,7 +6382,17 @@ def main(argv=None) -> int:
         if not files:
             logger.error("no FITS files found; aborting")
             return 1
-        instrume = inst_obslog if inst_obslog in INSTRUMENT_FILTER_ALIASES else ""
+        scan_instrument = _probe_instrument(files[0])
+        instrument_bands = _instrument_default_bands(scan_instrument, args.bands)
+        if instrument_bands != list(args.bands):
+            logger.info(
+                f"{scan_instrument}: --bands not given; using {instrument_bands}"
+            )
+            args.bands = instrument_bands
+        if inst_obslog in INSTRUMENT_FILTER_ALIASES:
+            instrume = inst_obslog
+        else:
+            instrume = scan_instrument
         inst_aliases = INSTRUMENT_FILTER_ALIASES.get(instrume)
         sciences = read_filename_per_band(
             files, args.bands, args.target_name, filter_aliases=inst_aliases
@@ -6299,6 +6406,14 @@ def main(argv=None) -> int:
     # header metadata for naming, time conversion
     probe = FITSImage(sciences[active_bands[0]][0]).header
     instrument = get_instrument(probe)
+
+    trim_yx = _instrument_default_trim(instrument, args.ccd_trim_size_yx)
+    if trim_yx != tuple(args.ccd_trim_size_yx):
+        logger.info(f"{instrument}: --ccd_trim not given; trimming {trim_yx} (Y,X) px")
+        args.ccd_trim_size_yx = trim_yx
+    # Every frame per band, before --test_run/JD windowing; the kSIRIUS WCS is
+    # solved on a stack drawn from these so a short window still solves.
+    all_band_frames = {b: list(fs) for b, fs in sciences.items()}
 
     if args.site is not None and instrument not in MULTISITE_INSTRUMENTS:
         logger.error(
@@ -6700,6 +6815,16 @@ def main(argv=None) -> int:
             return 1
         probe = FITSImage(sciences[active_bands[0]][0]).header
         instrument = get_instrument(probe)
+    elif instrument == "ksirius":
+        # Sky-subtracted frames without WCS: solve each band once and run on
+        # WCS-tagged copies (the data directory is left untouched).
+        wcs_dir = args.calib_dir or args.data_dir.with_name(args.data_dir.name + "_wcs")
+        sciences = prepare_ksirius_frames(
+            {b: sciences[b] for b in active_bands},
+            wcs_dir,
+            solve_sciences=all_band_frames,
+        )
+        probe = FITSImage(sciences[active_bands[0]][0]).header
     date = date_from_header(probe)
     logger.info(
         f"target={args.target_name} inst={instrument} date={date} "
@@ -7098,6 +7223,9 @@ def main(argv=None) -> int:
             simbad_df = get_simbad_data(target_coord, instrument)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"SIMBAD query failed: {exc}")
+            # Empty, not None: the per-band plots would otherwise each retry
+            # the unreachable service.
+            simbad_df = pd.DataFrame()
 
     stem_multi = build_summary_stem(
         args.target_name,

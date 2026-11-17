@@ -115,3 +115,38 @@ def test_align_reference_sources_tolerance_boundary():
 
     assert strict.discard is True
     assert relaxed.discard is False
+
+
+def _plate_solved_image(shape=(100, 120)):
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    wcs.wcs.crval = [83.4, -6.8]
+    wcs.wcs.crpix = [61.0, 51.0]  # 1-based -> 0-based pixel (60, 50)
+    wcs.wcs.cdelt = [-0.62 / 3600, 0.62 / 3600]
+    image = Image(np.zeros(shape))
+    image.wcs = wcs
+    return image
+
+
+def test_trim_shifts_wcs_of_a_plate_solved_image():
+    image = _plate_solved_image()
+    assert image.plate_solved
+
+    blocks.Trim((10, 16)).run(image)  # (y, x) trim, like --ccd_trim Y,X
+
+    assert image.shape.tolist() == [100 - 2 * 10, 120 - 2 * 16]
+    assert image.plate_solved
+    x, y = image.wcs.world_to_pixel_values(83.4, -6.8)
+    assert (float(x), float(y)) == pytest.approx((60 - 16, 50 - 10), abs=1e-6)
+
+
+def test_trim_leaves_an_unsolved_image_without_wcs():
+    image = Image(np.zeros((100, 120)))
+    assert not image.plate_solved
+
+    blocks.Trim(10).run(image)
+
+    assert image.shape.tolist() == [80, 100]
+    assert not image.plate_solved
