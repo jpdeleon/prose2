@@ -157,7 +157,10 @@ disabled and the selected frame's original detections are used.
 Everything is written to `--results_dir`:
 
 - **per band:** `…_ref.png`, `…_apertures.png`, `…_alignment.png`,
-  `…_{band}.csv`, and an optional `….gif`
+  `…_band_covariates.png`, `…_{band}.csv`, and an optional `….gif`.
+  `…_band_covariates.png` puts the light curve (raw and binned, with the binned
+  scatter in ppt) above airmass, dx, dy, FWHM, peak and background, each on its
+  own axis in physical units, sharing the time axis
 - **multi-band:** `…_lightcurves.png`, `…_raw_flux.png`, `…_covariates.png`,
   `…_stacks.png`
 - a single `….npz` archive and a timestamped `.log`
@@ -585,7 +588,7 @@ archivePrefix = {arXiv},
 
 ### Selective diagnostic plots
 
-Use `--plots all` (default), `reference`, `summary`, or `none` to select diagnostic PNGs. Reference plots include source/aperture/alignment/cutout and stack views; summary plots include light curves, raw flux, and covariates. CSV/NPZ products and the separately requested `--gif` remain independent. SIMBAD annotation queries are skipped when reference plots are disabled.
+Use `--plots all` (default), `reference`, `summary`, or `none` to select diagnostic PNGs. Reference plots include source/aperture/alignment/cutout and stack views; summary plots include light curves, raw flux, covariates, and the per-band covariate figures. CSV/NPZ products and the separately requested `--gif` remain independent. SIMBAD annotation queries are skipped when reference plots are disabled.
 
 ### Photometry worker controls
 
