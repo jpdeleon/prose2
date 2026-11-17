@@ -163,7 +163,10 @@ Everything is written to `--results_dir`:
   own axis in physical units, sharing the time axis
 - **multi-band:** `…_lightcurves.png`, `…_raw_flux.png`, `…_covariates.png`,
   `…_stacks.png`
-- a single `….npz` archive and a timestamped `.log`
+- a single `….npz` archive and a timestamped `.log`. Per band, the log and
+  the npz (`{band}__noise__*` keys) carry the expected noise per point
+  (photon, sky, read, comparison stars, in ppt) next to the achieved
+  point-to-point scatter and standard deviation, and their ratio
 - with `--save_flux_datacube`, a `…_flux_datacube.npz` (see
   [Re-differencing from the flux datacube](#re-differencing-from-the-flux-datacube))
 
@@ -249,6 +252,7 @@ existing text such as star IDs, and the panel edge
 | Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--centroid_method`, `--ccd_trim` |
 | Time & plots | `--use_barycorrpy`, `--bin_size_minutes`, `--plot_gaia_sources`, `--gif`, `--gif_stride` |
 | Light-curve cleaning | `--sig_bkg`, `--sig_fwhm`, `--sig_dx`, `--sig_dy`, `--sig_flux`, `--flux_poly_deg` |
+| Comparison ensemble & aperture | `--comp_ensemble`, `--comp_criterion`, `--comp_min_flux_frac`, `--clip_star_sigma`, `--clip_star_window` (see [Precision options](#precision-options-for-faint-targets)) |
 | MuSCAT raw calibration | `--calib_dir` |
 | Run control | `--test_run`, `--test_run_frames`, `--verbose` |
 
@@ -621,6 +625,28 @@ python -m prose.scripts.rediff_lightcurves RESULTS_DIR --select g=3,5,7@4 --appl
 `--select BAND=IDS@APERTURE_INDEX` is repeatable, one per band. `--apply`
 refuses when the CSV rows no longer match the datacube frames (for example
 after a `postprocess_lightcurves --apply` clip), so undo that first.
+
+### Precision options for faint targets
+
+By default the comparison ensemble grows in Broeg-weight order until the
+target's binned scatter stops improving, and the aperture is the one with the
+lowest target point-to-point scatter. On faint, defocused targets this can
+keep only a few stars, and it tunes both choices on the target itself, which
+biases the reported scatter low and can absorb part of a shallow transit
+(muscat-team/muscatdb#445). The options below change this. All are off by
+default, and `prose.precision` holds the algorithms.
+
+| Option | Effect |
+|---|---|
+| `--comp_ensemble bright` | Use every comparison at least `--comp_min_flux_frac` (default 0.3) × the target's mean flux. Repeatedly drop stars whose check light curve (the star against the others) has a robust standard deviation, relative to its error model, above 2× the ensemble median. This catches noisy stars and variables. Weights are proportional to flux, so this is the same as summing the stars. |
+| `--comp_criterion check` | Choose the greedy ensemble size (Broeg ranking of the comparisons only) and the aperture from a *predicted* target scatter: the target's error model plus the comparison stars' empirical noise, measured on their check light curves. The target series is never used. With `--cID` it chooses the aperture only. |
+| `--clip_star_sigma N` | Before differencing, find comparison-star samples more than N sigma from a running median (`--clip_star_window`, default 11 frames) of their check light curve, in any aperture, and replace them by interpolation in time. This removes single-star spikes such as cosmic rays, which `--sig_flux` (target only) misses. The target is never modified. |
+
+The options combine, e.g.
+`--comp_ensemble bright --comp_criterion check --clip_star_sigma 5`. With
+`--save_flux_datacube` the cube holds the star-clipped fluxes and the weights
+actually used, so `rediff_lightcurves --info` and the rebuilt default curve
+still match the pipeline CSV.
 
 ### Photometry worker controls
 

@@ -94,6 +94,16 @@ from prose.core.block import Block
 from prose.core.source import PointSource, Sources
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
+from prose.precision import CRITERIA as PRECISION_CRITERIA
+from prose.precision import DEFAULT_CLIP_WINDOW, DEFAULT_MIN_FLUX_FRACTION
+from prose.precision import ENSEMBLES as PRECISION_ENSEMBLES
+from prose.precision import (
+    PrecisionOptions,
+    check_aperture_index,
+    clip_star_outliers,
+    noise_budget,
+    precision_diff,
+)
 from prose.scripts.plot_labels import LabelPoint, place_labels
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
 from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
@@ -2919,8 +2929,16 @@ def _build_display_reference(
 
 
 def _band_saturation_indices(
-    files, ref, target_index, aperture_radius, *, ccd_trim_size_yx,
-    max_num_stars, min_star_separation, min_area, bad_pixel_map,
+    files,
+    ref,
+    target_index,
+    aperture_radius,
+    *,
+    ccd_trim_size_yx,
+    max_num_stars,
+    min_star_separation,
+    min_area,
+    bad_pixel_map,
 ):
     """Screen shared IDs on one native band frame, without resampling pixels.
 
@@ -3036,6 +3054,7 @@ def run_band(
     chunksize: int = 1,
     shared_reference: bool = False,
     keep_datacube: bool = False,
+    precision: PrecisionOptions | None = None,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -3325,10 +3344,12 @@ def run_band(
         avoid_cids=mapped_avoid,
         nan_imputation_method=nan_imputation_method,
         keep_datacube=keep_datacube,
+        precision=precision,
     )
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
         return None
+    budget = _band_noise_budget(band, diff, ref, reference)
 
     # Map the selected comparison star IDs back to the chosen band's index space for consistent logging
     comps = getattr(diff, "comparisons", None)
@@ -3391,7 +3412,52 @@ def run_band(
         display_ref=display_ref,
         saturated_cids=saturated_cids,
         target_saturated_fraction=target_saturated_fraction,
+        noise_budget=budget,
     )
+
+
+def _chosen_radius_pix(diff: Fluxes) -> float:
+    """Radius [pix] of the selected aperture (median over frames)."""
+    radii = np.asarray(diff.apertures, dtype=float)
+    if radii.ndim == 2:  # (time, aperture)
+        radii = np.nanmedian(radii, axis=0)
+    return float(radii[diff.aperture])
+
+
+def _band_noise_budget(band: str, diff: Fluxes, ref, reference: dict) -> dict | None:
+    """Log expected noise by term next to the achieved scatter (muscatdb#445).
+
+    Returns the budget (values in ppt, see :func:`prose.precision.noise_budget`)
+    or ``None`` when an input is missing; the light curve is never affected.
+    """
+    try:
+        rin, rout = float(reference["rin"]), float(reference["rout"])
+        if reference["scale"]:
+            rin, rout = rin * float(ref.fwhm), rout * float(ref.fwhm)
+        radius = _chosen_radius_pix(diff)
+        sky = float(np.nanmedian(diff.data["bkg"])) if "bkg" in diff.data else 0.0
+        budget = noise_budget(
+            raw_flux=float(diff.metadata["target_raw_flux"][diff.aperture]),
+            sky=sky,
+            area=np.pi * radius**2,
+            sky_area=np.pi * (rout**2 - rin**2),
+            gain=float(ref.gain),
+            read_noise=float(ref.read_noise),
+            diff_flux=diff.flux,
+            diff_error=diff.error,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError) as exc:
+        logger.warning(f"[{band}] noise budget unavailable ({exc})")
+        return None
+    logger.info(
+        f"[{band}] noise per point (ppt): photon {budget['photon_ppt']:.2f}, "
+        f"sky {budget['sky_ppt']:.2f}, read {budget['read_ppt']:.2f}, "
+        f"comparisons {budget['comparison_ppt']:.2f} -> expected "
+        f"{budget['expected_ppt']:.2f}; achieved {budget['achieved_ptp_ppt']:.2f} "
+        f"point-to-point, {budget['achieved_std_ppt']:.2f} std "
+        f"(ratio {budget['ratio']:.2f})"
+    )
+    return budget
 
 
 def _too_sparse_comparisons(fluxes: Fluxes, target_index: int) -> np.ndarray:
@@ -3462,6 +3528,7 @@ def differential_photometry(
     avoid_cids: list[int] | None = None,
     nan_imputation_method: str = "linear",
     keep_datacube: bool = False,
+    precision: PrecisionOptions | None = None,
 ):
     """Clean NaN comparison stars, sigma-clip, and run differential photometry.
 
@@ -3479,7 +3546,11 @@ def differential_photometry(
     keep_datacube : bool, optional
         Attach the flux cube differencing ran on, with every star intact, as
         ``diff.metadata["flux_datacube"]`` (see :mod:`prose.datacube`).
+    precision : PrecisionOptions, optional
+        Comparison ensemble, aperture criterion and per-star clipping (see
+        :mod:`prose.precision`). ``None`` keeps prose's own behaviour.
     """
+    precision = precision or PrecisionOptions()
     if target_index in (avoid_cids or []):
         raise ValueError(
             f"target_index={target_index} must not be in avoid_cids={avoid_cids}; "
@@ -3503,13 +3574,15 @@ def differential_photometry(
 
     too_sparse = _too_sparse_comparisons(fluxes, target_index)
     fluxes = _impute_comparisons(fluxes, nan_imputation_method, too_sparse)
-    imputed = fluxes
 
     n_sources = fluxes.fluxes.shape[1]
     # the auto-selection pool, whichever mode runs: what a datacube may offer
     pool = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2)) & ~too_sparse
     pool[[a for a in (avoid_cids or []) if 0 <= a < n_sources]] = False
     pool[target_index] = False
+    if precision.clip_sigma is not None:
+        fluxes = _clip_comparison_outliers(fluxes, pool, precision)
+    imputed = fluxes
     if cids is not None:
         valid_cids = [c for c in cids if 0 <= c < n_sources]
         dropped = [c for c in cids if c not in valid_cids]
@@ -3574,9 +3647,7 @@ def differential_photometry(
         # will itself select (stddiff); the mask applies to all stars/frames.
         try:
             fluxes.estimate_best_aperture()
-            fluxes = fluxes.sigma_clip_flux_poly(
-                sigma=SIGMA_FLUX, degree=POLY_DEG
-            )
+            fluxes = fluxes.sigma_clip_flux_poly(sigma=SIGMA_FLUX, degree=POLY_DEG)
         except (ValueError, np.linalg.LinAlgError):
             logger.warning(
                 f"!!! FLUX POLY SIGMA CLIPPING: could not fit degree-{POLY_DEG} "
@@ -3592,13 +3663,66 @@ def differential_photometry(
         return None
     if cids:
         diff = fluxes.diff(comps=np.array(cids))
-    else:
+        if precision.criterion == "check":
+            diff.aperture = check_aperture_index(
+                fluxes.fluxes, fluxes.errors, diff.weights, target_index
+            )
+    elif precision.is_default:
         # Imputation is already done above, so skip it in autodiff
         diff = fluxes.autodiff(nan_imputation_method="none")
         _log_auto_comparisons(diff, keep, target_index)
+    else:
+        diff = _precision_autodiff(fluxes, target_index, precision)
+        _log_auto_comparisons(diff, keep, target_index)
+    diff.metadata["target_raw_flux"] = np.nanmedian(
+        fluxes.fluxes[:, target_index], axis=-1
+    )
     if keep_datacube:
         diff.metadata["flux_datacube"] = datacube.capture(imputed, fluxes, pool)
     return diff
+
+
+def _clip_comparison_outliers(
+    fluxes: Fluxes, stars: np.ndarray, precision: PrecisionOptions
+) -> Fluxes:
+    """Replace single-star spikes in comparison check light curves (muscatdb#445)."""
+    clipped, flagged = clip_star_outliers(
+        fluxes.fluxes, stars, precision.clip_sigma, precision.clip_window
+    )
+    per_star = flagged.sum(axis=-1)
+    detail = ", ".join(f"{j}: {int(per_star[j])}" for j in np.flatnonzero(per_star))
+    logger.info(
+        f"per-star clipping (sigma={precision.clip_sigma:g}, "
+        f"window={precision.clip_window}): {int(flagged.sum())} comparison "
+        f"sample(s) interpolated; per star: {detail or 'none'}"
+    )
+    out = fluxes.copy()
+    out.fluxes = clipped
+    return out
+
+
+def _precision_autodiff(
+    fluxes: Fluxes, target_index: int, precision: PrecisionOptions
+) -> Fluxes:
+    """Differential photometry with the opt-in ensemble and aperture criterion."""
+    diff_fluxes, weights, diff_errors = precision_diff(
+        fluxes.fluxes, target_index, fluxes.errors, precision
+    )
+    out = fluxes.copy()
+    out.fluxes = diff_fluxes
+    out.errors = diff_errors
+    out.weights = weights
+    if precision.criterion == "check":
+        out.aperture = check_aperture_index(
+            fluxes.fluxes, fluxes.errors, weights, target_index
+        )
+    else:
+        out.aperture = out.best_aperture_index()
+    logger.info(
+        f"comparison ensemble '{precision.ensemble}', aperture criterion "
+        f"'{precision.criterion}': aperture index {out.aperture}"
+    )
+    return out
 
 
 def _log_auto_comparisons(diff: Fluxes, keep: np.ndarray, target_index: int) -> None:
@@ -3756,7 +3880,9 @@ def _draw_simbad_objects(ax, xy_otypes, colors: dict, flag_types: bool) -> None:
     marker takes the flagged colour if any of its entries is flagged.
     """
     points = [
-        LabelPoint(float(x), float(y), str(otype), _simbad_color(otype, colors, flag_types))
+        LabelPoint(
+            float(x), float(y), str(otype), _simbad_color(otype, colors, flag_types)
+        )
         for x, y, otype in xy_otypes
     ]
     default = colors["simbad_default"]
@@ -4921,9 +5047,7 @@ def plot_cutouts(
                 for xi, yi, label in simbad_coords_list
                 if 0 <= xi - x0 < nx and 0 <= yi - y0 < ny
             ]
-            _draw_simbad_objects(
-                ax[i], in_cutout, colors, flag_types=plot_gaia_sources
-            )
+            _draw_simbad_objects(ax[i], in_cutout, colors, flag_types=plot_gaia_sources)
 
         center = np.array(img.data.shape)[::-1] / 2
         ax[i].add_artist(
@@ -5108,6 +5232,8 @@ def save_all_bands_npz(
         for key in ("fwhm", "airmass", "bkg", "dx", "dy", "peak"):
             if key in diff.data:
                 out[f"{band}__data__{key}"] = _npz_safe(diff.data[key])
+        for key, value in (r.get("noise_budget") or {}).items():
+            out[f"{band}__noise__{key}"] = np.array(float(value))
     if meta:
         out["__meta__"] = np.string_(str(meta))
         out["__prose_version__"] = np.string_(_PROSE_VERSION)
@@ -5642,7 +5768,9 @@ def _calibration_args(
         calib_args.extend(["--bands", *bands])
     calib_args.extend(["--solve_wcs", args.wcs_method])
     if args.test_run:
-        calib_args.extend(["--test_run", "--test_run_frames", str(args.test_run_frames)])
+        calib_args.extend(
+            ["--test_run", "--test_run_frames", str(args.test_run_frames)]
+        )
         if args.refid is not None:
             calib_args.extend(["--test_run_center", str(args.refid)])
     if args.verbose:
@@ -5786,6 +5914,76 @@ def load_bad_pixel_map(
     except Exception as e:
         logger.error(f"failed to load bad pixel map from {source}: {e}")
         return None
+
+
+def _add_precision_args(ap: argparse.ArgumentParser) -> None:
+    """Opt-in comparison ensemble, aperture criterion and per-star clipping.
+
+    Defaults keep prose's own behaviour (muscat-team/muscatdb#445).
+    """
+    ap.add_argument(
+        "--comp_ensemble",
+        "--comp-ensemble",
+        dest="comp_ensemble",
+        choices=PRECISION_ENSEMBLES,
+        default="greedy",
+        help="Automatic comparison ensemble. 'greedy' (default): add stars in "
+        "Broeg-weight order while the selection criterion improves. 'bright': "
+        "use every comparison at least --comp_min_flux_frac x the target's flux, "
+        "drop stars whose check light curve disagrees with the rest, and weight "
+        "by flux (equivalent to summing the stars). Ignored with --cID.",
+    )
+    ap.add_argument(
+        "--comp_criterion",
+        "--comp-criterion",
+        dest="comp_criterion",
+        choices=PRECISION_CRITERIA,
+        default="target",
+        help="How the greedy ensemble size and the aperture are chosen. "
+        "'target' (default): lowest target scatter. 'check': lowest target "
+        "scatter predicted from the target's error model and the comparison "
+        "stars' check light curves, so the target series (and any transit in "
+        "it) is never used to tune the reduction.",
+    )
+    ap.add_argument(
+        "--comp_min_flux_frac",
+        "--comp-min-flux-frac",
+        dest="comp_min_flux_frac",
+        type=float,
+        default=DEFAULT_MIN_FLUX_FRACTION,
+        help="Faintest comparison for --comp_ensemble bright, as a fraction of "
+        "the target's mean flux (default: %(default)s).",
+    )
+    ap.add_argument(
+        "--clip_star_sigma",
+        "--clip-star-sigma",
+        dest="clip_star_sigma",
+        type=float,
+        default=None,
+        help="Replace comparison-star samples more than this many sigma from a "
+        "running median of their check light curve (e.g. cosmic rays) by "
+        "interpolation, before differencing. Off by default; 5 is a sensible value.",
+    )
+    ap.add_argument(
+        "--clip_star_window",
+        "--clip-star-window",
+        dest="clip_star_window",
+        type=int,
+        default=DEFAULT_CLIP_WINDOW,
+        help="Running-median window, in frames, for --clip_star_sigma "
+        "(default: %(default)s).",
+    )
+
+
+def precision_options_from_args(args: argparse.Namespace) -> PrecisionOptions:
+    """Build (and validate) :class:`PrecisionOptions` from parsed CLI args."""
+    return PrecisionOptions(
+        ensemble=args.comp_ensemble,
+        criterion=args.comp_criterion,
+        min_flux_fraction=args.comp_min_flux_frac,
+        clip_sigma=args.clip_star_sigma,
+        clip_window=args.clip_star_window,
+    )
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -6260,6 +6458,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         "(prose.scripts.rediff_lightcurves) without re-running photometry. "
         "Off by default; skipped under --test_run.",
     )
+    _add_precision_args(ap)
     ap.add_argument(
         "--workers",
         type=int,
@@ -6277,6 +6476,10 @@ def parse_args(argv=None) -> argparse.Namespace:
         ap.error("--workers must be positive")
     if args.chunksize < 1:
         ap.error("--chunksize must be positive")
+    try:
+        precision_options_from_args(args)
+    except ValueError as e:
+        ap.error(str(e))
 
     if args.aper_radii is not None and args.annulus is None:
         ap.error("--annulus RIN,ROUT is required when --aper_radii is given")
@@ -7138,6 +7341,7 @@ def main(argv=None) -> int:
                 chunksize=args.chunksize,
                 shared_reference=not self_reference,
                 keep_datacube=args.save_flux_datacube and not args.test_run,
+                precision=precision_options_from_args(args),
             )
         except TargetNotFoundError as exc:
             if self_reference and args.tID is None and band not in deferred:
