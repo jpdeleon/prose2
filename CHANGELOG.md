@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.8.0](https://github.com/jpdeleon/prose2/compare/v3.7.0...v3.8.0) (2026-11-17)
+
+
+### Features
+
+* **run_photometry:** opt-in comparison ensemble, check-LC criterion, per-star clipping and noise budget ([b57cfd8](https://github.com/jpdeleon/prose2/commit/b57cfd8a3f1dd78d6156ce02c03ea111134f6b0a))
+* **run_photometry:** opt-in comparison ensemble, check-LC criterion, per-star clipping and noise budget ([aed17b0](https://github.com/jpdeleon/prose2/commit/aed17b0c6d550092b707a36567504eacf35ce126))
+
 ## [3.7.0](https://github.com/jpdeleon/prose2/compare/v3.6.2...v3.7.0) (2026-11-17)
 
 
