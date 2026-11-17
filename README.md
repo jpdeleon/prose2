@@ -164,6 +164,8 @@ Everything is written to `--results_dir`:
 - **multi-band:** `…_lightcurves.png`, `…_raw_flux.png`, `…_covariates.png`,
   `…_stacks.png`
 - a single `….npz` archive and a timestamped `.log`
+- with `--save_flux_datacube`, a `…_flux_datacube.npz` (see
+  [Re-differencing from the flux datacube](#re-differencing-from-the-flux-datacube))
 
 Raw aperture flux and pixel diagnostics keep the input FITS units: electrons
 for BANZAI-reduced Sinistro, QHY600, MuSCAT3 and MuSCAT4; ADU for MuSCAT
@@ -589,6 +591,36 @@ archivePrefix = {arXiv},
 ### Selective diagnostic plots
 
 Use `--plots all` (default), `reference`, `summary`, or `none` to select diagnostic PNGs. Reference plots include source/aperture/alignment/cutout and stack views; summary plots include light curves, raw flux, covariates, and the per-band covariate figures. CSV/NPZ products and the separately requested `--gif` remain independent. SIMBAD annotation queries are skipped when reference plots are disabled.
+
+### Re-differencing from the flux datacube
+
+`--save_flux_datacube` (off by default, skipped under `--test_run`) writes
+`…_flux_datacube.npz`: per band, every detected star's flux and error at every
+aperture (float32, compressed), on exactly the frames of the final light curve
+(after the missing-target cut, sigma clipping and NaN imputation), plus the
+default comparison weights and the pool of stars the automatic selection could
+have chosen. Star IDs are those on `…_ref.png` (reference-band IDs under
+`--ref_band`).
+
+`prose.scripts.rediff_lightcurves` re-differences the target against another
+set of comparison stars or another aperture without re-running photometry.
+Custom sets use equal weights, as `--cID` does; the default curve is rebuilt
+from the stored weights (Broeg et al. 2005 in auto mode), so it matches the
+pipeline CSV. Each mode prints one JSON object:
+
+```bash
+# selectable stars, default comparisons and weights, aperture radii
+python -m prose.scripts.rediff_lightcurves RESULTS_DIR --info
+# compare a custom set with the default (scatter metrics + overlay PNG); writes nothing
+python -m prose.scripts.rediff_lightcurves RESULTS_DIR --select g=3,5,7@4 --preview cmp.png
+# adopt it: overwrite Flux/Err in the band CSV and regenerate *_lightcurves.png
+python -m prose.scripts.rediff_lightcurves RESULTS_DIR --select g=3,5,7@4 --apply \
+    --target TOI-1234 --inst muscat3 --date 250101
+```
+
+`--select BAND=IDS@APERTURE_INDEX` is repeatable, one per band. `--apply`
+refuses when the CSV rows no longer match the datacube frames (for example
+after a `postprocess_lightcurves --apply` clip), so undo that first.
 
 ### Photometry worker controls
 

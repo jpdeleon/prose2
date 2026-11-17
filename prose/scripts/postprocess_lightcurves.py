@@ -337,8 +337,12 @@ def plot_lightcurves_from_csv(
     sigma: float | None,
     degree: int,
     masks: dict[str, np.ndarray] | None = None,
+    subtitle: str | None = None,
 ) -> None:
     """Regenerate the run's summary light-curve figure from CSV lightcurves.
+
+    ``subtitle`` replaces the default ``post-processed (sigma=..., deg=...)``
+    title suffix (e.g. for a re-differenced run).
 
     All present rows of each CSV are plotted; ``masks`` is accepted for
     backward compatibility (the preview path) but no longer applied, since
@@ -389,10 +393,9 @@ def plot_lightcurves_from_csv(
         )
     )
     secax.set_xlabel("UTC")
-    fig.suptitle(
-        f"{target_name} | {instrument} | {date} | post-processed "
-        f"(sigma={_sigma_label(sigma)}, deg={degree})"
-    )
+    if subtitle is None:
+        subtitle = f"post-processed (sigma={_sigma_label(sigma)}, deg={degree})"
+    fig.suptitle(f"{target_name} | {instrument} | {date} | {subtitle}")
     _savefig(fig, path)
 
 

@@ -87,7 +87,7 @@ from astroquery.mast import Mast
 from astroquery.simbad import Simbad
 from rich.progress import track
 
-from prose import FITSImage, Fluxes, Image, Sequence, blocks
+from prose import FITSImage, Fluxes, Image, Sequence, blocks, datacube
 from prose import __version__ as _PROSE_VERSION
 from prose.blocks import catalogs
 from prose.core.block import Block
@@ -3035,6 +3035,7 @@ def run_band(
     workers: int | None = None,
     chunksize: int = 1,
     shared_reference: bool = False,
+    keep_datacube: bool = False,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -3323,6 +3324,7 @@ def run_band(
         cids=cids,
         avoid_cids=mapped_avoid,
         nan_imputation_method=nan_imputation_method,
+        keep_datacube=keep_datacube,
     )
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
@@ -3459,6 +3461,7 @@ def differential_photometry(
     cids: list[int] | None = None,
     avoid_cids: list[int] | None = None,
     nan_imputation_method: str = "linear",
+    keep_datacube: bool = False,
 ):
     """Clean NaN comparison stars, sigma-clip, and run differential photometry.
 
@@ -3473,6 +3476,9 @@ def differential_photometry(
     ----------
     nan_imputation_method : str, optional
         Method to impute NaN values in flux matrix. Default: "linear".
+    keep_datacube : bool, optional
+        Attach the flux cube differencing ran on, with every star intact, as
+        ``diff.metadata["flux_datacube"]`` (see :mod:`prose.datacube`).
     """
     if target_index in (avoid_cids or []):
         raise ValueError(
@@ -3497,8 +3503,13 @@ def differential_photometry(
 
     too_sparse = _too_sparse_comparisons(fluxes, target_index)
     fluxes = _impute_comparisons(fluxes, nan_imputation_method, too_sparse)
+    imputed = fluxes
 
     n_sources = fluxes.fluxes.shape[1]
+    # the auto-selection pool, whichever mode runs: what a datacube may offer
+    pool = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2)) & ~too_sparse
+    pool[[a for a in (avoid_cids or []) if 0 <= a < n_sources]] = False
+    pool[target_index] = False
     if cids is not None:
         valid_cids = [c for c in cids if 0 <= c < n_sources]
         dropped = [c for c in cids if c not in valid_cids]
@@ -3580,10 +3591,17 @@ def differential_photometry(
     if fluxes.time is None or len(fluxes.time) == 0:
         return None
     if cids:
-        return fluxes.diff(comps=np.array(cids))
+        diff = fluxes.diff(comps=np.array(cids))
+    else:
+        # Imputation is already done above, so skip it in autodiff
+        diff = fluxes.autodiff(nan_imputation_method="none")
+        _log_auto_comparisons(diff, keep, target_index)
+    if keep_datacube:
+        diff.metadata["flux_datacube"] = datacube.capture(imputed, fluxes, pool)
+    return diff
 
-    # Imputation is already done above, so skip it in autodiff
-    diff = fluxes.autodiff(nan_imputation_method="none")
+
+def _log_auto_comparisons(diff: Fluxes, keep: np.ndarray, target_index: int) -> None:
     comps = getattr(diff, "comparisons", None)
     if comps is not None:
         original_comps = list(comps)
@@ -3597,7 +3615,6 @@ def differential_photometry(
         logger.info(
             f"comparison pool (auto): final selected {len(original_comps)} comparison star(s)"
         )
-    return diff
 
 
 # --------------------------- time conversion ---------------------------
@@ -5099,6 +5116,30 @@ def save_all_bands_npz(
     logger.info(f"wrote {path}")
 
 
+def save_flux_datacube(
+    band_results, bjds, path: Path, meta: dict | None = None
+) -> None:
+    """Write the per-star, per-aperture flux cube of each band (``--save_flux_datacube``)."""
+    cubes = [
+        datacube.band_cube_from_reduction(
+            band=band,
+            diff=r["diff"],
+            bjd_tdb=bjds[band],
+            aper_radii=r["aper_radii"],
+            aper_unit="fwhm" if r.get("scale") else "pix",
+            target_index=r["target_index"],
+            ref_band_star_ids=r.get("ref_band_star_ids"),
+        )
+        for band, r in band_results.items()
+        if "flux_datacube" in r["diff"].metadata
+    ]
+    if not cubes:
+        logger.warning("no band kept a flux datacube; nothing written")
+        return
+    datacube.save_datacube(path, cubes, meta=meta)
+    logger.info(f"wrote {path}")
+
+
 # --------------------------- main ---------------------------
 
 
@@ -6210,6 +6251,16 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Diagnostic PNG groups to render; CSV/NPZ output and --gif are independent",
     )
     ap.add_argument(
+        "--save_flux_datacube",
+        "--save-flux-datacube",
+        action="store_true",
+        help="Also write {stem}_flux_datacube.npz: every star's flux at every "
+        "aperture after frame clipping and NaN imputation, so light curves can be "
+        "re-differenced with other comparison stars or another aperture "
+        "(prose.scripts.rediff_lightcurves) without re-running photometry. "
+        "Off by default; skipped under --test_run.",
+    )
+    ap.add_argument(
         "--workers",
         type=int,
         default=None,
@@ -7086,6 +7137,7 @@ def main(argv=None) -> int:
                 workers=args.workers,
                 chunksize=args.chunksize,
                 shared_reference=not self_reference,
+                keep_datacube=args.save_flux_datacube and not args.test_run,
             )
         except TargetNotFoundError as exc:
             if self_reference and args.tID is None and band not in deferred:
@@ -7483,6 +7535,13 @@ def main(argv=None) -> int:
         save_all_bands_npz(
             band_results, bjds, args.results_dir / f"{stem_multi}.npz", meta=vars(args)
         )
+        if args.save_flux_datacube:
+            save_flux_datacube(
+                band_results,
+                bjds,
+                args.results_dir / f"{stem_multi}_flux_datacube.npz",
+                meta=vars(args),
+            )
 
     # Dump the reference frame's full FITS header to a sidecar text file so it
     # can be inspected from the web GUI without downloading the data archive.
