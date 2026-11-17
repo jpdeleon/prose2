@@ -24,6 +24,7 @@ structural reference; the reduction itself is pure ``prose``)::
     {target}_{inst}_{band}_{date}_ref.png
     {target}_{inst}_{band}_{date}_apertures.png
     {target}_{inst}_{band}_{date}_alignment.png
+    {target}_{inst}_{band}_{date}_band_covariates.png
     {target}_{inst}_{band}_{date}.gif
     {target}_{inst}_{band}_{date}.csv
     {target}_{inst}_{bands}_{date}_lightcurves.png
@@ -4420,6 +4421,83 @@ def plot_covariates(
     _savefig(fig, path)
 
 
+# Covariate panels of the per-band figure, top to bottom below the flux panel:
+# (diff.df column, y label). ``{unit}`` is the native pixel unit of the CSV.
+BAND_COVARIATE_PANELS = (
+    ("airmass", "Airmass"),
+    ("dx", "dx (pix)"),
+    ("dy", "dy (pix)"),
+    ("fwhm", "FWHM (pix)"),
+    ("peak", "Peak ({unit})"),
+    ("bkg", "Bkg ({unit})"),
+)
+BAND_COVARIATE_PANEL_HEIGHT_IN = 1.3
+
+
+def plot_band_covariates(
+    result: dict,
+    path: Path,
+    target_name: str,
+    instrument: str,
+    band: str,
+    date: str,
+    target_index: int | str,
+    bin_size_days: float = BIN_SIZE_DAYS,
+    unit: str = "ADU",
+) -> None:
+    """One band's light curve and covariates, each on its own shared-time axis.
+
+    Unlike ``plot_covariates`` (every band, normalized and stacked), each
+    covariate keeps its physical scale so a systematic can be read directly
+    against the flux. Covariates missing from ``diff.df`` are skipped.
+    """
+    diff = result["diff"]
+    df = diff.df
+    panels = [(col, label) for col, label in BAND_COVARIATE_PANELS if col in df]
+    fig, axes = plt.subplots(
+        1 + len(panels),
+        1,
+        figsize=(8, BAND_COVARIATE_PANEL_HEIGHT_IN * (2 + len(panels))),
+        sharex=True,
+        constrained_layout=True,
+        gridspec_kw={"height_ratios": [2] + [1] * len(panels)},
+    )
+    axes = np.atleast_1d(axes)
+    time = np.asarray(diff.time, dtype=float)
+    t0 = int(time[0])
+    t = time - t0
+
+    ax = axes[0]
+    flux = np.asarray(df["flux"], dtype=float)
+    ax.plot(t, flux, ".", c="k", alpha=0.2)
+    bt, bf, be = _binned(t, flux, bin_size_days=bin_size_days)
+    bin_minutes = bin_size_days * 24 * 60
+    ax.errorbar(
+        bt, bf, yerr=be, fmt="o", c=band_color(band), label=f"{bin_minutes:g}-min bin"
+    )
+    ax.legend(loc="best", fontsize="small")
+    ax.set_ylabel("Flux")
+    scatter_ppt = np.nanstd(bf) * 1e3
+    ax.set_title(f"std = {scatter_ppt:.2f} ppt / {bin_minutes:g}-min bin")
+
+    for ax, (col, label) in zip(axes[1:], panels):
+        ax.plot(t, np.asarray(df[col], dtype=float), "k-", lw=1)
+        ax.set_ylabel(label.format(unit=unit))
+
+    axes[-1].set_xlabel(f"time (JD) - {t0}")
+    secax = axes[0].secondary_xaxis(
+        location="top",
+        functions=(lambda rel: rel + t0, lambda jd: jd - t0),
+    )
+    secax.xaxis.set_major_formatter(
+        plt.FuncFormatter(
+            lambda jd, _: Time(jd, format="jd").datetime.strftime("%m-%d\n%H:%M")
+        )
+    )
+    fig.suptitle(f"{target_name} | {instrument} | {band} | {date} | tID={target_index}")
+    _savefig(fig, path)
+
+
 def _radial_profile(data, center):
     y, x = np.indices(data.shape)
     rr = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2).astype(int)
@@ -7109,6 +7187,7 @@ def main(argv=None) -> int:
         telescope=resolved_telescope,
     )
     bjds = {}
+    band_stems = {}
     # The reference-frame plots (_ref/_apertures/_cutouts) are emitted per band.
     # Under --ref_band the photometry ``ref`` is shared, but non-reference bands
     # carry a ``display_ref`` built from their own frames (aligned onto the
@@ -7125,6 +7204,7 @@ def main(argv=None) -> int:
             confmode=resolved_confmode,
             telescope=resolved_telescope,
         )
+        band_stems[band] = stem
         bjds[band] = compute_bjd_tdb(
             r["diff"], r["ref"].header, target_coord, args.use_barycorrpy, instrument
         )
@@ -7371,6 +7451,18 @@ def main(argv=None) -> int:
             date,
             target_index=target_index,
         )
+        for band, r in band_results.items():
+            plot_band_covariates(
+                r,
+                args.results_dir / f"{band_stems[band]}_band_covariates.png",
+                args.target_name,
+                instrument,
+                band,
+                date,
+                target_index=r["target_index"],
+                bin_size_days=bin_size_days,
+                unit=pixel_unit(_read_quality_header(r["files"][0])),
+            )
     if args.plots in ("all", "reference"):
         plot_stacks(
             band_results,

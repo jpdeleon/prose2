@@ -83,6 +83,7 @@ def test_plot_groups_control_rendering_without_losing_data(
         "plot_lightcurves",
         "plot_raw_flux",
         "plot_covariates",
+        "plot_band_covariates",
         "save_all_bands_npz",
     ]
     for name in names:
@@ -110,7 +111,7 @@ def test_plot_groups_control_rendering_without_losing_data(
     )
     assert code == 0
     references = set(names[:5])
-    summaries = set(names[5:8])
+    summaries = set(names[5:9])
     assert (set(calls) & references) == (
         references if group in ("all", "reference") else set()
     )
