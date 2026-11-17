@@ -1927,7 +1927,12 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
         return MockPhot()
 
     def mock_diff(
-        fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"
+        fluxes,
+        target_index,
+        cids=None,
+        avoid_cids=None,
+        nan_imputation_method="linear",
+        keep_datacube=False,
     ):
         captured["diff_target_index"] = target_index
 
@@ -2004,7 +2009,12 @@ def test_run_band_remaps_cids_and_avoid_cids_from_reference_band(tmp_path, monke
         return MockPhot()
 
     def mock_diff(
-        fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"
+        fluxes,
+        target_index,
+        cids=None,
+        avoid_cids=None,
+        nan_imputation_method="linear",
+        keep_datacube=False,
     ):
         captured["diff_cids"] = cids
         captured["diff_avoid_cids"] = avoid_cids
@@ -3808,7 +3818,12 @@ def test_run_band_forwards_display_stack_nframes(tmp_path, monkeypatch):
         return MockPhot()
 
     def mock_diff(
-        fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"
+        fluxes,
+        target_index,
+        cids=None,
+        avoid_cids=None,
+        nan_imputation_method="linear",
+        keep_datacube=False,
     ):
         class FakeDiff:
             def __init__(self):
@@ -3887,7 +3902,12 @@ def test_run_band_skips_display_reference_for_reference_band(tmp_path, monkeypat
         return MockPhot()
 
     def mock_diff(
-        fluxes, target_index, cids=None, avoid_cids=None, nan_imputation_method="linear"
+        fluxes,
+        target_index,
+        cids=None,
+        avoid_cids=None,
+        nan_imputation_method="linear",
+        keep_datacube=False,
     ):
         return SimpleNamespace(time=np.arange(4, dtype=float), target=target_index)
 
