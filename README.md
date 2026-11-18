@@ -480,6 +480,13 @@ updates a release PR that bumps `version` in both `[project]` and
 PR tags `vX.Y.Z` and publishes a GitHub release. Never edit the version by
 hand; `.release-please-manifest.json` records the last released version.
 
+Before merging a release PR, run the release benchmark on ut2
+(`python -m prose.scripts.release_benchmark`, see
+[benchmarks/README.md](benchmarks/README.md)). It compares the candidate with
+the previous release on real MuSCAT/MuSCAT2/3/4 and Sinistro nights: a
+fixed-aperture check that must pass, and an automatic-selection report to paste
+into the release PR.
+
 An editable install (`pip install -e .`) keeps the version it had when it was
 installed, so reinstall it after a release if you need `prose.__version__` to
 match.
