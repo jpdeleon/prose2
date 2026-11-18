@@ -19,3 +19,8 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "gaia_resolution: run the real resolve_target_at_epoch"
     )
+    config.addinivalue_line(
+        "markers",
+        "benchmark: real-data release benchmark; skipped unless "
+        "PROSE_BENCH_BASELINE and PROSE_BENCH_CANDIDATE are set",
+    )

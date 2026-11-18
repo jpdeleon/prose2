@@ -1,0 +1,102 @@
+# Release benchmark datasets (prose.scripts.release_benchmark).
+#
+# Paths are on ut2. A dataset whose data_dir is missing is skipped and listed
+# in the report. Seeded from the v3.5.3 -> v3.8.0 comparison in
+# muscat-team/muscatdb#448.
+#
+# kind: fixed -> one aperture and fixed comparison stars; checked pass/fail.
+# kind: auto  -> default selection; reported side by side, flagged for review.
+# args: extra run_photometry arguments. calib_cache: calibrated MuSCAT/MuSCAT2
+# frames, copied into each run so the engine never modifies the cache.
+
+datasets:
+  # --- fixed ------------------------------------------------------------
+  # g-band FWHM is about 7.6-7.9 px on both nights; one aperture of about
+  # 1.6 FWHM with a (20, 30) px annulus.
+  - name: toi3884_muscat3_230605_fixed
+    kind: fixed
+    data_dir: /data/MuSCAT3/230605
+    target_name: TOI-3884
+    target_coord: "181.57265454 12.50691217"
+    bands: [gp]
+    # Star 1 is the one prose2 3.5.3 selects automatically on this night.
+    args: [--aper_radii, "12,12,1", --annulus, "20,30", --aper_unit, pix,
+           --cID, "1", --avoid_nearby_star]
+
+  - name: wasp104_muscat2_200227_fixed
+    kind: fixed
+    data_dir: /data/MuSCAT2/200227
+    target_name: WASP104b
+    target_coord: "160.602369 7.435077"
+    bands: [gp]
+    # The recorded successful reduction selected IDs 2 and 3 on frame 417.
+    args: [--refid, "417", --aper_radii, "13,13,1", --annulus, "20,30",
+           --aper_unit, pix, --cID, "2", "3", --avoid_nearby_star]
+    calib_cache: ~/ql/prose/muscat2/200227_calibrated
+
+  # --- auto -------------------------------------------------------------
+  - name: toi3884_muscat3_230605
+    kind: auto
+    data_dir: /data/MuSCAT3/230605
+    target_name: TOI-3884
+    target_coord: "181.57265454 12.50691217"
+    bands: [gp]
+    args: [--avoid_nearby_star]
+
+  - name: wasp104_muscat2_200227
+    kind: auto
+    data_dir: /data/MuSCAT2/200227
+    target_name: WASP104b
+    target_coord: "160.602369 7.435077"
+    bands: [gp]
+    # Automatic aperture with the fixed comparison stars above.
+    args: [--refid, "417", --cID, "2", "3", --avoid_nearby_star]
+    calib_cache: ~/ql/prose/muscat2/200227_calibrated
+
+  - name: v1298tau_muscat3_231021
+    kind: auto
+    data_dir: /data/MuSCAT3/231021
+    target_name: V1298Tau
+    target_coord: "61.331754 20.157093"
+    bands: [gp, rp, ip, zs]
+    args: [--avoid_nearby_star]
+
+  - name: v1298tau_muscat3_241128
+    kind: auto
+    data_dir: /data/MuSCAT3/241128
+    target_name: V1298Tau
+    target_coord: "61.331754 20.157093"
+    bands: [gp, rp, ip, zs]
+    args: [--avoid_nearby_star]
+
+  - name: toi1355_muscat3_261021
+    kind: auto
+    data_dir: /data/MuSCAT3/261021
+    target_name: TOI1355
+    target_coord: "331.307643 66.775296"
+    bands: [g_narrow, Na_D, i_narrow, z_narrow]
+    args: [--avoid_nearby_star]
+
+  - name: toi1355_muscat3_261114_tid1_cid0
+    kind: auto
+    data_dir: /data/MuSCAT3/261114
+    target_name: TOI1355
+    target_coord: "331.307643 66.775296"
+    bands: [g_narrow, Na_D, i_narrow, z_narrow]
+    args: [--tID, "1", --cID, "0", --avoid_nearby_star]
+
+  - name: toi5012_muscat4_260802
+    kind: auto
+    data_dir: /data/MuSCAT4/260802
+    target_name: TOI-5012
+    target_coord: "252.21492665 -44.21964925"
+    bands: [g_narrow, Na_D, i_narrow, z_narrow]
+    args: [--avoid_nearby_star]
+
+  - name: toi942_sinistro_261102
+    kind: auto
+    data_dir: /data/Sinistro/261102
+    target_name: TOI-942 b
+    target_coord: "76.649617 -20.245613"
+    bands: [ip]
+    args: [--telescope, 1m0-12, --avoid_nearby_star]
