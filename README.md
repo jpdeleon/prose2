@@ -256,6 +256,11 @@ existing text such as star IDs, and the panel edge
 | MuSCAT raw calibration | `--calib_dir` |
 | Run control | `--test_run`, `--test_run_frames`, `--verbose` |
 
+Frame alignment requires at least three reference sources. Both `--n_stars_align`
+and `--max_num_stars` must allow at least three. With exactly three alignment
+stars, registration relies on celestial WCS. Frames that cannot be registered
+are discarded so each flux column keeps the same reference star.
+
 `--gif` is off by default because GIF rendering is the slowest stage; throttle
 it with `--gif_stride`. `--test_run` reduces each band to `--test_run_frames`
 frames for a quick smoke test — centered on the `--refid` frame when given,

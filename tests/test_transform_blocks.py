@@ -6,6 +6,29 @@ from prose import Image, blocks
 from prose.core import Sources
 
 
+@pytest.mark.parametrize("use_wcs", [True, False])
+def test_three_star_alignment_preserves_reference_order_or_discards(use_wcs):
+    from astropy.wcs import WCS
+
+    coords = np.array([[12.0, 13.0], [24.0, 28.0], [32.0, 16.0]])
+    offset = np.array([2.0, -1.0])
+    ref = Image(np.zeros((40, 40)), _sources=Sources(coords))
+    frame = Image(np.zeros((40, 40)), _sources=Sources((coords + offset)[::-1]))
+    if use_wcs:
+        wcs = WCS(naxis=2)
+        wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        wcs.wcs.cdelt = [-0.001, 0.001]
+        ref.wcs = wcs
+        frame.wcs = wcs.deepcopy()
+        frame.wcs.wcs.crpix += offset
+
+    blocks.ComputeTransformTwirl(ref, n=3).run(frame)
+    blocks.AlignReferenceSources(ref).run(frame)
+    assert frame.discard == (not use_wcs)
+    if use_wcs:
+        np.testing.assert_allclose(frame.sources.coords, coords + offset, atol=1e-6)
+
+
 def test_transform_twirl_block(n=30):
     np.random.seed(n)
     original_transform = transform.AffineTransform(

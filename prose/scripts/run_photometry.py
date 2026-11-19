@@ -2631,8 +2631,15 @@ def photometry_sequence(
         Boolean array marking bad pixels (True = bad). Applied to all frames
         to mask detector defects before photometry.
     """
-    if n_stars_align is None:
-        n_stars_align = max_num_stars
+    requested = len(ref.sources) if n_stars_align is None else n_stars_align
+    n_stars_align = min(requested, len(ref.sources), max_num_stars)
+    if n_stars_align < 3:
+        raise ValueError(
+            f"Alignment requires at least 3 stars; reference has {len(ref.sources)} "
+            f"sources, requested {requested}, max_num_stars={max_num_stars}"
+        )
+    if n_stars_align < requested:
+        logger.info(f"capping alignment stars from {requested} to {n_stars_align}")
     blocks_list = [
         blocks.Trim(ccd_trim_size_yx),
         MaskBadPixels(bad_pixel_map),
@@ -2647,21 +2654,14 @@ def photometry_sequence(
         blocks.Cutouts(shape=cutout_size),
         blocks.MedianEPSF(),
         blocks.Gaussian2D(ref),
+        blocks.ComputeTransformTwirl(ref, n=n_stars_align),
+        blocks.AlignReferenceSources(ref, discard_tolerance=ALIGN_DISCARD_TOLERANCE),
+        _centroid_block(centroid_method),
+        blocks.AperturePhotometry(aper_radii, scale=scale),
+        blocks.AnnulusBackground(rin=rin, rout=rout, scale=scale),
+        MeasurePeaks(radius=float(np.max(aper_radii)), scale=scale),
+        blocks.Del("data", "cutouts"),
     ]
-    if n_stars_align >= 3:
-        blocks_list.append(blocks.ComputeTransformTwirl(ref, n=n_stars_align))
-        blocks_list.append(
-            blocks.AlignReferenceSources(ref, discard_tolerance=ALIGN_DISCARD_TOLERANCE)
-        )
-    blocks_list.extend(
-        [
-            _centroid_block(centroid_method),
-            blocks.AperturePhotometry(aper_radii, scale=scale),
-            blocks.AnnulusBackground(rin=rin, rout=rout, scale=scale),
-            MeasurePeaks(radius=float(np.max(aper_radii)), scale=scale),
-            blocks.Del("data", "cutouts"),
-        ]
-    )
 
     # Resolve the airmass header keyword from the telescope config so the header
     # keyword takes precedence over a hardcoded name (e.g. MuSCAT writes SECZ, not
@@ -3284,6 +3284,25 @@ def run_band(
                     )
                     cids = None
 
+    phot = photometry_sequence(
+        ref,
+        reference["aper_radii"],
+        reference["rin"],
+        reference["rout"],
+        workers=workers,
+        chunksize=chunksize,
+        scale=reference["scale"],
+        ccd_trim_size_yx=ccd_trim_size_yx,
+        max_num_stars=max_num_stars,
+        min_star_separation=min_star_separation,
+        cutout_size=cutout_size,
+        n_stars_align=n_stars_align,
+        target_index=target_index,
+        min_area=min_area,
+        bad_pixel_map=bad_pixel_map,
+        centroid_method=centroid_method,
+    )
+
     if shared_reference:
         radius = float(np.max(reference["aper_radii"]))
         if reference["scale"]:
@@ -3315,34 +3334,6 @@ def run_band(
             "avoid_cids may contain comparison stars only"
         )
 
-    requested_n_stars_align = n_stars_align if n_stars_align else len(ref.sources)
-    effective_n_stars_align = min(
-        requested_n_stars_align, len(ref.sources), max_num_stars
-    )
-    if effective_n_stars_align < requested_n_stars_align:
-        logger.info(
-            f"[{band}] capping alignment stars from {requested_n_stars_align} "
-            f"to {effective_n_stars_align} (max_num_stars={max_num_stars})"
-        )
-
-    phot = photometry_sequence(
-        ref,
-        reference["aper_radii"],
-        reference["rin"],
-        reference["rout"],
-        workers=workers,
-        chunksize=chunksize,
-        scale=reference["scale"],
-        ccd_trim_size_yx=ccd_trim_size_yx,
-        max_num_stars=max_num_stars,
-        min_star_separation=min_star_separation,
-        cutout_size=cutout_size,
-        n_stars_align=effective_n_stars_align,
-        target_index=target_index,
-        min_area=min_area,
-        bad_pixel_map=bad_pixel_map,
-        centroid_method=centroid_method,
-    )
     phot.run(files)
 
     fluxes: Fluxes = phot.data[0].fluxes
@@ -6256,7 +6247,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=int,
         default=None,
         dest="n_stars_align",
-        help="Number of stars used for image alignment (default: same as "
+        help="Number of stars used for image alignment (minimum 3; default: same as "
         "--max_num_stars).",
     )
     ap.add_argument(
@@ -6502,6 +6493,10 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Frames per multiprocessing task batch (default: 1)",
     )
     args = ap.parse_args(argv)
+    if args.n_stars_align is not None and args.n_stars_align < 3:
+        ap.error("--n_stars_align must be at least 3")
+    if args.max_num_stars < 3:
+        ap.error("--max_num_stars must be at least 3 for alignment")
     if args.workers is not None and args.workers < 1:
         ap.error("--workers must be positive")
     if args.chunksize < 1:

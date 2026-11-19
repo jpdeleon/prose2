@@ -32,6 +32,31 @@ def _argv(*extra):
     return [*REQUIRED, *extra]
 
 
+@pytest.mark.parametrize("option", ["--n_stars_align", "--max_num_stars"])
+@pytest.mark.parametrize("count", [-1, 0, 1, 2])
+def test_cli_requires_three_alignment_stars(option, count, capsys):
+    with pytest.raises(SystemExit) as exc:
+        rp.parse_args(_argv(option, str(count)))
+    assert exc.value.code == 2
+    assert f"{option} must be at least 3" in capsys.readouterr().err
+
+
+def test_run_band_rejects_sparse_reference(monkeypatch):
+    from types import SimpleNamespace
+
+    reference = dict(
+        ref=SimpleNamespace(sources=[(1, 2), (3, 4)]),
+        target_index=0,
+        aper_radii=[2.0],
+        rin=6.0,
+        rout=9.0,
+        scale=False,
+    )
+    monkeypatch.setattr(rp, "build_reference", lambda *a, **kw: reference)
+    with pytest.raises(ValueError, match="at least 3 stars; reference has 2"):
+        rp.run_band("g", ["frame.fits"], "ref.fits", None)
+
+
 # --------------------------- defaults ---------------------------
 
 
