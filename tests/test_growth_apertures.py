@@ -83,11 +83,58 @@ def test_annulus_stays_inside_equal_brightness_neighbour(monkeypatch):
     assert grid[-1] < rin
 
 
-def test_neighbour_too_close_for_annulus_raises(monkeypatch):
-    # r99 (~18 px) + 2 + a 10 px ring cannot fit before a neighbour at 30 px.
+def test_close_neighbour_narrows_annulus(monkeypatch):
+    # r99 (~18 px) + 2 + a 10 px ring cannot fit before a neighbour at 30 px,
+    # but an 8 px ring (>= MIN_ANNULUS_WIDTH_PIX) between r99 + 2 and 28 px does.
     ref, target, r99 = _reference(monkeypatch, 30)
+    grid, rin, rout = rp.gaia_aperture_radii(ref, 0, target, r99=r99)
+    assert rin == pytest.approx(r99 + 2)
+    assert rout <= 30 - 2 + 1e-9
+    assert rout - rin >= rp.MIN_ANNULUS_WIDTH_PIX
+    assert grid[-1] < rin
+
+
+def test_no_room_for_growth_ring_falls_back_to_fwhm(monkeypatch):
+    # A neighbour at 23 px leaves < MIN_ANNULUS_WIDTH_PIX outside r99 + 2, so
+    # the band keeps the FWHM-based ring instead of failing.
+    ref, target, r99 = _reference(monkeypatch, 23)
+    grid, rin, rout = rp.gaia_aperture_radii(ref, 0, target, r99=r99)
+    assert rout <= 23 - 2 + 1e-9
+    assert rin < r99
+    assert grid[0] == pytest.approx(ref.fwhm)
+
+
+def test_neighbour_inside_fwhm_ring_still_raises(monkeypatch):
+    ref, target, r99 = _reference(monkeypatch, 10)
     with pytest.raises(ValueError, match="uncontaminated sky annulus"):
         rp.gaia_aperture_radii(ref, 0, target, r99=r99)
+
+
+def test_growth_sample_is_bounded_even_and_skips_reference():
+    files = [f"f{i:03d}.fits" for i in range(100)]
+    sample = rp._growth_sample(files, "f000.fits")
+    assert len(sample) == rp.GROWTH_SAMPLE_FRAMES
+    assert "f000.fits" not in sample
+    assert sample[0] == "f001.fits" and sample[-1] == "f099.fits"
+    assert rp._growth_sample(files[:5], "f000.fits") == files[1:5]
+
+
+def test_single_wide_frame_does_not_set_widest(tmp_path):
+    paths = []
+    for i, sigma in enumerate([6] * 9 + [12]):
+        path = tmp_path / f"frame{i}.fits"
+        fits.writeto(path, _field(sigma).data)
+        paths.append(path)
+    widest = rp._widest_growth_radius(
+        paths,
+        "ref.fits",
+        35,
+        (0, 0),
+        None,
+        rp.blocks.PointSourceDetection(n=5, min_area=10),
+    )
+    # Nine ~18 px frames and one ~37 px outlier: p90 stays near the bulk.
+    assert 17 <= widest < 25
 
 
 def test_explicit_annulus_clearing_profile_is_kept(monkeypatch):

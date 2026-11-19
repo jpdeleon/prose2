@@ -319,12 +319,15 @@ entirely).
 By default, aperture sizing measures the radius enclosing 99% of the light
 (`r99`) in a median stack of isolated, sky-subtracted reference stars, which
 also covers donuts and broad centrally peaked stars. The pipeline also
-measures the native science frames for each band before photometry. The fixed
-sky annulus starts at least two pixels beyond the widest measured profile, and
-must stay clear of any Gaia source contributing ≥10% of the target flux
-(Δmag < 2.5). Differential photometry compares seven radii from 0.6 to 1.5
-times the reference r99, capped below the inner annulus. If no isolated
-profile is measurable, the log reports a fallback to radii from the reference
+measures up to 25 evenly spaced native science frames per band before
+photometry and takes the 90th-percentile r99 as the widest profile, so one
+trailed or defocused frame cannot set the annulus. The fixed sky annulus
+starts at least two pixels beyond that widest profile, and must stay clear of
+any Gaia source contributing ≥10% of the target flux (Δmag < 2.5); a close
+neighbour narrows the ring down to 4 px. Differential photometry compares
+seven radii from 0.6 to 1.5 times the reference r99, capped below the inner
+annulus. If no isolated profile is measurable, or no ≥4 px clean ring fits
+outside the profile, the log warns and falls back to radii from the reference
 FWHM up to a nominal 20–30 px annulus. An explicit `--annulus_pix` is kept
 unless it overlaps the measured profile or a contaminant. PSF cutouts expand
 with the detected stellar footprint, while the default edge margin stays at
@@ -689,7 +692,7 @@ Differential ensemble sums use a total-minus-self reduction instead of construct
 
 ### Incompatible automatic sky annuli
 
-Automatic annulus selection raises a descriptive error when the minimum PSF clearance would re-enclose a known Gaia contaminant. Inspect the field and supply a custom aperture/annulus grid, or use neighbor modeling; the pipeline no longer presents impossible automatic geometry as uncontaminated.
+When no clean ring fits outside the measured growth profile, automatic annulus selection first narrows the ring (down to 4 px), then falls back to FWHM geometry with a warning. It raises a descriptive error only when even the FWHM-based ring would re-enclose a known Gaia contaminant. Inspect the field and supply a custom aperture/annulus grid, or use neighbor modeling; the pipeline no longer presents impossible automatic geometry as uncontaminated.
 
 ### Normalization without comparison stars
 

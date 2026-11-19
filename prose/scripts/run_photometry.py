@@ -334,6 +334,9 @@ def get_plot_colors(cmap: str = "Greys") -> dict:
 APER_STEP_PIX = 2  # spacing of aperture radii [pix]
 CONTAM_DMAG = 2.5  # neighbour contaminates if Gmag - target < this (>=10% target flux)
 CONTAM_MARGIN_PIX = 2  # keep annulus/aperture this far inside a contaminant [pix]
+GROWTH_SAMPLE_FRAMES = 25  # science frames sampled for the widest-profile r99
+GROWTH_WIDE_PERCENTILE = 90  # robust "widest" r99 percentile over sampled frames
+MIN_ANNULUS_WIDTH_PIX = 4  # narrowest sky ring accepted before FWHM fallback [pix]
 GAIA_CUTOUT = (200, 200)  # cutout around target for the Gaia query [pix]
 
 # differential-photometry cleaning — None means the axis is not clipped
@@ -1054,21 +1057,45 @@ def _growth_radius(image, minimum):
     return max(1.0, float(np.flatnonzero(growth >= 0.99 * growth[-1])[0]))
 
 
+def _growth_sample(files, ref_file, n_max=GROWTH_SAMPLE_FRAMES):
+    """Evenly spaced science frames (excluding the reference) to measure."""
+    candidates = [p for p in files if Path(p) != Path(ref_file)]
+    if len(candidates) <= n_max:
+        return candidates
+    picks = np.unique(np.linspace(0, len(candidates) - 1, n_max).round().astype(int))
+    return [candidates[i] for i in picks]
+
+
 def _widest_growth_radius(files, ref_file, minimum, trim, bad_pixels, detection):
-    """Measure native science frames, including bands using a shared anchor."""
-    widest = 0.0
-    for path in files:
-        if Path(path) == Path(ref_file):
-            continue
+    """Robust upper r99 over a sample of native science frames.
+
+    Measures at most ``GROWTH_SAMPLE_FRAMES`` evenly spaced frames (including
+    bands using a shared anchor) and returns the ``GROWTH_WIDE_PERCENTILE``
+    percentile, so a single trailed or defocused frame cannot set the band's
+    annulus. Returns 0.0 when no frame yields a profile.
+    """
+    radii = []
+    for path in _growth_sample(files, ref_file):
         try:
             image = FITSImage(path)
             blocks.Trim(trim).run(image)
             MaskBadPixels(bad_pixels).run(image)
             detection.run(image)
-            widest = max(widest, _growth_radius(image, minimum) or 0)
+            r99 = _growth_radius(image, minimum)
         except (OSError, ValueError) as exc:
             logger.warning(f"growth measurement skipped for {path}: {exc}")
-    return widest
+            continue
+        if r99 is not None:
+            radii.append(r99)
+    if not radii:
+        return 0.0
+    wide = float(np.percentile(radii, GROWTH_WIDE_PERCENTILE))
+    logger.info(
+        f"science-frame r99 over {len(radii)} frames: median "
+        f"{np.median(radii):g} px, p{GROWTH_WIDE_PERCENTILE} {wide:g} px, "
+        f"max {max(radii):g} px"
+    )
+    return wide
 
 
 def reference_sequence(
@@ -1989,6 +2016,33 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
     return df
 
 
+def _growth_annulus(size, widest, contam, annulus_pix):
+    """Sky ring outside the growth profile and inside the nearest contaminant.
+
+    Starts from the nominal ring (``annulus_pix`` or 20-30 px pushed beyond
+    ``1.5 * size``), keeps it at least ``APER_STEP_PIX`` outside the widest
+    measured profile and ``CONTAM_MARGIN_PIX`` inside the nearest contaminant,
+    and narrows it down to ``MIN_ANNULUS_WIDTH_PIX`` when a neighbour leaves
+    less room. Returns ``(rin, rout)`` or ``None`` when no such ring fits.
+    """
+    nominal_in, nominal_out = annulus_pix or (20.0, 30.0)
+    width = nominal_out - nominal_in
+    limit = float(contam.min()) - CONTAM_MARGIN_PIX if len(contam) else np.inf
+    if annulus_pix is None:
+        nominal_in = max(nominal_in, 1.5 * size + APER_STEP_PIX)
+    floor = max(size, widest) + APER_STEP_PIX
+    rin = max(floor, min(nominal_in, limit - width))
+    rout = min(rin + width, limit)
+    if rout - rin < min(width, MIN_ANNULUS_WIDTH_PIX):
+        return None
+    if rout < rin + width:
+        logger.warning(
+            f"sky annulus narrowed to ({rin:g}, {rout:g}) px to stay inside "
+            f"a contaminant at {limit + CONTAM_MARGIN_PIX:g} px"
+        )
+    return rin, rout
+
+
 def gaia_aperture_radii(
     ref: FITSImage,
     target_index: int,
@@ -2026,30 +2080,28 @@ def gaia_aperture_radii(
             )
             contam = np.array([])
 
-    if r99 is None and widest <= 0:
+    size = r99 if r99 is not None else widest
+    ring = None
+    if size > 0:
+        ring = _growth_annulus(size, widest, contam, annulus_pix)
+        if ring is None:
+            logger.warning(
+                "no uncontaminated sky ring of >= "
+                f"{MIN_ANNULUS_WIDTH_PIX} px fits outside the growth profile "
+                f"(r99={max(size, widest):g} px); falling back to FWHM geometry, "
+                "so the annulus may include target light"
+            )
+    else:
         logger.warning("no isolated growth profile; using reference FWHM for apertures")
+    if ring is None:
         rin, rout = _sky_annulus_pix(fwhm, contam, annulus_pix=annulus_pix)
         aper_radii = _aperture_radii_pix(fwhm, rin)
     else:
-        size = r99 if r99 is not None else widest
-        # Reserve sky beyond the widest measured PSF and leave enough radii
-        # for stddiff to trade enclosed flux against background noise.
-        nominal_in, nominal_out = annulus_pix or (20.0, 30.0)
-        width = nominal_out - nominal_in
-        limit = float(contam.min()) - CONTAM_MARGIN_PIX if len(contam) else np.inf
-        if annulus_pix is None:
-            nominal_in = max(nominal_in, 1.5 * size + APER_STEP_PIX)
-        rin = max(max(size, widest) + APER_STEP_PIX, min(nominal_in, limit - width))
-        rout = rin + width
-        if rout > limit:
-            raise ValueError(
-                "cannot place an uncontaminated sky annulus outside "
-                "the stellar growth profile; supply an inspected "
-                "--aper_radii/--annulus grid"
-            )
+        rin, rout = ring
         aper_radii = np.linspace(0.6 * size, min(1.5 * size, rin - 1), 7)
+        r99_text = "none" if r99 is None else f"{r99:g}"
         logger.info(
-            f"growth geometry: reference r99={r99} px, widest measured "
+            f"growth geometry: reference r99={r99_text} px, widest measured "
             f"r99={max(size, widest):g} px"
         )
     logger.info(
