@@ -976,6 +976,7 @@ class SelectSourceIndices(Block):
                 "keeping the unfiltered detections"
             )
             return
+        image.set("override_ids", valid)
         selected = [image.sources[i] for i in valid]
         for i, source in enumerate(selected):
             source.i = i
@@ -1761,6 +1762,33 @@ class TargetNotFoundError(ValueError):
     """
 
 
+def save_unmatched_reference(ref, ref_file, path, cmap):
+    """Draw the catalog in the numbering accepted by a subsequent --tID."""
+    fig, ax = plt.subplots(figsize=(10, 10))
+    try:
+        ax.imshow(z_scale(ref.data), origin="lower", cmap=cmap)
+        ids = ref.computed.get("override_ids", range(len(ref.sources)))
+        for source, override_id in zip(ref.sources, ids, strict=True):
+            x, y = source.coords
+            ax.plot(x, y, "o", mfc="none", mec="cyan")
+            ax.annotate(
+                str(override_id),
+                (x, y),
+                xytext=(5, 5),
+                textcoords="offset points",
+                color="cyan",
+                bbox=dict(facecolor="black", alpha=0.6, pad=1),
+            )
+        frame = _fits_file_number(str(ref_file))
+        title = f"{Path(ref_file).name} | target unmatched | labels = --tID"
+        if frame is not None:
+            title += f" | --refid {frame}"
+        ax.set_title(title)
+        fig.savefig(path, bbox_inches="tight")
+    finally:
+        plt.close(fig)
+
+
 def find_target_index(ref: FITSImage, target_coord: SkyCoord) -> int:
     """Return the index of the detected source within 5 arcsec of the target.
 
@@ -1790,10 +1818,12 @@ def find_target_index(ref: FITSImage, target_coord: SkyCoord) -> int:
                     )
     except Exception as e:
         reason = f"the WCS-based target cross-match failed ({e})"
-    raise TargetNotFoundError(
+    error = TargetNotFoundError(
         f"target not located on the reference frame: {reason}. "
         "Set the target's source index with --tID (Target ID in muscat-db)."
     )
+    error.ref = ref
+    raise error
 
 
 def _contaminant_seps(
@@ -6561,7 +6591,12 @@ def main(argv=None) -> int:
     # guard against clobbering an existing reduction (check before the log
     # file is created so the directory's own log does not count as a product)
     product_globs = ("*.csv", "*.npz", "*.png", "*.gif")
-    existing = [p for g in product_globs for p in args.results_dir.glob(g)]
+    existing = [
+        p
+        for g in product_globs
+        for p in args.results_dir.glob(g)
+        if not p.name.endswith("_unmatched_ref.png")
+    ]
     if existing and not args.overwrite:
         print(
             f"error: {args.results_dir} already contains {len(existing)} product "
@@ -7270,6 +7305,45 @@ def main(argv=None) -> int:
                 f"({', '.join(b for b in ordered_bands if ref_wcs_ok_by_band.get(b, False))})"
             )
 
+    site = None
+    resolved_telescope = None
+    resolved_confmode = None
+    if instrument in MULTISITE_INSTRUMENTS and probe is not None:
+        site = probe.get("SITEID") or probe.get("SITE")
+        if site:
+            site = str(site).lower()
+        resolved_telescope = args.telescope or probe.get("TELESCOP")
+        if args.mode is not None:
+            resolved_confmode = args.mode
+        else:
+            first_file = sciences[active_bands[0]][0]
+            rec = filepath_to_obslog.get(first_file)
+            if rec is not None:
+                resolved_confmode = (
+                    rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
+                )
+            if not resolved_confmode:
+                resolved_confmode = probe.get("CONFMODE")
+
+    band_stems = {
+        band: build_stem(
+            args.target_name,
+            instrument,
+            date,
+            band,
+            site=site,
+            confmode=resolved_confmode,
+            telescope=resolved_telescope,
+        )
+        for band in ordered_bands
+    }
+    unmatched_paths = {
+        band: args.results_dir / f"{stem}_unmatched_ref.png"
+        for band, stem in band_stems.items()
+    }
+    for path in unmatched_paths.values():
+        path.unlink(missing_ok=True)
+
     # A self-referenced band whose target is not located is retried once,
     # after the other bands, with the target pixel those bands found.
     pending = list(ordered_bands)
@@ -7344,6 +7418,21 @@ def main(argv=None) -> int:
                 precision=precision_options_from_args(args),
             )
         except TargetNotFoundError as exc:
+            if getattr(exc, "ref", None) is not None:
+                try:
+                    save_unmatched_reference(
+                        exc.ref,
+                        selected_ref_files[band],
+                        unmatched_paths[band],
+                        args.cmap,
+                    )
+                    logger.info(
+                        f"[{band}] numbered --tID chart: {unmatched_paths[band]}"
+                    )
+                except Exception as plot_error:
+                    logger.warning(
+                        f"[{band}] could not save unmatched chart: {plot_error}"
+                    )
             if self_reference and args.tID is None and band not in deferred:
                 deferred[band] = exc
                 pending.append(band)
@@ -7363,6 +7452,7 @@ def main(argv=None) -> int:
             logger.error(f"[{band}] reduction produced no output; marking band failed")
             failures[band] = "no output"
             continue
+        unmatched_paths[band].unlink(missing_ok=True)
         band_results[band] = res
         if args.tID is None and self_reference and ref_wcs_ok_by_band.get(band, False):
             target_pos = np.asarray(
@@ -7408,26 +7498,6 @@ def main(argv=None) -> int:
         )
         return 1
 
-    site = None
-    resolved_telescope = None
-    resolved_confmode = None
-    if instrument in MULTISITE_INSTRUMENTS and probe is not None:
-        site = probe.get("SITEID") or probe.get("SITE")
-        if site:
-            site = str(site).lower()
-        resolved_telescope = args.telescope or probe.get("TELESCOP")
-        if args.mode is not None:
-            resolved_confmode = args.mode
-        else:
-            first_file = sciences[active_bands[0]][0]
-            rec = filepath_to_obslog.get(first_file)
-            if rec is not None:
-                resolved_confmode = (
-                    rec.get("confmode") or rec.get("mode") or rec.get("CONFMODE")
-                )
-            if not resolved_confmode:
-                resolved_confmode = probe.get("CONFMODE")
-
     simbad_df = None
     if target_coord is not None and args.plots in ("all", "reference"):
         try:
@@ -7445,7 +7515,6 @@ def main(argv=None) -> int:
         telescope=resolved_telescope,
     )
     bjds = {}
-    band_stems = {}
     # The reference-frame plots (_ref/_apertures/_cutouts) are emitted per band.
     # Under --ref_band the photometry ``ref`` is shared, but non-reference bands
     # carry a ``display_ref`` built from their own frames (aligned onto the
@@ -7453,16 +7522,7 @@ def main(argv=None) -> int:
     # instead of an identical duplicate. If a ``display_ref`` could not be built
     # the plot degrades to the shared frame. _alignment stays per-band.
     for band, r in band_results.items():
-        stem = build_stem(
-            args.target_name,
-            instrument,
-            date,
-            band,
-            site=site,
-            confmode=resolved_confmode,
-            telescope=resolved_telescope,
-        )
-        band_stems[band] = stem
+        stem = band_stems[band]
         bjds[band] = compute_bjd_tdb(
             r["diff"], r["ref"].header, target_coord, args.use_barycorrpy, instrument
         )

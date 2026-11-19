@@ -3414,20 +3414,19 @@ def test_persistent_reference_sources_protects_explicit_target_index():
 
 
 def test_select_source_indices_filters_and_renumbers_sources():
-    image = SimpleNamespace(
-        sources=rp.Sources(
-            [
-                rp.PointSource(coords=np.array([float(i), float(i)]), i=i)
-                for i in range(4)
-            ],
-            type="PointSource",
-        )
+    from prose import Image
+
+    image = Image(data=np.zeros((8, 8)))
+    image.sources = rp.Sources(
+        [rp.PointSource(coords=np.array([float(i), float(i)]), i=i) for i in range(4)],
+        type="PointSource",
     )
 
     rp.SelectSourceIndices([0, 2, 99]).run(image)
 
     assert np.array_equal(image.sources.coords, [[0.0, 0.0], [2.0, 2.0]])
     assert [source.i for source in image.sources] == [0, 1]
+    assert image.computed["override_ids"] == [0, 2]
 
 
 def test_format_ref_selection_report_position_mode_is_minimal():

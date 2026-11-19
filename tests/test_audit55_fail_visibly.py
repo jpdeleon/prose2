@@ -126,6 +126,8 @@ class _Src:
 
 
 class _Ref:
+    data = np.arange(400).reshape(20, 20)
+    computed = {}
     sources = [_Src([12.0, 8.0])]
 
 
@@ -152,7 +154,7 @@ def test_band_missing_target_is_retried_with_later_band_position(
     def run_band(band, *a, **kw):
         calls.append((band, kw.get("target_pixel_fallback")))
         if band == "gp" and kw.get("target_pixel_fallback") is None:
-            raise rp.TargetNotFoundError("target not located; set --tID")
+            rp.find_target_index(_Ref(), None)
         return {"ref": _Ref(), "target_index": 0}
 
     argv = _run_two_band_main(tmp_path, monkeypatch, run_band)
@@ -160,6 +162,7 @@ def test_band_missing_target_is_retried_with_later_band_position(
         with pytest.raises(_Stop):  # reached the export step: no band failed
             rp.main(argv)
 
+    assert not list((tmp_path / "out").glob("*_unmatched_ref.png"))
     assert [band for band, _ in calls] == ["gp", "ip", "gp"]
     np.testing.assert_allclose(calls[2][1], [12.0, 8.0])
     assert any(
@@ -173,12 +176,31 @@ def test_band_missing_target_fails_when_no_band_locates_it(tmp_path, monkeypatch
 
     def run_band(band, *a, **kw):
         calls.append(band)
-        raise rp.TargetNotFoundError("target not located; set --tID")
+        rp.find_target_index(_Ref(), None)
 
     argv = _run_two_band_main(tmp_path, monkeypatch, run_band)
     assert rp.main(argv) == 1
     # Nothing located the target, so the deferred bands are not re-run.
     assert calls == ["gp", "ip"]
+    assert len(list((tmp_path / "out").glob("*_unmatched_ref.png"))) == 2
+
+
+def test_rerun_failing_otherwise_removes_previous_unmatched_charts(
+    tmp_path, monkeypatch
+):
+    def unmatched(band, *a, **kw):
+        rp.find_target_index(_Ref(), None)
+
+    argv = _run_two_band_main(tmp_path, monkeypatch, unmatched)
+    assert rp.main(argv) == 1
+    assert len(list((tmp_path / "out").glob("*_unmatched_ref.png"))) == 2
+
+    def broken(band, *a, **kw):
+        raise RuntimeError("unrelated failure")
+
+    monkeypatch.setattr(rp, "run_band", broken)
+    assert rp.main(argv) == 1
+    assert not list((tmp_path / "out").glob("*_unmatched_ref.png"))
 
 
 def test_no_retry_when_tid_is_given(tmp_path, monkeypatch):
@@ -194,3 +216,33 @@ def test_no_retry_when_tid_is_given(tmp_path, monkeypatch):
     with pytest.raises(_Stop):
         rp.main([*argv, "--tID", "0"])
     assert calls == ["gp", "ip"]
+
+
+def test_unmatched_chart_uses_anchor_ids_and_frame_number(tmp_path, monkeypatch):
+    from matplotlib.axes import Axes
+    from prose import Image
+    from prose.core.source import PointSource, Sources
+
+    ref = Image(np.arange(400).reshape(20, 20))
+    ref.sources = Sources([PointSource(coords=np.array([i + 2, 8])) for i in range(5)])
+    rp.SelectSourceIndices([1, 4]).run(ref)
+    labels = []
+    titles = []
+    annotate = Axes.annotate
+    title = Axes.set_title
+
+    def record_label(ax, text, xy, **kwargs):
+        labels.append((text, tuple(xy)))
+        return annotate(ax, text, xy, **kwargs)
+
+    def record_title(ax, text, **kwargs):
+        titles.append(text)
+        return title(ax, text, **kwargs)
+
+    monkeypatch.setattr(Axes, "annotate", record_label)
+    monkeypatch.setattr(Axes, "set_title", record_title)
+    path = tmp_path / "chart.png"
+    rp.save_unmatched_reference(ref, "MCT20_1911191480.fits", path, "gray")
+    assert labels == [("1", (3, 8)), ("4", (6, 8))]
+    assert "--refid 1480" in titles[-1]
+    assert path.read_bytes().startswith(b"\x89PNG")
