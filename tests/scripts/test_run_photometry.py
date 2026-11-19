@@ -46,16 +46,24 @@ def _write_wcs_sidecar(path, wcs):
     hdu.writeto(path, overwrite=True)
 
 
-def test_resolve_simbad_target_uses_decimal_degree_columns(monkeypatch):
+@pytest.mark.parametrize(
+    "columns",
+    [
+        {"ra": [130.125], "dec": [-12.5]},
+        {"RA": ["08 40 30"], "DEC": ["-12 30 00"]},
+    ],
+    ids=["decimal-degrees", "legacy-sexagesimal"],
+)
+def test_resolve_simbad_target(monkeypatch, columns):
     class FakeSimbad:
         def query_object(self, name):
             assert name == "EPIC 211945201"
-            return Table({"ra": [130.123], "dec": [-12.456]})
+            return Table(columns)
 
     monkeypatch.setattr(rp, "Simbad", FakeSimbad)
     coord = rp._resolve_simbad_target("EPIC 211945201")
-    assert coord.ra.deg == pytest.approx(130.123)
-    assert coord.dec.deg == pytest.approx(-12.456)
+    assert coord.ra.deg == pytest.approx(130.125)
+    assert coord.dec.deg == pytest.approx(-12.5)
 
 
 @pytest.mark.parametrize(

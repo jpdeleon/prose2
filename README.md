@@ -377,6 +377,9 @@ python -m prose.scripts.run_photometry ... \
   no band located the target, the band fails with an error naming the nearest
   source and its separation. The pipeline no longer reduces the brightest
   source in its place. Pass `--tID` to choose the target.
+- **Target name resolution.** If MAST cannot resolve `--target_name`, the pipeline
+  tries SIMBAD. It accepts both decimal-degree coordinates and the sexagesimal
+  coordinates returned by older astroquery versions.
 - **Proper motion.** Name resolvers (MAST, SIMBAD) return J2000 positions, so a
   star moving faster than ~0.2 arcsec/yr is more than 5 arcsec from that
   position by now. Before any matching, the target is identified as the Gaia
