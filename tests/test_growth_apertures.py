@@ -77,7 +77,8 @@ def test_annulus_stays_inside_equal_brightness_neighbour(monkeypatch):
     # at least 2 px (CONTAM_MARGIN_PIX) before it yet start beyond r99 + 2.
     ref, target, r99 = _reference(monkeypatch, 40)
     grid, rin, rout = rp.gaia_aperture_radii(ref, 0, target, r99=r99)
-    assert rout <= 40 - 2
+    # The 40 px separation comes from spherical trig, so allow float rounding.
+    assert rout <= 40 - 2 + 1e-9
     assert rin >= r99 + 2
     assert grid[-1] < rin
 
