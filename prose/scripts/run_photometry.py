@@ -5684,7 +5684,11 @@ def _resolve_simbad_target(name: str) -> SkyCoord:
     result = simbad.query_object(name)
     if result is None or len(result) == 0:
         raise ValueError(f"Simbad returned no result for '{name}'")
-    return SkyCoord(result["ra"][0], result["dec"][0], unit=u.deg, frame="icrs")
+    if "ra" in result.colnames:
+        return SkyCoord(result["ra"][0], result["dec"][0], unit=u.deg, frame="icrs")
+    return SkyCoord(
+        result["RA"][0], result["DEC"][0], unit=(u.hourangle, u.deg), frame="icrs"
+    )
 
 
 # Gaia search radius around the input coordinate when identifying the target.
