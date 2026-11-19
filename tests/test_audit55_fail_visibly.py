@@ -2,6 +2,7 @@
 fail visibly instead of logging success and exiting 0."""
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -246,3 +247,65 @@ def test_unmatched_chart_uses_anchor_ids_and_frame_number(tmp_path, monkeypatch)
     assert labels == [("1", (3, 8)), ("4", (6, 8))]
     assert "--refid 1480" in titles[-1]
     assert path.read_bytes().startswith(b"\x89PNG")
+
+
+@pytest.mark.parametrize("explicit,expected", [(False, [1, 2, 3]), (True, [1])])
+def test_main_retries_sparse_automatic_reference_only(
+    tmp_path, monkeypatch, caplog, explicit, expected
+):
+    for number in (1, 2, 3):
+        _write_sinistro_frame(tmp_path / f"science-20250416-{number:04}-e91.fits")
+    seen = []
+
+    def reduce_band(band, files, ref_file, *args, **kwargs):
+        seen.append(rp._fits_file_number(ref_file))
+        raise rp.SparseReferenceError("reference has 2 sources")
+
+    monkeypatch.setattr(rp, "run_band", reduce_band)
+    monkeypatch.setattr(rp, "resolve_target_at_epoch", lambda coord, _: coord)
+    args = _argv(tmp_path) + (["--refid", "1"] if explicit else [])
+    assert rp.main(args) == 1
+    assert seen == expected
+    assert "insufficient reference sources" in caplog.text
+
+
+def test_alignment_catalog_requirement_precedes_psf_fit():
+    from prose import Image
+    from prose.core import Sources
+
+    for count in (0, 1, 2, 3):
+        image = Image(_sources=Sources(np.arange(count * 2).reshape((count, 2))))
+        block = rp.RequireAlignmentSources()
+        if count < 3:
+            with pytest.raises(
+                rp.SparseReferenceError, match=f"reference has {count} sources"
+            ):
+                block.run(image)
+        else:
+            block.run(image)
+
+
+def test_shared_sparse_reference_replacement_is_used_for_all_bands(
+    tmp_path, monkeypatch
+):
+    for band in ("gp", "rp"):
+        for number in (1, 2, 3):
+            _write_sinistro_frame(
+                tmp_path / f"{band}-20250416-{number:04}-e91.fits", band
+            )
+    seen = []
+
+    def reduce_band(band, files, ref_file, *args, **kwargs):
+        seen.append((band, Path(ref_file).name))
+        if rp._fits_file_number(ref_file) == 2:
+            raise rp.SparseReferenceError("reference has 2 sources")
+        return None
+
+    monkeypatch.setattr(rp, "run_band", reduce_band)
+    monkeypatch.setattr(rp, "resolve_target_at_epoch", lambda coord, _: coord)
+    rp.main(_argv(tmp_path) + ["--bands", "gp", "rp", "--ref_band", "gp"])
+    assert seen == [
+        ("gp", "gp-20250416-0002-e91.fits"),
+        ("gp", "gp-20250416-0001-e91.fits"),
+        ("rp", "gp-20250416-0001-e91.fits"),
+    ]
