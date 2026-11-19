@@ -249,7 +249,7 @@ existing text such as star IDs, and the panel edge
 | Input / output | `--data_dir`, `--results_dir`, `--glob`, `--overwrite` |
 | Bands & reference | `--bands`, `--ref_band`, `--refid`, `--ref_select`, `--ref_select_top_k` |
 | Apertures | `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
-| Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--centroid_method`, `--ccd_trim` |
+| Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--min_axis_ratio`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--centroid_method`, `--ccd_trim` |
 | Time & plots | `--use_barycorrpy`, `--bin_size_minutes`, `--plot_gaia_sources`, `--gif`, `--gif_stride` |
 | Light-curve cleaning | `--sig_bkg`, `--sig_fwhm`, `--sig_dx`, `--sig_dy`, `--sig_flux`, `--flux_poly_deg` |
 | Comparison ensemble & aperture | `--comp_ensemble`, `--comp_criterion`, `--comp_min_flux_frac`, `--clip_star_sigma`, `--clip_star_window` (see [Precision options](#precision-options-for-faint-targets)) |
@@ -699,7 +699,11 @@ Sky annuli use only finite on-detector pixels; empty sky regions yield invalid m
 
 ### Rejecting trails and elongated detections
 
-The detection blocks (`PointSourceDetection`, `AutoSourceDetection`, `TraceDetection`) accept `min_axis_ratio`, a minimum minor/major axis ratio of the thresholded region. It rejects satellite and airplane trails and other elongated non-stars, such as merged blobs. The default of 0 applies no cut, so results are unchanged unless you set it. The ratio is measured on the thresholded region rather than the true PSF. A faint defocused (donut) star often passes the threshold only as an arc of its ring. On strongly defocused MuSCAT3 frames (V1298 Tau, 2022-10-17, FWHM about 22 px), such arcs mostly had b/a of 0.25–0.5 (a few as low as 0.17), while bright satellite trails and cosmic rays had b/a of 0.04–0.17. A diffraction spike beside a saturated star had 0.22–0.27. Use about 0.2 for defocused data: 0.5 would also drop real faint stars. A donut that splits into two separate arcs is not caught by this cut. `run_photometry` does not expose it yet.
+`run_photometry --min_axis_ratio R` (and the `min_axis_ratio` argument of `PointSourceDetection`, `AutoSourceDetection` and `TraceDetection`) rejects detections whose thresholded region has a minor/major axis ratio below `R`. That removes meteor, satellite and airplane streaks and other elongated non-stars, in the reference catalog and in every per-frame detection. The default of 0 applies no cut, so results are unchanged unless you set it.
+
+Example: in the Sinistro run of TOI-942 b on 2026-11-15 (`1m0-10`, `rp`, reference `cpt1m010-fa14-20261115-0100`, FWHM 8.7 px), catalog star 15 was a meteor streak with b/a 0.08, while every real star had 0.83–0.97. With `--min_axis_ratio 0.2` the streak is dropped and stars 0–14, including the target (6), keep their indices. Later stars move up one index, and the next-brightest star fills the freed slot.
+
+About 0.2 is suggested. Keep it low for defocused data: the ratio is measured on the thresholded region rather than the true PSF, and a faint donut can pass the threshold only as a partial arc. Compact cosmic rays are not elongated and are not caught by this cut (#86).
 
 ### Sparse-field comparison selection
 
