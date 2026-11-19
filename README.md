@@ -728,3 +728,13 @@ The production light-curve time axis uses each exposure midpoint before BJD conv
 ### Missing target protection
 
 A target with no finite measurements is rejected instead of producing a normalized sentinel light curve. Target gaps are never interpolated or used as comparison stars; see Target gaps in light curves for how the affected frames are handled.
+
+Automatic aperture sizing measures the radius enclosing 99% of the light
+(`r99`) in a median stack of isolated, sky-subtracted reference stars.
+The pipeline also inspects the native science frames for each band before
+photometry. The fixed sky annulus starts at least two pixels beyond the
+widest measured profile. Differential photometry compares seven radii from
+0.6 to 1.5 times the reference r99, subject to neighbour clearance.
+If no isolated profile is measurable, the log identifies the FWHM fallback.
+PSF cutouts expand with the detected stellar footprint. Supplying
+`--aper_radii` and `--annulus` skips the growth measurements.

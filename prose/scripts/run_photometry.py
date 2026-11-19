@@ -1000,6 +1000,76 @@ def _centroid_block(method: str):
         ) from exc
 
 
+def _profile_half_size(image, minimum):
+    """Allow sky on both sides of a star's detected semi-major axis."""
+    axes = [s.a for s in image.sources if np.isfinite(s.a) and s.a > 0]
+    extent = 2 * np.median(axes[:9]) if axes else 0
+    return max(minimum // 2, min(int(np.ceil(extent)) + 5, min(image.shape) // 2))
+
+
+class ProfileCutouts(blocks.Cutouts):
+    """Expand the PSF fitting window to include the detected stellar footprint."""
+
+    def run(self, image):
+        size = max(self.shape[0], 2 * _profile_half_size(image, self.shape[0]) + 1)
+        blocks.Cutouts(shape=size, wcs=self.wcs).run(image)
+
+
+def _growth_radius(image, minimum):
+    """Measure r99 on a median stack of isolated, sky-subtracted stars."""
+    half = _profile_half_size(image, minimum)
+    coords = np.asarray([s.coords for s in image.sources])
+    yy, xx = np.ogrid[-half : half + 1, -half : half + 1]
+    radius = np.hypot(xx, yy)
+    sky = (radius >= 0.85 * half) & (radius <= half)
+    inside = radius < 0.85 * half
+    bins = np.ceil(radius[inside]).astype(int)
+    stack = []
+    for index, pos in enumerate(coords):
+        if not np.all(np.isfinite(pos)):
+            continue
+        x, y = np.rint(pos).astype(int)
+        if min(x, y, image.shape[1] - 1 - x, image.shape[0] - 1 - y) < half:
+            continue
+        distances = np.linalg.norm(coords - pos, axis=1)
+        distances[index] = np.inf
+        if np.any(distances < 2 * half):
+            continue
+        stamp = image.data[y - half : y + half + 1, x - half : x + half + 1]
+        if not np.all(np.isfinite(stamp[inside | sky])):
+            continue
+        signal = stamp[inside] - np.median(stamp[sky])
+        total = signal.sum()
+        if total > 0:
+            stack.append(signal / total)
+        if len(stack) == 9:
+            break
+    if not stack:
+        return None
+    profile = np.median(stack, axis=0)
+    growth = np.cumsum(np.bincount(bins, weights=profile))
+    if growth[-1] <= 0:
+        return None
+    return max(1.0, float(np.flatnonzero(growth >= 0.99 * growth[-1])[0]))
+
+
+def _widest_growth_radius(files, ref_file, minimum, trim, bad_pixels, detection):
+    """Measure native science frames, including bands using a shared anchor."""
+    widest = 0.0
+    for path in files:
+        if Path(path) == Path(ref_file):
+            continue
+        try:
+            image = FITSImage(path)
+            blocks.Trim(trim).run(image)
+            MaskBadPixels(bad_pixels).run(image)
+            detection.run(image)
+            widest = max(widest, _growth_radius(image, minimum) or 0)
+        except (OSError, ValueError) as exc:
+            logger.warning(f"growth measurement skipped for {path}: {exc}")
+    return widest
+
+
 def reference_sequence(
     ccd_trim_size_yx: tuple[int, int] = CCD_TRIM_SIZE_YX,
     max_num_stars: int = MAX_NUM_STARS,
@@ -1031,7 +1101,7 @@ def reference_sequence(
             ),
             SelectSourceIndices(source_indices),
             # FilterPointSources(),
-            blocks.Cutouts(shape=cutout_size, wcs=True),
+            ProfileCutouts(shape=cutout_size, wcs=True),
             blocks.MedianEPSF(),
             blocks.psf.Gaussian2D(),
             _centroid_block(centroid_method),
@@ -1912,7 +1982,7 @@ def _gaia_catalog_df(ref, target_index, target_coord, pixscale):
             )
         else:
             logger.warning(
-                f"Gaia query unavailable ({exc}) and no cache; using FWHM-only geometry"
+                f"Gaia query unavailable ({exc}) and no cache; ignoring catalog contaminants"
             )
     _gaia_cache[cache_path] = df  # store even None to avoid re-querying per band
     return df
@@ -1923,18 +1993,11 @@ def gaia_aperture_radii(
     target_index: int,
     target_coord: SkyCoord,
     annulus_pix: tuple[float, float] | None = None,
+    *,
+    r99=None,
+    widest=0.0,
 ):
-    """Size the sky annulus and aperture radii from Gaia contamination.
-
-    The minimum aperture is the target FWHM and the maximum is the inner
-    sky-annulus radius; the annulus is placed to exclude any Gaia source
-    contributing >=10% of the target flux (``CONTAM_DMAG``). The Gaia catalog is
-    fetched via ``_gaia_catalog_df`` (live query, cached to disk, with an offline
-    cache fallback); when no catalog is available the helpers run with no
-    contaminants, giving an FWHM-only annulus.
-
-    Returns ``(aper_radii, rin, rout)`` in pixels.
-    """
+    """Choose pixel apertures and a Gaia-constrained sky annulus."""
     fwhm = float(ref.fwhm)
     pixscale = float(ref.header.get("PIXSCALE", ref.telescope.pixel_scale))
     df = _gaia_catalog_df(ref, target_index, target_coord, pixscale)
@@ -1958,15 +2021,40 @@ def gaia_aperture_radii(
             contam = _contaminant_seps(sep_pix[others], mags[others], target_mag)
         except Exception as exc:  # noqa: BLE001 - bad catalog must not be fatal
             logger.warning(
-                f"contamination computation failed ({exc}); using FWHM-only geometry"
+                f"contamination computation failed ({exc}); ignoring catalog contaminants"
             )
             contam = np.array([])
 
-    rin, rout = _sky_annulus_pix(fwhm, contam, annulus_pix=annulus_pix)
-    aper_radii = _aperture_radii_pix(fwhm, rin)
+    if r99 is None and widest <= 0:
+        logger.warning("no isolated growth profile; using reference FWHM for apertures")
+        rin, rout = _sky_annulus_pix(fwhm, contam, annulus_pix=annulus_pix)
+        aper_radii = _aperture_radii_pix(fwhm, rin)
+    else:
+        size = r99 if r99 is not None else widest
+        # Reserve sky beyond the widest measured PSF and leave enough radii
+        # for stddiff to trade enclosed flux against background noise.
+        nominal_in, nominal_out = annulus_pix or (20.0, 30.0)
+        width = nominal_out - nominal_in
+        limit = float(contam.min()) - CONTAM_MARGIN_PIX if len(contam) else np.inf
+        rin = max(
+            max(size, widest) + APER_STEP_PIX,
+            min(max(nominal_in, 1.5 * size + APER_STEP_PIX), limit - width),
+        )
+        rout = rin + width
+        if rout > limit:
+            raise ValueError(
+                "cannot place an uncontaminated sky annulus outside "
+                "the stellar growth profile; supply an inspected "
+                "--aper_radii/--annulus grid"
+            )
+        aper_radii = np.linspace(0.6 * size, min(1.5 * size, rin - 1), 7)
+        logger.info(
+            f"growth geometry: reference r99={r99} px, widest measured "
+            f"r99={max(size, widest):g} px"
+        )
     logger.info(
-        f"apertures: {len(aper_radii)} radii in [{fwhm:.0f}, {rin:.0f}] px, "
-        f"annulus ({rin:.0f}, {rout:.0f}) px, {len(contam)} contaminants (>=10% flux)"
+        f"apertures: {len(aper_radii)} radii in [{aper_radii[0]:g}, {aper_radii[-1]:g}] px, "
+        f"annulus ({rin:g}, {rout:g}) px, {len(contam)} contaminants (>=10% flux)"
     )
     return aper_radii, rin, rout
 
@@ -2327,6 +2415,7 @@ def build_reference(
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
     source_indices: list[int] | None = None,
+    science_files=(),
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -2399,6 +2488,10 @@ def build_reference(
         centroid_method=centroid_method,
         source_indices=source_indices,
     ).run(ref, show_progress=False)
+
+    profile_minimum = cutout_size
+    if ref.computed.get("cutouts"):
+        cutout_size = ref.cutouts[0].data.shape[0]
 
     match_found = False
     if (
@@ -2488,8 +2581,24 @@ def build_reference(
             f"annulus ({rin:g}, {rout:g}) {unit}"
         )
     else:
+        r99 = _growth_radius(ref, profile_minimum)
+        widest = _widest_growth_radius(
+            science_files,
+            ref_file,
+            profile_minimum,
+            ccd_trim_size_yx,
+            bad_pixel_map,
+            blocks.PointSourceDetection(
+                n=max_num_stars, min_area=min_area, min_separation=min_star_separation
+            ),
+        )
         aper_radii, rin, rout = gaia_aperture_radii(
-            ref, target_index, target_coord, annulus_pix=annulus_pix
+            ref,
+            target_index,
+            target_coord,
+            annulus_pix=annulus_pix,
+            r99=r99,
+            widest=widest,
         )
     # The default path above already queried (and cached) Gaia; for an explicit
     # aperture grid we only query when the overlay was requested. Reusing the
@@ -2614,7 +2723,7 @@ def photometry_sequence(
             min_sources=2,
         ),
         # FilterPointSources(),
-        blocks.Cutouts(shape=cutout_size),
+        ProfileCutouts(shape=cutout_size),
         blocks.MedianEPSF(),
         blocks.Gaussian2D(ref),
     ]
@@ -3096,6 +3205,7 @@ def run_band(
         bad_pixel_map=bad_pixel_map,
         centroid_method=centroid_method,
         source_indices=reference_source_indices,
+        science_files=files,
     )
     ref = reference["ref"]
     target_index = reference["target_index"]
@@ -6235,7 +6345,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=int,
         default=CUTOUT_SIZE,
         dest="cutout_size",
-        help="Side length in pixels of star cutouts (default: %(default)s).",
+        help="Minimum side length in pixels of PSF cutouts (default: %(default)s).",
     )
     ap.add_argument(
         "--display_stack_nframes",
