@@ -2036,10 +2036,9 @@ def gaia_aperture_radii(
         nominal_in, nominal_out = annulus_pix or (20.0, 30.0)
         width = nominal_out - nominal_in
         limit = float(contam.min()) - CONTAM_MARGIN_PIX if len(contam) else np.inf
-        rin = max(
-            max(size, widest) + APER_STEP_PIX,
-            min(max(nominal_in, 1.5 * size + APER_STEP_PIX), limit - width),
-        )
+        if annulus_pix is None:
+            nominal_in = max(nominal_in, 1.5 * size + APER_STEP_PIX)
+        rin = max(max(size, widest) + APER_STEP_PIX, min(nominal_in, limit - width))
         rout = rin + width
         if rout > limit:
             raise ValueError(
@@ -2615,7 +2614,7 @@ def build_reference(
         f"reference {Path(ref_file).name}: FWHM {float(ref.fwhm):.2f} px, "
         f"target idx {target_index}"
     )
-    margin = resolve_edge_margin(edge_margin, cutout_size)
+    margin = resolve_edge_margin(edge_margin, profile_minimum)
     edge_cids = _edge_source_indices(ref, margin, target_index)
     if margin > 0:
         # The target is protected from edge_cids, but warn when it lands inside
@@ -6234,8 +6233,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=parse_pair,
         default=None,
         help="Custom fixed sky annulus 'RIN,ROUT' in pixels (default: 20,30). "
-        "Bypasses the default FWHM-based nominal ring but still shifts "
-        "inward to exclude contaminants.",
+        "Kept as given unless it overlaps the measured stellar growth "
+        "profile (moved just outside it) or a contaminant (shifted inward).",
     )
     ap.add_argument("--glob", default="*.fits", help="FITS glob pattern.")
     ap.add_argument(

@@ -51,3 +51,56 @@ def test_native_widest_frame_controls_annulus(tmp_path, monkeypatch):
     assert rin >= widest + 2
     assert len(grid) > 2 and np.all(np.diff(grid) > 0)
     assert grid[0] < r99 < grid[-1] < rin < rout
+
+
+def _reference(monkeypatch, neighbour_sep_arcsec=None):
+    import pandas as pd
+    from astropy.coordinates import SkyCoord
+
+    ref = _field(6)
+    ref.fwhm = 5.0
+    ref.header["PIXSCALE"] = 1.0
+    ref.telescope = SimpleNamespace(pixel_scale=1)
+    target = SkyCoord(10.0, 0.0, unit="deg")
+    dec = [0.0]
+    if neighbour_sep_arcsec is not None:
+        dec.append(neighbour_sep_arcsec / 3600)
+    catalog = pd.DataFrame(
+        {"ra": [10.0] * len(dec), "dec": dec, "phot_g_mean_mag": [12.0] * len(dec)}
+    )
+    monkeypatch.setattr(rp, "_gaia_catalog_df", lambda *a: catalog)
+    return ref, target, rp._growth_radius(ref, 35)
+
+
+def test_annulus_stays_inside_equal_brightness_neighbour(monkeypatch):
+    # An equal-magnitude neighbour 40 px away contaminates; the ring must end
+    # at least 2 px (CONTAM_MARGIN_PIX) before it yet start beyond r99 + 2.
+    ref, target, r99 = _reference(monkeypatch, 40)
+    grid, rin, rout = rp.gaia_aperture_radii(ref, 0, target, r99=r99)
+    assert rout <= 40 - 2
+    assert rin >= r99 + 2
+    assert grid[-1] < rin
+
+
+def test_neighbour_too_close_for_annulus_raises(monkeypatch):
+    # r99 (~18 px) + 2 + a 10 px ring cannot fit before a neighbour at 30 px.
+    ref, target, r99 = _reference(monkeypatch, 30)
+    with pytest.raises(ValueError, match="uncontaminated sky annulus"):
+        rp.gaia_aperture_radii(ref, 0, target, r99=r99)
+
+
+def test_explicit_annulus_clearing_profile_is_kept(monkeypatch):
+    ref, target, r99 = _reference(monkeypatch)
+    _, rin, rout = rp.gaia_aperture_radii(
+        ref, 0, target, annulus_pix=(25.0, 35.0), r99=r99
+    )
+    assert (rin, rout) == (25.0, 35.0)
+
+
+def test_explicit_annulus_inside_profile_moves_outside_it(monkeypatch):
+    ref, target, r99 = _reference(monkeypatch)
+    _, rin, rout = rp.gaia_aperture_radii(
+        ref, 0, target, annulus_pix=(10.0, 20.0), r99=r99
+    )
+    assert rin >= r99 + 2
+    assert rout - rin == pytest.approx(10.0)

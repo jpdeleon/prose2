@@ -736,5 +736,7 @@ photometry. The fixed sky annulus starts at least two pixels beyond the
 widest measured profile. Differential photometry compares seven radii from
 0.6 to 1.5 times the reference r99, subject to neighbour clearance.
 If no isolated profile is measurable, the log identifies the FWHM fallback.
-PSF cutouts expand with the detected stellar footprint. Supplying
+An explicit `--annulus_pix` is kept unless it overlaps that profile or a
+contaminant. PSF cutouts expand with the detected stellar footprint, while
+the default edge margin stays at half of `--cutout_size`. Supplying
 `--aper_radii` and `--annulus` skips the growth measurements.
