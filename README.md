@@ -112,9 +112,9 @@ For each photometric band it:
 1. groups frames per band for the requested target,
 2. builds a per-band reference image and detects sources,
 3. identifies the target via WCS / Gaia cross-match (or an explicit `--tID`),
-4. sizes the sky annulus to exclude Gaia contaminants (≥10 % of the target
-   flux, Δmag < 2.5) and sets aperture radii from the target FWHM up to that
-   annulus,
+4. sizes aperture radii from the reference stars' enclosed-flux growth curve
+   and places the sky annulus outside the measured stellar profile while
+   excluding Gaia contaminants (≥10 % of the target flux, Δmag < 2.5),
 5. runs aperture photometry in parallel (`prose.SequenceParallel`),
 6. performs automatic differential photometry (Broeg et al. 2005), or uses the
    comparison stars you pass with `--cID`,
@@ -316,14 +316,23 @@ entirely).
 
 ### Custom aperture grid
 
-By default the aperture runs from the target FWHM up to the inner sky annulus.
-The sky annulus is nominally 6–10×FWHM but is shifted inward to exclude any
-Gaia source contributing ≥10% of the target flux (Δmag < 2.5), and `rout` is
-clamped to 100 px when the FWHM is large (defocus). The Gaia result is cached
-under `~/.cache/prose_photometry/gaia/` (keyed by target coordinates); if Gaia
-is unreachable on a later run the cached result is reused, and if no cache
-exists an FWHM-only annulus is used. To set an explicit grid (and skip the Gaia
-query entirely), use `--aper_radii MIN,MAX,DR` together with
+By default, aperture sizing measures the radius enclosing 99% of the light
+(`r99`) in a median stack of isolated, sky-subtracted reference stars, which
+also covers donuts and broad centrally peaked stars. The pipeline also
+measures the native science frames for each band before photometry. The fixed
+sky annulus starts at least two pixels beyond the widest measured profile, and
+must stay clear of any Gaia source contributing ≥10% of the target flux
+(Δmag < 2.5). Differential photometry compares seven radii from 0.6 to 1.5
+times the reference r99, capped below the inner annulus. If no isolated
+profile is measurable, the log reports a fallback to radii from the reference
+FWHM up to a nominal 20–30 px annulus. An explicit `--annulus_pix` is kept
+unless it overlaps the measured profile or a contaminant. PSF cutouts expand
+with the detected stellar footprint, while the default edge margin stays at
+half of `--cutout_size`. The Gaia result is cached under
+`~/.cache/prose_photometry/gaia/` (keyed by target coordinates); if Gaia is
+unreachable on a later run the cached result is reused, and if no cache exists
+catalog contaminants are ignored. To set an explicit grid (and skip the growth
+measurements and the Gaia query entirely), use `--aper_radii MIN,MAX,DR` together with
 `--annulus RIN,ROUT`. The grid is **inclusive of MAX** (`10,20,2` →
 `[10, 12, 14, 16, 18, 20]`). `--aper_unit` selects the unit for both flags:
 
@@ -393,8 +402,8 @@ python -m prose.scripts.run_photometry ... \
   coordinate is used unchanged with a warning. Where a step needs the target's
   Gaia row (annulus contamination, the nearby-stars table, the cutout
   overlay), it accepts only a row within 2 arcsec of the target, never just
-  the nearest one; with no such row, aperture sizing falls back to FWHM-only
-  geometry and the nearby-stars table is left empty, each with a warning.
+  the nearest one; with no such row, aperture sizing ignores catalog
+  contaminants and the nearby-stars table is left empty, each with a warning.
 - **Exit status.** `0` when every band was reduced, `1` when none was (or the
   input was invalid), and `3` when only some bands were reduced. The final
   `photometry PARTIAL FAILURE` / `photometry FAILED` line names each failed
@@ -545,8 +554,9 @@ details to your dataset, the rest matches the pipeline described above:
 > frames were grouped and a reference image was built from a quality-vetted
 > frame, on which sources were detected and modeled with a median ePSF plus
 > a 2D Gaussian fit. The target was located via a WCS/Gaia cross-match to the
-> target coordinate, and aperture radii were scaled to the reference-frame
-> FWHM and capped by a sky annulus sized to exclude Gaia neighbours
+> target coordinate, and aperture radii were scaled to the radius enclosing
+> 99\% of the flux of isolated reference stars, with a sky annulus placed
+> outside the measured stellar profile and sized to exclude Gaia neighbours
 > contributing $\geq10\%$ of the target flux ($\Delta G < 2.5$ mag). Aperture
 > photometry was measured frame-by-frame in parallel across the full time
 > series, and relative (differential) photometry was computed with the
@@ -728,15 +738,3 @@ The production light-curve time axis uses each exposure midpoint before BJD conv
 ### Missing target protection
 
 A target with no finite measurements is rejected instead of producing a normalized sentinel light curve. Target gaps are never interpolated or used as comparison stars; see Target gaps in light curves for how the affected frames are handled.
-
-Automatic aperture sizing measures the radius enclosing 99% of the light
-(`r99`) in a median stack of isolated, sky-subtracted reference stars.
-The pipeline also inspects the native science frames for each band before
-photometry. The fixed sky annulus starts at least two pixels beyond the
-widest measured profile. Differential photometry compares seven radii from
-0.6 to 1.5 times the reference r99, subject to neighbour clearance.
-If no isolated profile is measurable, the log identifies the FWHM fallback.
-An explicit `--annulus_pix` is kept unless it overlaps that profile or a
-contaminant. PSF cutouts expand with the detected stellar footprint, while
-the default edge margin stays at half of `--cutout_size`. Supplying
-`--aper_radii` and `--annulus` skips the growth measurements.

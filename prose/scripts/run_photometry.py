@@ -9,8 +9,9 @@ frames for a single target, it:
 1. groups frames per photometric band for the requested target,
 2. builds a per-band reference image and detects sources,
 3. identifies the target via WCS / catalog cross-match,
-4. sizes the sky annulus to avoid Gaia contaminants (>=10% of target flux)
-   and sets aperture radii from the target FWHM up to that annulus,
+4. sizes aperture radii from the reference stars' enclosed-flux growth curve
+   and places the sky annulus outside the measured stellar profile while
+   avoiding Gaia contaminants (>=10% of target flux),
 5. runs aperture photometry in parallel (``prose.SequenceParallel``),
 6. performs automatic differential photometry (Broeg et al. 2005),
 7. converts GJD-UTC to BJD-TDB, and
