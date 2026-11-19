@@ -74,8 +74,9 @@ class _SourceDetection(Block):
         min_axis_ratio : float, optional
             minimum minor/major axis ratio (in [0, 1]) of the thresholded region;
             rejects elongated detections such as meteor, satellite or airplane
-            streaks (a meteor streak measured b/a 0.08 against 0.83-0.97 for
-            stars). About 0.2 is suggested. The ratio is measured on the
+            streaks (streaks measured b/a 0.08-0.09; real stars smeared by poor
+            tracking went down to 0.20). About 0.15 is suggested. The ratio is
+            measured on the
             thresholded region, not the true PSF, so keep it low for defocused
             data, where a faint donut may pass threshold only as a partial arc.
             By default 0 (no cut)
@@ -311,7 +312,7 @@ class PointSourceDetection(_SourceDetection):
         min_separation : float, optional
             minimum separation in pixels from one source to the other. Between two sources, greater ADU is kept, by default None
         min_axis_ratio : float, optional
-            minimum minor/major axis ratio of a detection; about 0.2 rejects
+            minimum minor/major axis ratio of a detection; about 0.15 rejects
             meteor and satellite streaks, by default 0 (no cut)
         name : str, optional
             name of the block, by default None

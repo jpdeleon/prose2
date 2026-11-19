@@ -6286,7 +6286,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=MIN_AXIS_RATIO,
         dest="min_axis_ratio",
         help="Minimum minor/major axis ratio in [0, 1] of detected sources; "
-        "rejects meteor, satellite and cosmic-ray streaks. About 0.2 is "
+        "rejects meteor, satellite and cosmic-ray streaks. About 0.15 is "
         "suggested; 0 disables the cut (default: %(default)s).",
     )
     ap.add_argument(
