@@ -7341,9 +7341,8 @@ def main(argv=None) -> int:
         band: args.results_dir / f"{stem}_unmatched_ref.png"
         for band, stem in band_stems.items()
     }
-    if args.overwrite:
-        for path in unmatched_paths.values():
-            path.unlink(missing_ok=True)
+    for path in unmatched_paths.values():
+        path.unlink(missing_ok=True)
 
     # A self-referenced band whose target is not located is retried once,
     # after the other bands, with the target pixel those bands found.

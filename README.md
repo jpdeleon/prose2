@@ -732,4 +732,5 @@ A target with no finite measurements is rejected instead of producing a normaliz
 When target identification fails, each affected band writes
 `*_unmatched_ref.png` in the results directory. Use the chart's source number
 with `--tID` and pin its selected frame with `--refid`. Shared-reference runs
-show the shared frame. A successful retry removes that band's failure chart.
+show the shared frame. Each run first removes failure charts left by earlier
+runs, and a successful retry removes that band's failure chart.

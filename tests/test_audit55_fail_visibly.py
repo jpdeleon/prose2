@@ -185,6 +185,24 @@ def test_band_missing_target_fails_when_no_band_locates_it(tmp_path, monkeypatch
     assert len(list((tmp_path / "out").glob("*_unmatched_ref.png"))) == 2
 
 
+def test_rerun_failing_otherwise_removes_previous_unmatched_charts(
+    tmp_path, monkeypatch
+):
+    def unmatched(band, *a, **kw):
+        rp.find_target_index(_Ref(), None)
+
+    argv = _run_two_band_main(tmp_path, monkeypatch, unmatched)
+    assert rp.main(argv) == 1
+    assert len(list((tmp_path / "out").glob("*_unmatched_ref.png"))) == 2
+
+    def broken(band, *a, **kw):
+        raise RuntimeError("unrelated failure")
+
+    monkeypatch.setattr(rp, "run_band", broken)
+    assert rp.main(argv) == 1
+    assert not list((tmp_path / "out").glob("*_unmatched_ref.png"))
+
+
 def test_no_retry_when_tid_is_given(tmp_path, monkeypatch):
     calls = []
 
