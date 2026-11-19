@@ -699,7 +699,7 @@ Sky annuli use only finite on-detector pixels; empty sky regions yield invalid m
 
 ### Rejecting trails and elongated detections
 
-The detection blocks (`PointSourceDetection`, `AutoSourceDetection`, `TraceDetection`) accept `min_axis_ratio`, a minimum minor/major axis ratio of the thresholded region. It rejects satellite and airplane trails and other elongated non-stars, such as merged blobs. The default of 0 applies no cut, so results are unchanged unless you set it. The ratio is measured on the thresholded region rather than the true PSF, so about 0.5 keeps defocused (donut) stars while rejecting trails. `run_photometry` does not expose it yet.
+The detection blocks (`PointSourceDetection`, `AutoSourceDetection`, `TraceDetection`) accept `min_axis_ratio`, a minimum minor/major axis ratio of the thresholded region. It rejects satellite and airplane trails and other elongated non-stars, such as merged blobs. The default of 0 applies no cut, so results are unchanged unless you set it. The ratio is measured on the thresholded region rather than the true PSF. A faint defocused (donut) star often passes the threshold only as an arc of its ring. On strongly defocused MuSCAT3 frames (V1298 Tau, 2022-10-17, FWHM about 22 px), such arcs mostly had b/a of 0.25–0.5 (a few as low as 0.17), while bright satellite trails and cosmic rays had b/a of 0.04–0.17. A diffraction spike beside a saturated star had 0.22–0.27. Use about 0.2 for defocused data: 0.5 would also drop real faint stars. A donut that splits into two separate arcs is not caught by this cut. `run_photometry` does not expose it yet.
 
 ### Sparse-field comparison selection
 
