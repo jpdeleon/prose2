@@ -697,6 +697,10 @@ Calibration preserves finite negative pixel values, including valid bias/dark-su
 
 Sky annuli use only finite on-detector pixels; empty sky regions yield invalid measurements. Background subtraction uses the aperture area actually overlapping the image. Aperture metadata flags truncation: correct sky subtraction does not recover stellar light lost off the detector.
 
+### Rejecting trails and elongated detections
+
+The detection blocks (`PointSourceDetection`, `AutoSourceDetection`, `TraceDetection`) accept `min_axis_ratio`, a minimum minor/major axis ratio of the thresholded region. It rejects satellite and airplane trails and other elongated non-stars, such as merged blobs. The default of 0 applies no cut, so results are unchanged unless you set it. The ratio is measured on the thresholded region rather than the true PSF, so about 0.5 keeps defocused (donut) stars while rejecting trails. `run_photometry` does not expose it yet.
+
 ### Sparse-field comparison selection
 
 Automatic differential photometry supports a single valid comparison, including a constant comparison. The ensemble search excludes the target and retains the best evaluated set even when improvement continues through the last candidate. No valid comparison raises a descriptive error.

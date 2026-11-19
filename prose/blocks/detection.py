@@ -21,6 +21,21 @@ __all__ = [
 ]
 
 
+def _axis_ratio(region) -> float:
+    """Minor-to-major axis ratio of a region; 1.0 (round) when the major axis is 0."""
+    major = region.axis_major_length
+    if not major > 0:
+        return 1.0
+    return float(region.axis_minor_length / major)
+
+
+def _validate_axis_ratio(value: float) -> float:
+    value = float(value)
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"min_axis_ratio must be in [0, 1], got {value}")
+    return value
+
+
 class _SourceDetection(Block):
     def __init__(
         self,
@@ -32,6 +47,7 @@ class _SourceDetection(Block):
         minor_length: float = 0,
         min_sources: int = 0,
         name: str = None,
+        min_axis_ratio: float = 0.0,
     ):
         """Base class for sources detection.
 
@@ -55,8 +71,15 @@ class _SourceDetection(Block):
             minimum number of sources to detect. If fewer are found, the image is discarded, by default 0
         name : str, optional
             name of the block, by default None
+        min_axis_ratio : float, optional
+            minimum minor/major axis ratio (in [0, 1]) of the thresholded region;
+            rejects elongated detections such as satellite or airplane trails.
+            The ratio is measured on the thresholded region, not the true PSF,
+            so for defocused (donut) stars about 0.5 is a reasonable value.
+            By default 0 (no cut)
         """
         super().__init__(name=name, read=["data"])
+        self.min_axis_ratio = _validate_axis_ratio(min_axis_ratio)
         self.n = n
         self.sort = sort
         self.min_separation = min_separation
@@ -189,7 +212,9 @@ class _SourceDetection(Block):
         regions = [
             r
             for r in regions
-            if r.area >= self.min_area and r.axis_major_length >= self.minor_length
+            if r.area >= self.min_area
+            and r.axis_major_length >= self.minor_length
+            and _axis_ratio(r) >= self.min_axis_ratio
         ]
 
         return regions
@@ -210,6 +235,7 @@ class AutoSourceDetection(_SourceDetection):
         min_area=0,
         minor_length=0,
         min_sources=0,
+        min_axis_ratio=0.0,
     ):
         """Detect all sources.
 
@@ -235,6 +261,8 @@ class AutoSourceDetection(_SourceDetection):
             minimum number of sources to detect. If fewer are found, the image is discarded, by default 0
         name : str, optional
             name of the block, by default None
+        min_axis_ratio : float, optional
+            minimum minor/major axis ratio of a detection, by default 0 (no cut)
         """
         super().__init__(
             threshold=threshold,
@@ -245,6 +273,7 @@ class AutoSourceDetection(_SourceDetection):
             min_area=min_area,
             minor_length=minor_length,
             min_sources=min_sources,
+            min_axis_ratio=min_axis_ratio,
         )
 
     def run(self, image):
@@ -279,6 +308,9 @@ class PointSourceDetection(_SourceDetection):
             whether to sort per ADU peak value (from the greatest), by default True
         min_separation : float, optional
             minimum separation in pixels from one source to the other. Between two sources, greater ADU is kept, by default None
+        min_axis_ratio : float, optional
+            minimum minor/major axis ratio of a detection; about 0.5 rejects
+            trails while keeping defocused donuts, by default 0 (no cut)
         name : str, optional
             name of the block, by default None
         """
