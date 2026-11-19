@@ -624,6 +624,8 @@ pipeline CSV. Each mode prints one JSON object:
 python -m prose.scripts.rediff_lightcurves RESULTS_DIR --info
 # compare a custom set with the default (scatter metrics + overlay PNG); writes nothing
 python -m prose.scripts.rediff_lightcurves RESULTS_DIR --select g=3,5,7@4 --preview cmp.png
+# same, with the custom curve drawn 0.02 (relative flux) below the default
+python -m prose.scripts.rediff_lightcurves RESULTS_DIR --select g=3,5,7@4 --preview cmp.png --offset 0.02
 # adopt it: overwrite Flux/Err in the band CSV and regenerate *_lightcurves.png
 python -m prose.scripts.rediff_lightcurves RESULTS_DIR --select g=3,5,7@4 --apply \
     --target TOI-1234 --inst muscat3 --date 250101

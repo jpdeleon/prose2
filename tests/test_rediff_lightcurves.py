@@ -159,3 +159,42 @@ def test_select_or_info_is_required(tmp_path):
     rdir, _ = _results_dir(tmp_path)
     with pytest.raises(ValueError, match="--select"):
         _run([rdir])
+
+
+def test_preview_reports_the_automatic_offset(tmp_path):
+    rdir, _ = _results_dir(tmp_path)
+    out = _run([rdir, "--select", "g=2,3@1", "--preview", tmp_path / "p.png"])
+    assert out["plot_offset"]["g"] > 0
+
+
+def test_preview_uses_a_given_offset(tmp_path):
+    rdir, _ = _results_dir(tmp_path)
+    out = _run(
+        [
+            rdir,
+            "--select",
+            "g=2,3@1",
+            "--offset",
+            "0.05",
+            "--preview",
+            tmp_path / "p.png",
+        ]
+    )
+    assert out["plot_offset"] == {"g": 0.05}
+
+
+@pytest.mark.parametrize("bad", ["-0.01", "nan", "inf"])
+def test_offset_must_be_finite_and_non_negative(tmp_path, bad):
+    rdir, _ = _results_dir(tmp_path)
+    with pytest.raises(ValueError, match="offset"):
+        _run(
+            [
+                rdir,
+                "--select",
+                "g=2,3@1",
+                "--offset",
+                bad,
+                "--preview",
+                tmp_path / "p.png",
+            ]
+        )

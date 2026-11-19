@@ -133,29 +133,43 @@ def _label(kind: str, part: dict, unit: str) -> str:
     )
 
 
-def plot_comparison(results: dict, cubes: dict, path: Path) -> None:
-    """One panel per band: default on top, custom offset below, binned overlaid."""
+def _auto_offset(default_flux: np.ndarray, custom_flux: np.ndarray) -> float:
+    """Vertical gap between the curves: a few robust sigmas of their scatter,
+    so single-frame outliers do not set it."""
+    both = np.concatenate([default_flux, custom_flux])
+    spread = MAD_TO_SIGMA * np.nanmedian(np.abs(both - np.nanmedian(both)))
+    return float(OFFSET_SIGMAS * spread) if np.isfinite(spread) and spread > 0 else 0.01
+
+
+def plot_comparison(
+    results: dict, cubes: dict, path: Path, offset: float | None = None
+) -> dict[str, float]:
+    """One panel per band: default on top, custom ``offset`` below (relative
+    flux; automatic per band when ``None``), binned overlaid.
+
+    Returns the offset used per band.
+    """
     bands = list(results)
     fig, axes = plt.subplots(
         len(bands), 1, figsize=(9, 3.2 * len(bands)), constrained_layout=True
     )
+    used: dict[str, float] = {}
     for ax, band in zip(np.atleast_1d(axes), bands):
         res = results[band]
         bjd, default_flux, custom_flux, _ = res["_arrays"]
         t0 = _guess_min_time(bjd)
         t = bjd - t0
-        both = np.concatenate([default_flux, custom_flux])
-        # robust spread, so single-frame outliers do not set offset or limits
-        spread = MAD_TO_SIGMA * np.nanmedian(np.abs(both - np.nanmedian(both)))
-        offset = OFFSET_SIGMAS * spread if np.isfinite(spread) and spread > 0 else 0.01
-        shifted = np.concatenate([default_flux, custom_flux - offset])
+        gap = _auto_offset(default_flux, custom_flux) if offset is None else offset
+        used[band] = gap
+        # percentile limits, so single-frame outliers do not set them
+        shifted = np.concatenate([default_flux, custom_flux - gap])
         lo, hi = np.nanpercentile(shifted, YLIM_PERCENTILES)
         pad = 0.15 * (hi - lo)
         ax.set_ylim(lo - pad, hi + 2.5 * pad)  # headroom for the legend
         unit = cubes[band].aper_unit
         for flux, shift, color, kind in (
             (default_flux, 0.0, "k", "default"),
-            (custom_flux, -offset, band_color(band), "custom"),
+            (custom_flux, -gap, band_color(band), "custom"),
         ):
             ax.plot(t, flux + shift, ".", c="0.6", alpha=0.35, ms=3)
             bt, bf, be = _binned(t, flux + shift)
@@ -172,6 +186,7 @@ def plot_comparison(results: dict, cubes: dict, path: Path) -> None:
         ax.set_xlabel(f"BJD_TDB - {t0}")
         ax.legend(fontsize=7, loc="upper right")
     _savefig(fig, path)
+    return used
 
 
 def _band_csv(results_dir: Path, band: str) -> Path:
@@ -260,6 +275,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--preview", type=Path, default=None, help="write comparison PNG"
     )
     parser.add_argument(
+        "--offset",
+        type=float,
+        default=None,
+        help="vertical gap between default and custom curves in the preview "
+        "(relative flux; default: automatic per band)",
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="overwrite Flux/Err of the selected bands' CSVs in place",
@@ -302,18 +324,20 @@ def run(args: argparse.Namespace) -> dict:
         }
     if not args.select:
         raise ValueError("give --info or at least one --select")
+    if args.offset is not None and not (np.isfinite(args.offset) and args.offset >= 0):
+        raise ValueError(f"--offset must be a finite number >= 0, got {args.offset}")
     if args.apply and (not args.target or not args.inst or not args.date):
         raise ValueError("--apply requires --target, --inst and --date")
     results = {
         band: evaluate(cube.bands[band], ids, aperture)
         for band, (ids, aperture) in _selections(args, cube).items()
     }
-    preview, written, summary_png = None, [], None
+    preview, written, summary_png, plot_offset = None, [], None, None
     if args.apply:
         written, summary_png = apply_selection(results_dir, results, args)
     elif args.preview is not None:
         args.preview.parent.mkdir(parents=True, exist_ok=True)
-        plot_comparison(results, cube.bands, args.preview)
+        plot_offset = plot_comparison(results, cube.bands, args.preview, args.offset)
         preview = str(args.preview)
     return {
         "ok": True,
@@ -323,6 +347,7 @@ def run(args: argparse.Namespace) -> dict:
             for b, r in results.items()
         },
         "preview": preview,
+        "plot_offset": plot_offset,
         "written": written,
         "summary_png": summary_png,
     }
