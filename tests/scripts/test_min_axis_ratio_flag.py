@@ -17,8 +17,9 @@ def _detection_blocks(sequence):
     return [b for b in sequence.blocks if isinstance(b, PointSourceDetection)]
 
 
-def test_default_is_off():
-    assert rp.parse_args(BASE_ARGS).min_axis_ratio == 0.0
+def test_default_is_0_1():
+    assert rp.MIN_AXIS_RATIO == 0.1
+    assert rp.parse_args(BASE_ARGS).min_axis_ratio == 0.1
 
 
 @pytest.mark.parametrize("flag", ["--min_axis_ratio", "--min-axis-ratio"])
@@ -75,3 +76,53 @@ def test_every_call_passing_min_area_passes_min_axis_ratio():
         and "min_axis_ratio" not in {kw.arg for kw in node.keywords}
     ]
     assert missing == []
+
+
+def _image_with_rejections(rejected):
+    return type("Img", (), {"computed": {"axis_ratio_rejected": rejected}})()
+
+
+def test_reference_rejections_logged_at_info(caplog):
+    caplog.set_level("INFO", logger="prose_run_photometry")
+    image = _image_with_rejections(
+        [{"x": 4032.1, "y": 1893.4, "peak": 6263.0, "area": 120.0, "axis_ratio": 0.08}]
+    )
+    rp._log_axis_ratio_rejections(image, 0.1, "rp reference")
+    assert (
+        "[rp reference] min_axis_ratio=0.1 removed 1 elongated detection" in caplog.text
+    )
+    assert "(4032, 1893)" in caplog.text and "b/a=0.08" in caplog.text
+
+
+def test_no_reference_rejections_logs_nothing(caplog):
+    caplog.set_level("INFO", logger="prose_run_photometry")
+    rp._log_axis_ratio_rejections(_image_with_rejections([]), 0.1, "rp reference")
+    assert "min_axis_ratio" not in caplog.text
+
+
+def test_build_reference_logs_reference_rejections():
+    assert "_log_axis_ratio_rejections(" in inspect.getsource(rp.build_reference)
+
+
+def test_reference_log_lists_brightest_rejections_first_and_caps(caplog):
+    # Detector-edge strips (b/a 0) can outnumber a real streak; list the
+    # brightest first and summarise the rest so the streak stays visible.
+    caplog.set_level("INFO", logger="prose_run_photometry")
+    edges = [
+        {"x": 0.0, "y": float(y), "peak": 300.0 + y, "area": 80.0, "axis_ratio": 0.0}
+        for y in range(9)
+    ]
+    streak = {
+        "x": 4034.0,
+        "y": 1891.0,
+        "peak": 6263.0,
+        "area": 67.0,
+        "axis_ratio": 0.08,
+    }
+    image = _image_with_rejections(edges + [streak])
+    rp._log_axis_ratio_rejections(image, 0.1, "rp reference")
+    text = caplog.text
+    assert "removed 10 elongated detection" in text
+    assert text.index("(4034, 1891)") < text.index("(0, ")
+    assert text.count("b/a=") == rp.AXIS_RATIO_LOG_MAX
+    assert f"and {10 - rp.AXIS_RATIO_LOG_MAX} more" in text

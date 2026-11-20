@@ -273,7 +273,8 @@ _HEADER_SCORE_WEIGHTS = {
 }
 CCD_TRIM_SIZE_YX = (0, 0)  # trim image edges [pix]
 MIN_STAR_AREA = 20  # min detected-source area [pix]
-MIN_AXIS_RATIO = 0.0  # min minor/major axis ratio of detections (0 = no cut)
+MIN_AXIS_RATIO = 0.1  # min minor/major axis ratio of detections (0 = off)
+AXIS_RATIO_LOG_MAX = 5  # brightest axis-ratio rejections listed in the log
 MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
 ALIGN_DISCARD_TOLERANCE = 0.4  # cross-filter alignments can share <50% top sources
 # Close-companion exclusion for the comparison-star pool. The auto threshold is
@@ -996,6 +997,29 @@ class SelectSourceIndices(Block):
 
 
 # --------------------------- reference building ---------------------------
+
+
+def _log_axis_ratio_rejections(image, min_axis_ratio: float, label: str) -> None:
+    """Log the elongated detections ``--min_axis_ratio`` removed from ``image``.
+
+    Reads the records ``PointSourceDetection`` stores in
+    ``image.computed["axis_ratio_rejected"]``; logs nothing when there are none.
+    """
+    rejected = image.computed.get("axis_ratio_rejected") or []
+    if not rejected:
+        return
+    brightest = sorted(rejected, key=lambda d: d["peak"], reverse=True)
+    details = ", ".join(
+        f"({d['x']:.0f}, {d['y']:.0f}) b/a={d['axis_ratio']:.2f} "
+        f"peak={d['peak']:.0f} area={d['area']:.0f}"
+        for d in brightest[:AXIS_RATIO_LOG_MAX]
+    )
+    if len(brightest) > AXIS_RATIO_LOG_MAX:
+        details += f", and {len(brightest) - AXIS_RATIO_LOG_MAX} more"
+    logger.info(
+        f"[{label}] min_axis_ratio={min_axis_ratio:g} removed {len(rejected)} "
+        f"elongated detection(s) (streaks?): {details}"
+    )
 
 
 def _centroid_block(method: str):
@@ -2445,6 +2469,7 @@ def build_reference(
         centroid_method=centroid_method,
         source_indices=source_indices,
     ).run(ref, show_progress=False)
+    _log_axis_ratio_rejections(ref, min_axis_ratio, f"{Path(ref_file).name} reference")
 
     match_found = False
     if (
@@ -6286,8 +6311,9 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=MIN_AXIS_RATIO,
         dest="min_axis_ratio",
         help="Minimum minor/major axis ratio in [0, 1] of detected sources; "
-        "rejects meteor, satellite and cosmic-ray streaks. About 0.15 is "
-        "suggested; 0 disables the cut (default: %(default)s).",
+        "rejects meteor, satellite and cosmic-ray streaks; removals from the "
+        "reference catalog are logged. 0 disables the cut "
+        "(default: %(default)s).",
     )
     ap.add_argument(
         "--max_num_stars",
