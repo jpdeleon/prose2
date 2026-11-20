@@ -174,7 +174,8 @@ class _PSFModelBase(Block):
         if np.any(np.isnan(image.epsf.data)):
             image.epsf.data = np.nan_to_num(image.epsf.data, nan=0.0)
 
-        if np.all(image.epsf.shape != self.shape):
+        if not np.array_equal(image.epsf.shape, self.shape):
+            self._last_init = None
             self.shape = image.epsf.shape
             self.x, self.y = np.indices(self.shape)
             self._opt_model = self.model_function()
