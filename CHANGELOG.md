@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.10.0](https://github.com/jpdeleon/prose2/compare/v3.9.0...v3.10.0) (2026-11-20)
+
+
+### Features
+
+* report per-band photometry outcomes ([082e0a2](https://github.com/jpdeleon/prose2/commit/082e0a281f24839ccfdea9a6019fa8b10204f7c0))
+
 ## [3.9.0](https://github.com/jpdeleon/prose2/compare/v3.8.0...v3.9.0) (2026-11-20)
 
 
