@@ -89,6 +89,12 @@ from rich.progress import track
 
 from prose import FITSImage, Fluxes, Image, Sequence, blocks, datacube
 from prose import __version__ as _PROSE_VERSION
+from prose.fluxes import diff as weighted_diff
+from prose.position_validation import (
+    MatchExposureSources,
+    POSITION_REASONS,
+    position_checks,
+)
 from prose.blocks import catalogs
 from prose.core.block import Block
 from prose.core.source import PointSource, Sources
@@ -2649,6 +2655,7 @@ def photometry_sequence(
     centroid_method: str = CENTROID_METHOD,
     workers: int | None = None,
     chunksize: int = 1,
+    position_matcher=None,
 ) -> SequenceParallel:
     """Parallel per-image photometry sequence (mirrors the notebook).
 
@@ -2681,6 +2688,7 @@ def photometry_sequence(
         blocks.Cutouts(shape=cutout_size),
         blocks.MedianEPSF(),
         blocks.Gaussian2D(ref),
+        position_matcher if position_matcher is not None else MatchExposureSources(ref),
         blocks.ComputeTransformTwirl(ref, n=n_stars_align),
         blocks.AlignReferenceSources(ref, discard_tolerance=ALIGN_DISCARD_TOLERANCE),
         _centroid_block(centroid_method),
@@ -2729,6 +2737,7 @@ def photometry_sequence(
                 # every source's peak, for per-frame saturation screening
                 # (#55 A10); "_" keeps it out of the CSV columns.
                 _peaks=_frame_peaks,
+                _position_checks=position_checks,
             ),
         ],
     )
@@ -3077,6 +3086,63 @@ def _band_saturation_indices(
     return excluded
 
 
+def _native_position_matcher(files, ref, required, **detection):
+    candidates = _select_stack_frames(files, 3)
+    middle = files[len(files) // 2]
+    for path in dict.fromkeys([middle, *candidates]):
+        image = FITSImage(path)
+        _frame_alignment_sequence(**detection).run(image, show_progress=False)
+        if image.discard or len(image.sources) < 3:
+            continue
+        blocks.ComputeTransformTwirl(ref, n=detection["max_num_stars"]).run(image)
+        matcher = MatchExposureSources.from_native_frame(ref, image, required)
+        if matcher is not None:
+            logger.info("position checks use native reference %s", Path(path).name)
+            return matcher
+    logger.warning(
+        "could not register a native position catalog; using shared reference checks"
+    )
+    return None
+
+
+def _write_position_checks(
+    path, files, discards, checks, target, comparisons, shared_ids
+):
+    # Preserve diagnostics for discarded measurements, including all-failed bands.
+    ids = list(dict.fromkeys([target, *comparisons]))
+    selected = checks[:, ids]
+    # SequenceParallel collects surviving frames in input order. The data-block
+    # sequence resets image.i when it handles each returned image individually.
+    discarded = {int(i) for indices in discards.values() for i in indices}
+    frame_names = [Path(f).name for i, f in enumerate(files) if i not in discarded]
+    if len(frame_names) != len(checks):
+        raise ValueError("position diagnostics do not match the measured frame count")
+    table = pd.DataFrame(
+        {
+            "frame": np.repeat(frame_names, len(ids)),
+            "source_id": np.tile(
+                ids if shared_ids is None else np.asarray(shared_ids)[ids], len(checks)
+            ),
+            "local_id": np.tile(ids, len(checks)),
+            "role": np.tile(
+                ["target" if i == target else "comparison" for i in ids], len(checks)
+            ),
+            "reason": POSITION_REASONS[selected[:, :, 0].astype(int)].ravel(),
+        }
+    )
+    for col, label in enumerate(
+        (
+            "prediction_distance_px",
+            "center_distance_px",
+            "match_tolerance_px",
+            "center_tolerance_px",
+        ),
+        1,
+    ):
+        table[label] = selected[:, :, col].ravel()
+    table.to_csv(path, index=False)
+
+
 def run_band(
     band,
     files,
@@ -3112,6 +3178,7 @@ def run_band(
     shared_reference: bool = False,
     keep_datacube: bool = False,
     precision: PrecisionOptions | None = None,
+    position_report_path: Path | None = None,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -3312,11 +3379,28 @@ def run_band(
                     )
                     cids = None
 
+    position_matcher = None
+    if shared_reference and Path(ref_file) not in {Path(f) for f in files}:
+        required = [
+            target_index,
+            *(i for i in (cids or []) if 0 <= i < len(ref.sources)),
+        ]
+        position_matcher = _native_position_matcher(
+            files,
+            ref,
+            required,
+            ccd_trim_size_yx=ccd_trim_size_yx,
+            max_num_stars=max_num_stars,
+            min_star_separation=min_star_separation,
+            min_area=min_area,
+            bad_pixel_map=bad_pixel_map,
+        )
     phot = photometry_sequence(
         ref,
         reference["aper_radii"],
         reference["rin"],
         reference["rout"],
+        position_matcher=position_matcher,
         workers=workers,
         chunksize=chunksize,
         scale=reference["scale"],
@@ -3386,6 +3470,10 @@ def run_band(
     )
     saturated_cids = sorted(set(saturated_cids) | set(saturated_over_time))
 
+    measurements = getattr(phot.data[0], "values", None) or {}
+    checks = measurements.get("_position_checks")
+    if checks is not None:
+        checks = np.asarray(checks)
     diff = differential_photometry(
         fluxes,
         target_index,
@@ -3394,7 +3482,23 @@ def run_band(
         nan_imputation_method=nan_imputation_method,
         keep_datacube=keep_datacube,
         precision=precision,
+        position_valid=checks[:, :, 0] == 0 if checks is not None else None,
     )
+    if position_report_path is not None and checks is not None:
+        comps = (
+            list(diff.comparisons)
+            if diff is not None
+            else [c for c in (cids or []) if 0 <= c < checks.shape[1]]
+        )
+        _write_position_checks(
+            position_report_path,
+            files,
+            phot.discards,
+            checks,
+            target_index,
+            comps,
+            ref_band_star_ids,
+        )
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
         return None
@@ -3578,6 +3682,7 @@ def differential_photometry(
     nan_imputation_method: str = "linear",
     keep_datacube: bool = False,
     precision: PrecisionOptions | None = None,
+    position_valid: np.ndarray | None = None,
 ):
     """Clean NaN comparison stars, sigma-clip, and run differential photometry.
 
@@ -3595,6 +3700,8 @@ def differential_photometry(
     keep_datacube : bool, optional
         Attach the flux cube differencing ran on, with every star intact, as
         ``diff.metadata["flux_datacube"]`` (see :mod:`prose.datacube`).
+    position_valid : np.ndarray, optional
+        Boolean exposure-by-source flags from the independent position check.
     precision : PrecisionOptions, optional
         Comparison ensemble, aperture criterion and per-star clipping (see
         :mod:`prose.precision`). ``None`` keeps prose's own behaviour.
@@ -3608,6 +3715,38 @@ def differential_photometry(
 
     fluxes = fluxes.copy()
     fluxes.target = target_index
+    if position_valid is not None:
+        positions = np.asarray(position_valid)
+        if positions.dtype != np.bool_ or positions.shape != (
+            len(fluxes.time),
+            fluxes.fluxes.shape[1],
+        ):
+            raise ValueError(
+                "position flags must be boolean with shape (frames, sources)"
+            )
+        fluxes.data["_position_valid"] = positions
+        required = [target_index]
+        if cids:
+            required.extend(
+                c
+                for c in cids
+                if 0 <= c < positions.shape[1] and c not in (avoid_cids or [])
+            )
+        verified = positions[:, required].all(axis=1)
+        if not verified.all():
+            logger.warning(
+                "discarding %d exposures with unverified positions for IDs %s",
+                int((~verified).sum()),
+                required,
+            )
+            if not verified.any():
+                return None
+            fluxes = fluxes.mask(verified)
+        invalid = ~fluxes.data["_position_valid"].T
+        if invalid.any():
+            fluxes.fluxes = np.where(invalid, np.nan, fluxes.fluxes)
+            if fluxes.errors is not None:
+                fluxes.errors = np.where(invalid, np.nan, fluxes.errors)
     # A missing target sample is not an observation. Drop its frame across
     # every aperture and covariate before any comparison interpolation.
     valid_target = np.all(np.isfinite(fluxes.fluxes[:, target_index, :]), axis=0)
@@ -3629,6 +3768,9 @@ def differential_photometry(
     pool = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2)) & ~too_sparse
     pool[[a for a in (avoid_cids or []) if 0 <= a < n_sources]] = False
     pool[target_index] = False
+    if position_valid is not None and not pool.any():
+        logger.warning("no usable comparison stars after exposure position checks")
+        return None
     if precision.clip_sigma is not None:
         fluxes = _clip_comparison_outliers(fluxes, pool, precision)
     imputed = fluxes
@@ -3723,11 +3865,43 @@ def differential_photometry(
     else:
         diff = _precision_autodiff(fluxes, target_index, precision)
         _log_auto_comparisons(diff, keep, target_index)
+    if position_valid is not None:
+        # Selection can interpolate a short gap while estimating weights.
+        # Never publish that exposure with an unverified contributing star.
+        positions = fluxes.data["_position_valid"]
+        comparisons = diff.comparisons
+        if comparisons is None or not len(comparisons):
+            logger.warning("no verified comparison ensemble; skipping band")
+            return None
+        verified = positions[:, comparisons].all(axis=1)
+        if not verified.all():
+            logger.warning(
+                "discarding %d exposures with unverified selected comparison positions",
+                int((~verified).sum()),
+            )
+            if not verified.any():
+                return None
+            fluxes = fluxes.mask(verified)
+            diff = diff.mask(verified)
+            # Normalize using only the retained samples, preserving the selected
+            # aperture and ensemble. This also keeps datacube rediff consistent.
+            diff.fluxes, diff.errors = weighted_diff(
+                fluxes.fluxes, diff.weights, fluxes.errors
+            )
+        pool &= fluxes.data["_position_valid"].all(axis=0)
+        diff.data.pop("_position_valid")
     diff.metadata["target_raw_flux"] = np.nanmedian(
         fluxes.fluxes[:, target_index], axis=-1
     )
     if keep_datacube:
-        diff.metadata["flux_datacube"] = datacube.capture(imputed, fluxes, pool)
+        cube = datacube.capture(imputed, fluxes, pool)
+        if position_valid is not None:
+            invalid = ~fluxes.data["_position_valid"].T
+            if invalid.any():
+                cube["fluxes"] = np.where(invalid, np.nan, cube["fluxes"])
+                if cube["errors"] is not None:
+                    cube["errors"] = np.where(invalid, np.nan, cube["errors"])
+        diff.metadata["flux_datacube"] = cube
     return diff
 
 
@@ -7442,6 +7616,8 @@ def main(argv=None) -> int:
                 workers=args.workers,
                 chunksize=args.chunksize,
                 shared_reference=not self_reference,
+                position_report_path=args.results_dir
+                / f"{band_stems[band]}_positions.csv",
                 keep_datacube=args.save_flux_datacube and not args.test_run,
                 precision=precision_options_from_args(args),
             )

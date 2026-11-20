@@ -120,8 +120,7 @@ def capture(full: Fluxes, final: Fluxes, selectable: np.ndarray) -> dict:
 
     ``full`` is the cube after imputation with every star intact; ``final``
     is what differencing ran on, whose frames are a subset of ``full``'s.
-    Frame cuts never depend on the comparison stars, so applying ``final``'s
-    frames to ``full`` gives exactly the frames of the pipeline light curve.
+    The final frame mask includes position checks for the contributing stars.
     """
     frames = np.isin(full.time, final.time)
     if int(frames.sum()) != len(final.time):
