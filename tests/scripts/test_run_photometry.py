@@ -1944,6 +1944,7 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
         nan_imputation_method="linear",
         keep_datacube=False,
         precision=None,
+        position_valid=None,
     ):
         captured["diff_target_index"] = target_index
 
@@ -2027,6 +2028,7 @@ def test_run_band_remaps_cids_and_avoid_cids_from_reference_band(tmp_path, monke
         nan_imputation_method="linear",
         keep_datacube=False,
         precision=None,
+        position_valid=None,
     ):
         captured["diff_cids"] = cids
         captured["diff_avoid_cids"] = avoid_cids
@@ -3836,6 +3838,7 @@ def test_run_band_forwards_display_stack_nframes(tmp_path, monkeypatch):
         nan_imputation_method="linear",
         keep_datacube=False,
         precision=None,
+        position_valid=None,
     ):
         class FakeDiff:
             def __init__(self):
@@ -3921,6 +3924,7 @@ def test_run_band_skips_display_reference_for_reference_band(tmp_path, monkeypat
         nan_imputation_method="linear",
         keep_datacube=False,
         precision=None,
+        position_valid=None,
     ):
         return SimpleNamespace(time=np.arange(4, dtype=float), target=target_index)
 

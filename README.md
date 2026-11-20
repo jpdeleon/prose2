@@ -265,6 +265,20 @@ the pipeline tries nearby frames from the same reference band and logs each
 substitution. Source IDs refer to the chosen catalog. Set `--refid` to pin a
 particular catalog; a sparse pinned frame fails the band.
 
+Each exposure must also confirm the target and every comparison that contributes
+to its differential flux. The pipeline matches the reference catalog to the
+original science detections before alignment replaces them. Celestial WCS can
+account for rotation when both frames have usable solutions. With missing or
+flagged WCS, the check requires at least two stars supporting a unique field
+translation. Blends, missing detections and ambiguous identities can therefore
+reduce the number of retained exposures.
+
+After centroiding, each aperture center must still be closest to its identified
+detection and within one FWHM (three-pixel floor, using the narrower measured
+PSF). The log reports rejected exposures. Automatic selection can interpolate
+a comparison gap to estimate ensemble weights, but a selected star with an
+unverified position excludes that exposure from the final curve and datacube.
+
 `--gif` is off by default because GIF rendering is the slowest stage; throttle
 it with `--gif_stride`. `--test_run` reduces each band to `--test_run_frames`
 frames for a quick smoke test — centered on the `--refid` frame when given,
