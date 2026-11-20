@@ -952,6 +952,18 @@ class MaskBadPixels(Block):
             logger.debug(f"masked {n_masked} bad pixels in {Path(image.path).name}")
 
 
+class SparseReferenceError(ValueError):
+    """A reference catalog cannot support frame registration."""
+
+
+class RequireAlignmentSources(Block):
+    def run(self, image):
+        if len(image.sources) < 3:
+            raise SparseReferenceError(
+                f"Alignment requires at least 3 stars; reference has {len(image.sources)} sources"
+            )
+
+
 class SelectSourceIndices(Block):
     """Keep a stable subset of detected reference sources.
 
@@ -1010,6 +1022,7 @@ def reference_sequence(
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
     source_indices: list[int] | None = None,
+    require_alignment: bool = False,
 ) -> Sequence:
     """Calibration sequence run on the per-band reference frame.
 
@@ -1031,6 +1044,7 @@ def reference_sequence(
                 min_separation=min_star_separation,
             ),
             SelectSourceIndices(source_indices),
+            *([RequireAlignmentSources()] if require_alignment else []),
             # FilterPointSources(),
             blocks.Cutouts(shape=cutout_size, wcs=True),
             blocks.MedianEPSF(),
@@ -1652,6 +1666,17 @@ def select_reference_frame(
         "protected_source_new_index": protected_new_index,
     }
     return refid, diagnostics
+
+
+def _alternate_reference_files(files, selected, diagnostics):
+    """Try nearby frames in the same catalog, respecting quality exclusions."""
+    rejected = {
+        r.path for r in diagnostics.get("tier1") or [] if r.hard_reject is not None
+    }
+    anchor = files.index(selected)
+    for i in sorted(range(len(files)), key=lambda i: (abs(i - anchor), i)):
+        if files[i] != selected and Path(files[i]) not in rejected:
+            yield files[i]
 
 
 def format_ref_selection_report(band: str, diagnostics: dict) -> str:
@@ -2357,6 +2382,7 @@ def build_reference(
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
     source_indices: list[int] | None = None,
+    require_alignment: bool = False,
 ):
     """Build the reference image, target index and aperture geometry.
 
@@ -2428,6 +2454,7 @@ def build_reference(
         bad_pixel_map=bad_pixel_map,
         centroid_method=centroid_method,
         source_indices=source_indices,
+        require_alignment=require_alignment,
     ).run(ref, show_progress=False)
 
     match_found = False
@@ -3126,6 +3153,7 @@ def run_band(
         bad_pixel_map=bad_pixel_map,
         centroid_method=centroid_method,
         source_indices=reference_source_indices,
+        require_alignment=True,
     )
     ref = reference["ref"]
     target_index = reference["target_index"]
@@ -6090,7 +6118,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         choices=["position", "quality", "time"],
         default="position",
         help="Reference-frame selection strategy: 'position' (default, "
-        "unchanged legacy behavior -- first frame for self-reference, "
+        "first choice is the first frame for self-reference, "
         "middle frame for --ref_band) or 'quality' (fast header + pixel "
         "quality pre-check picks the sharpest, cleanest available frame) "
         "or 'time' (requires --ref_time: each band uses its frame closest "
@@ -7347,6 +7375,7 @@ def main(argv=None) -> int:
     # after the other bands, with the target pixel those bands found.
     pending = list(ordered_bands)
     deferred: dict[str, TargetNotFoundError] = {}
+    alternate_references = {}
     while pending:
         band = pending.pop(0)
         if band in deferred and not inferred_target_positions:
@@ -7416,6 +7445,35 @@ def main(argv=None) -> int:
                 keep_datacube=args.save_flux_datacube and not args.test_run,
                 precision=precision_options_from_args(args),
             )
+        except SparseReferenceError as exc:
+            owner = band if self_reference else ref_band
+            current = selected_ref_files[band]
+            if args.refid is None and owner not in alternate_references:
+                alternate_references[owner] = _alternate_reference_files(
+                    sciences[owner], current, selection_diag
+                )
+            candidates = alternate_references.get(owner)
+            alternate = next(candidates, None) if candidates is not None else None
+            if alternate is None:
+                logger.error(f"[{band}] {Path(current).name}: {exc}")
+                failures[band] = "insufficient reference sources"
+                continue
+
+            logger.warning(
+                f"[{band}] {Path(current).name}: {exc}. Trying {Path(alternate).name}"
+            )
+            for affected in [band] if self_reference else ordered_bands:
+                selected_ref_files[affected] = alternate
+                ref_selection_diagnostics[affected] = {
+                    "method": "alternate after sparse reference",
+                    "chosen_path": alternate,
+                }
+            if band in ref_wcs_ok_by_band:
+                ref_wcs_ok_by_band[band] = _reference_file_has_usable_wcs(
+                    alternate, target_coord
+                )
+            pending.insert(0, band)
+            continue
         except TargetNotFoundError as exc:
             if getattr(exc, "ref", None) is not None:
                 try:
@@ -7831,10 +7889,17 @@ def main(argv=None) -> int:
     try:
         target_ref_band = ref_band if ref_band is not None else active_bands[0]
         selection_path = args.results_dir / f"{stem_multi}_ref_selection.txt"
+        report_bands = [target_ref_band]
+        if self_reference:
+            report_bands.extend(
+                b
+                for b in ordered_bands
+                if b != target_ref_band and b in alternate_references
+            )
         selection_path.write_text(
-            format_ref_selection_report(
-                target_ref_band,
-                ref_selection_diagnostics.get(target_ref_band, {"method": "position"}),
+            "\n".join(
+                format_ref_selection_report(b, ref_selection_diagnostics[b])
+                for b in report_bands
             )
         )
         logger.info(f"wrote {selection_path}")

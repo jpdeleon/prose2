@@ -260,6 +260,10 @@ Frame alignment requires at least three reference sources. Both `--n_stars_align
 and `--max_num_stars` must allow at least three. With exactly three alignment
 stars, registration relies on celestial WCS. Frames that cannot be registered
 are discarded so each flux column keeps the same reference star.
+If an automatically selected reference contains fewer than three detections,
+the pipeline tries nearby frames from the same reference band and logs each
+substitution. Source IDs refer to the chosen catalog. Set `--refid` to pin a
+particular catalog; a sparse pinned frame fails the band.
 
 `--gif` is off by default because GIF rendering is the slowest stage; throttle
 it with `--gif_stride`. `--test_run` reduces each band to `--test_run_frames`
