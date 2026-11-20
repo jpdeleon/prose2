@@ -20,6 +20,24 @@ __all__ = [
     "Peaks",
 ]
 
+AXIS_RATIO_WARN_MIN = 3  # warn only when the cut removes at least this many
+AXIS_RATIO_WARN_FRACTION = 0.25  # ...and more than this share of candidates
+
+
+def _axis_ratio(region) -> float:
+    """Minor-to-major axis ratio of a region; 1.0 (round) when the major axis is 0."""
+    major = region.axis_major_length
+    if not major > 0:
+        return 1.0
+    return float(region.axis_minor_length / major)
+
+
+def _validate_axis_ratio(value: float) -> float:
+    value = float(value)
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"min_axis_ratio must be in [0, 1], got {value}")
+    return value
+
 
 class _SourceDetection(Block):
     def __init__(
@@ -32,6 +50,7 @@ class _SourceDetection(Block):
         minor_length: float = 0,
         min_sources: int = 0,
         name: str = None,
+        min_axis_ratio: float = 0.0,
     ):
         """Base class for sources detection.
 
@@ -55,8 +74,20 @@ class _SourceDetection(Block):
             minimum number of sources to detect. If fewer are found, the image is discarded, by default 0
         name : str, optional
             name of the block, by default None
+        min_axis_ratio : float, optional
+            minimum minor/major axis ratio (in [0, 1]) of the thresholded region;
+            rejects elongated detections such as meteor, satellite or airplane
+            streaks (streaks measured b/a 0.08-0.09; real stars smeared by poor
+            tracking went down to 0.20). run_photometry uses 0.1. The ratio is
+            measured on the thresholded region, not the true PSF, so keep it
+            low for defocused data, where a faint donut may pass threshold only
+            as a partial arc. Removed regions are stored in
+            ``image.computed["axis_ratio_rejected"]`` and logged at DEBUG; a
+            WARNING flags cuts that remove a large share of the detections.
+            By default 0 (no cut)
         """
         super().__init__(name=name, read=["data"])
+        self.min_axis_ratio = _validate_axis_ratio(min_axis_ratio)
         self.n = n
         self.sort = sort
         self.min_separation = min_separation
@@ -191,8 +222,51 @@ class _SourceDetection(Block):
             for r in regions
             if r.area >= self.min_area and r.axis_major_length >= self.minor_length
         ]
+        kept = [r for r in regions if _axis_ratio(r) >= self.min_axis_ratio]
+        rejected = [r for r in regions if _axis_ratio(r) < self.min_axis_ratio]
+        self._record_axis_ratio_rejections(image, rejected, len(regions))
 
-        return regions
+        return kept
+
+    def _record_axis_ratio_rejections(self, image, rejected, n_candidates):
+        """Store regions removed by ``min_axis_ratio`` on the image and log them.
+
+        Logs the list at DEBUG, and WARNs when the cut removes at least
+        ``AXIS_RATIO_WARN_MIN`` regions and more than ``AXIS_RATIO_WARN_FRACTION``
+        of the candidates, which suggests real (e.g. trailed) stars are lost.
+        """
+        records = [
+            {
+                "x": float(r.centroid[1]),
+                "y": float(r.centroid[0]),
+                "peak": float(r.intensity_max),
+                "area": float(r.area),
+                "axis_ratio": _axis_ratio(r),
+            }
+            for r in rejected
+        ]
+        if hasattr(image, "computed"):
+            image.computed["axis_ratio_rejected"] = records
+        if not records:
+            return
+        logger = logging.getLogger("prose")
+        logger.debug(
+            f"min_axis_ratio={self.min_axis_ratio:g} rejected {len(records)} "
+            "detection(s): "
+            + ", ".join(
+                f"({d['x']:.0f}, {d['y']:.0f}) b/a={d['axis_ratio']:.2f}"
+                for d in records
+            )
+        )
+        if (
+            len(records) >= AXIS_RATIO_WARN_MIN
+            and len(records) > AXIS_RATIO_WARN_FRACTION * n_candidates
+        ):
+            logger.warning(
+                f"min_axis_ratio={self.min_axis_ratio:g} rejected {len(records)} "
+                f"of {n_candidates} detections; if stars are trailed or "
+                "defocused, lower or disable the cut"
+            )
 
     @property
     def citations(self):
@@ -210,6 +284,7 @@ class AutoSourceDetection(_SourceDetection):
         min_area=0,
         minor_length=0,
         min_sources=0,
+        min_axis_ratio=0.0,
     ):
         """Detect all sources.
 
@@ -235,6 +310,8 @@ class AutoSourceDetection(_SourceDetection):
             minimum number of sources to detect. If fewer are found, the image is discarded, by default 0
         name : str, optional
             name of the block, by default None
+        min_axis_ratio : float, optional
+            minimum minor/major axis ratio of a detection, by default 0 (no cut)
         """
         super().__init__(
             threshold=threshold,
@@ -245,6 +322,7 @@ class AutoSourceDetection(_SourceDetection):
             min_area=min_area,
             minor_length=minor_length,
             min_sources=min_sources,
+            min_axis_ratio=min_axis_ratio,
         )
 
     def run(self, image):
@@ -279,6 +357,9 @@ class PointSourceDetection(_SourceDetection):
             whether to sort per ADU peak value (from the greatest), by default True
         min_separation : float, optional
             minimum separation in pixels from one source to the other. Between two sources, greater ADU is kept, by default None
+        min_axis_ratio : float, optional
+            minimum minor/major axis ratio of a detection; about 0.1 rejects
+            meteor and satellite streaks, by default 0 (no cut)
         name : str, optional
             name of the block, by default None
         """

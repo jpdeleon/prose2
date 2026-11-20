@@ -249,7 +249,7 @@ existing text such as star IDs, and the panel edge
 | Input / output | `--data_dir`, `--results_dir`, `--glob`, `--overwrite` |
 | Bands & reference | `--bands`, `--ref_band`, `--refid`, `--ref_select`, `--ref_select_top_k` |
 | Apertures | `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
-| Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--centroid_method`, `--ccd_trim` |
+| Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--min_axis_ratio`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--centroid_method`, `--ccd_trim` |
 | Time & plots | `--use_barycorrpy`, `--bin_size_minutes`, `--plot_gaia_sources`, `--gif`, `--gif_stride` |
 | Light-curve cleaning | `--sig_bkg`, `--sig_fwhm`, `--sig_dx`, `--sig_dy`, `--sig_flux`, `--flux_poly_deg` |
 | Comparison ensemble & aperture | `--comp_ensemble`, `--comp_criterion`, `--comp_min_flux_frac`, `--clip_star_sigma`, `--clip_star_window` (see [Precision options](#precision-options-for-faint-targets)) |
@@ -699,6 +699,16 @@ Calibration preserves finite negative pixel values, including valid bias/dark-su
 ### Photometry near detector edges
 
 Sky annuli use only finite on-detector pixels; empty sky regions yield invalid measurements. Background subtraction uses the aperture area actually overlapping the image. Aperture metadata flags truncation: correct sky subtraction does not recover stellar light lost off the detector.
+
+### Rejecting trails and elongated detections
+
+`run_photometry --min_axis_ratio R` (and the `min_axis_ratio` argument of `PointSourceDetection`, `AutoSourceDetection` and `TraceDetection`) rejects detections whose thresholded region has a minor/major axis ratio below `R`. That removes meteor, satellite and airplane streaks and other elongated non-stars, in the reference catalog and in every per-frame detection. `run_photometry` uses **0.1** by default; pass `--min_axis_ratio 0` to turn the cut off. (The detection blocks themselves default to 0.) Removals from each reference catalog are logged at INFO: the 5 brightest with position, b/a, peak and area (a real streak is usually the brightest), and a count of the rest. On Sinistro frames the rest are typically one-pixel-wide strips along the detector edges (b/a 0), which never reach the catalog anyway. Per-frame removals are logged at DEBUG, and a WARNING is raised when a cut removes at least 3 detections and more than a quarter of a frame's candidates, which usually means real stars are trailed or defocused below the cut.
+
+Example: in the Sinistro run of TOI-942 b on 2026-11-15 (`1m0-10`, `rp`, reference `cpt1m010-fa14-20261115-0100`, FWHM 8.7 px), catalog star 15 was a meteor streak with b/a 0.08, while every real star had 0.83–0.97. With the default of 0.1 the streak is dropped and stars 0–14, including the target (6), keep their indices. Later stars move up one index, and the next-brightest star fills the freed slot.
+
+Poor tracking smears real stars too. In the MuSCAT2 run of K2-136c on 2026-11-15, every star is elongated: per-band reference catalogs have b/a 0.24–0.85 (median 0.43–0.55), and across 122 sampled frames in four bands the lowest real detections had 0.20–0.24. The lowest of all, at 0.20, was two stars blended along the smear. A streak in one gp frame measured 0.09. Cuts of 0.1 and 0.15 removed only that streak, while 0.2 also removed the blended pair. At 0.3 the reference catalogs already lose a blended pair or faint stars, and at 0.5 about half of each catalog is dropped.
+
+The default of 0.1 sits below both streaks (0.08–0.09) and at half the lowest real detection (0.20). Do not raise it for badly tracked data, and keep it low for defocused data: the ratio is measured on the thresholded region rather than the true PSF, and a faint donut can pass the threshold only as a partial arc. Compact cosmic rays are not elongated and are not caught by this cut (#86).
 
 ### Sparse-field comparison selection
 

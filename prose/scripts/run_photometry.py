@@ -273,6 +273,8 @@ _HEADER_SCORE_WEIGHTS = {
 }
 CCD_TRIM_SIZE_YX = (0, 0)  # trim image edges [pix]
 MIN_STAR_AREA = 20  # min detected-source area [pix]
+MIN_AXIS_RATIO = 0.1  # min minor/major axis ratio of detections (0 = off)
+AXIS_RATIO_LOG_MAX = 5  # brightest axis-ratio rejections listed in the log
 MIN_STAR_SEPARATION = 10  # min separation between sources [pix]
 ALIGN_DISCARD_TOLERANCE = 0.4  # cross-filter alignments can share <50% top sources
 # Close-companion exclusion for the comparison-star pool. The auto threshold is
@@ -748,6 +750,17 @@ def parse_aper_grid(s: str) -> np.ndarray:
     return lo + dr * np.arange(n + 1)
 
 
+def parse_unit_interval(s: str) -> float:
+    """Parse a float in ``[0, 1]`` (``--min_axis_ratio``)."""
+    try:
+        value = float(s)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected a number, got {s!r}") from exc
+    if not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(f"must be in [0, 1], got {s!r}")
+    return value
+
+
 def parse_pair(s: str) -> tuple[float, float]:
     """Parse ``"RIN,ROUT"`` into a validated ``(rin, rout)`` tuple."""
     try:
@@ -986,6 +999,29 @@ class SelectSourceIndices(Block):
 # --------------------------- reference building ---------------------------
 
 
+def _log_axis_ratio_rejections(image, min_axis_ratio: float, label: str) -> None:
+    """Log the elongated detections ``--min_axis_ratio`` removed from ``image``.
+
+    Reads the records ``PointSourceDetection`` stores in
+    ``image.computed["axis_ratio_rejected"]``; logs nothing when there are none.
+    """
+    rejected = image.computed.get("axis_ratio_rejected") or []
+    if not rejected:
+        return
+    brightest = sorted(rejected, key=lambda d: d["peak"], reverse=True)
+    details = ", ".join(
+        f"({d['x']:.0f}, {d['y']:.0f}) b/a={d['axis_ratio']:.2f} "
+        f"peak={d['peak']:.0f} area={d['area']:.0f}"
+        for d in brightest[:AXIS_RATIO_LOG_MAX]
+    )
+    if len(brightest) > AXIS_RATIO_LOG_MAX:
+        details += f", and {len(brightest) - AXIS_RATIO_LOG_MAX} more"
+    logger.info(
+        f"[{label}] min_axis_ratio={min_axis_ratio:g} removed {len(rejected)} "
+        f"elongated detection(s) (streaks?): {details}"
+    )
+
+
 def _centroid_block(method: str):
     """Return the configured production centroid block."""
     blocks_by_method = {
@@ -1007,6 +1043,7 @@ def reference_sequence(
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
     min_area: int = MIN_STAR_AREA,
+    min_axis_ratio: float = MIN_AXIS_RATIO,
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
     source_indices: list[int] | None = None,
@@ -1028,6 +1065,7 @@ def reference_sequence(
             blocks.PointSourceDetection(
                 n=n_detect,
                 min_area=min_area,
+                min_axis_ratio=min_axis_ratio,
                 min_separation=min_star_separation,
             ),
             SelectSourceIndices(source_indices),
@@ -2350,6 +2388,7 @@ def build_reference(
     target_pixel_override: np.ndarray | tuple[float, float] | None = None,
     target_pixel_fallback: np.ndarray | tuple[float, float] | None = None,
     min_area: int = MIN_STAR_AREA,
+    min_axis_ratio: float = MIN_AXIS_RATIO,
     plot_gaia_sources: bool = False,
     edge_margin: int | None = EDGE_MARGIN_PIX,
     avoid_nearby_star: float | str | None = None,
@@ -2425,10 +2464,12 @@ def build_reference(
         min_star_separation=min_star_separation,
         cutout_size=cutout_size,
         min_area=min_area,
+        min_axis_ratio=min_axis_ratio,
         bad_pixel_map=bad_pixel_map,
         centroid_method=centroid_method,
         source_indices=source_indices,
     ).run(ref, show_progress=False)
+    _log_axis_ratio_rejections(ref, min_axis_ratio, f"{Path(ref_file).name} reference")
 
     match_found = False
     if (
@@ -2618,6 +2659,7 @@ def photometry_sequence(
     n_stars_align: int | None = None,
     target_index: int = 0,
     min_area: int = MIN_STAR_AREA,
+    min_axis_ratio: float = MIN_AXIS_RATIO,
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
     workers: int | None = None,
@@ -2640,6 +2682,7 @@ def photometry_sequence(
         blocks.PointSourceDetection(
             n=max_num_stars,
             min_area=min_area,
+            min_axis_ratio=min_axis_ratio,
             min_separation=min_star_separation,
             min_sources=2,
         ),
@@ -2864,7 +2907,13 @@ def _warp_onto_reference(image, shared_ref):
 
 
 def _frame_alignment_sequence(
-    *, ccd_trim_size_yx, max_num_stars, min_star_separation, min_area, bad_pixel_map
+    *,
+    ccd_trim_size_yx,
+    max_num_stars,
+    min_star_separation,
+    min_area,
+    bad_pixel_map,
+    min_axis_ratio=MIN_AXIS_RATIO,
 ) -> Sequence:
     """Lightweight detection sequence for solving a frame's alignment transform
     (mirrors ``plot_alignment``): trim, mask bad pixels, detect sources. Only
@@ -2876,7 +2925,10 @@ def _frame_alignment_sequence(
             blocks.Trim(ccd_trim_size_yx),
             MaskBadPixels(bad_pixel_map),
             blocks.PointSourceDetection(
-                n=max_num_stars, min_area=min_area, min_separation=min_star_separation
+                n=max_num_stars,
+                min_area=min_area,
+                min_separation=min_star_separation,
+                min_axis_ratio=min_axis_ratio,
             ),
         ]
     )
@@ -2892,6 +2944,7 @@ def _build_display_reference(
     cutout_size,
     min_area,
     bad_pixel_map,
+    min_axis_ratio=MIN_AXIS_RATIO,
     n_stack: int = 1,
 ):
     """Per-band display reference *on the shared reference grid*, built from THIS
@@ -2920,6 +2973,7 @@ def _build_display_reference(
         max_num_stars=max_num_stars,
         min_star_separation=min_star_separation,
         min_area=min_area,
+        min_axis_ratio=min_axis_ratio,
         bad_pixel_map=bad_pixel_map,
     )
     for f in _select_stack_frames(files, n_stack):
@@ -2969,6 +3023,7 @@ def _band_saturation_indices(
     min_star_separation,
     min_area,
     bad_pixel_map,
+    min_axis_ratio=MIN_AXIS_RATIO,
 ):
     """Screen shared IDs on one native band frame, without resampling pixels.
 
@@ -2994,6 +3049,7 @@ def _band_saturation_indices(
         max_num_stars=max_num_stars,
         min_star_separation=min_star_separation,
         min_area=min_area,
+        min_axis_ratio=min_axis_ratio,
         bad_pixel_map=bad_pixel_map,
     ).run(image, show_progress=False)
     blocks.ComputeTransformTwirl(ref, n=max_num_stars).run(image)
@@ -3071,6 +3127,7 @@ def run_band(
     avoid_cids: list[int] | None = None,
     ref_source_positions: np.ndarray | None = None,
     min_area: int = MIN_STAR_AREA,
+    min_axis_ratio: float = MIN_AXIS_RATIO,
     plot_gaia_sources: bool = False,
     edge_margin: int | None = EDGE_MARGIN_PIX,
     avoid_nearby_star: float | str | None = None,
@@ -3119,6 +3176,7 @@ def run_band(
         target_pixel_override=target_pixel_override,
         target_pixel_fallback=target_pixel_fallback,
         min_area=min_area,
+        min_axis_ratio=min_axis_ratio,
         plot_gaia_sources=plot_gaia_sources,
         edge_margin=edge_margin,
         avoid_nearby_star=avoid_nearby_star,
@@ -3297,6 +3355,7 @@ def run_band(
             max_num_stars=max_num_stars,
             min_star_separation=min_star_separation,
             min_area=min_area,
+            min_axis_ratio=min_axis_ratio,
             bad_pixel_map=bad_pixel_map,
         )
     else:
@@ -3340,6 +3399,7 @@ def run_band(
         n_stars_align=effective_n_stars_align,
         target_index=target_index,
         min_area=min_area,
+        min_axis_ratio=min_axis_ratio,
         bad_pixel_map=bad_pixel_map,
         centroid_method=centroid_method,
     )
@@ -3421,6 +3481,7 @@ def run_band(
             min_star_separation=min_star_separation,
             cutout_size=cutout_size,
             min_area=min_area,
+            min_axis_ratio=min_axis_ratio,
             bad_pixel_map=bad_pixel_map,
             n_stack=display_stack_nframes,
         )
@@ -4298,6 +4359,7 @@ def plot_alignment(
     min_star_separation: float = MIN_STAR_SEPARATION,
     n_stars_align: int | None = None,
     min_area: int = MIN_STAR_AREA,
+    min_axis_ratio: float = MIN_AXIS_RATIO,
     cmap: str = "Greys",
 ) -> None:
     """Overlay the reference image with an aligned later frame (best effort)."""
@@ -4324,6 +4386,7 @@ def plot_alignment(
                 blocks.PointSourceDetection(
                     n=max_num_stars,
                     min_area=min_area,
+                    min_axis_ratio=min_axis_ratio,
                     min_separation=min_star_separation,
                 ),
                 # FilterPointSources(),
@@ -6246,6 +6309,17 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Minimum area in pixels of detected sources (default: %(default)s).",
     )
     ap.add_argument(
+        "--min_axis_ratio",
+        "--min-axis-ratio",
+        type=parse_unit_interval,
+        default=MIN_AXIS_RATIO,
+        dest="min_axis_ratio",
+        help="Minimum minor/major axis ratio in [0, 1] of detected sources; "
+        "rejects meteor, satellite and cosmic-ray streaks; removals from the "
+        "reference catalog are logged. 0 disables the cut "
+        "(default: %(default)s).",
+    )
+    ap.add_argument(
         "--max_num_stars",
         "--max-num-stars",
         type=int,
@@ -7244,6 +7318,7 @@ def main(argv=None) -> int:
                             min_star_separation=args.min_star_separation,
                             cutout_size=args.cutout_size,
                             min_area=args.min_star_area,
+                            min_axis_ratio=args.min_axis_ratio,
                             bad_pixel_map=bad_pixel_map,
                             centroid_method=args.centroid_method,
                         ),
@@ -7406,6 +7481,7 @@ def main(argv=None) -> int:
                 avoid_cids=args.avoid_cids,
                 ref_source_positions=ref_source_positions,
                 min_area=args.min_star_area,
+                min_axis_ratio=args.min_axis_ratio,
                 plot_gaia_sources=args.plot_gaia_sources,
                 edge_margin=args.edge_margin,
                 avoid_nearby_star=args.avoid_nearby_star,
@@ -7576,6 +7652,7 @@ def main(argv=None) -> int:
                 min_star_separation=args.min_star_separation,
                 n_stars_align=args.n_stars_align,
                 min_area=args.min_star_area,
+                min_axis_ratio=args.min_axis_ratio,
                 cmap=args.cmap,
             )
             plot_cutouts(
