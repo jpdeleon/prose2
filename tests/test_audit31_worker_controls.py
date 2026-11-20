@@ -50,6 +50,7 @@ def test_photometry_sequence_forwards_worker_controls(tmp_path):
         ]
     )
     image = Image(np.zeros((20, 20)))
+    image.sources = [[2, 2], [4, 9], [10, 3]]
     image.epsf = Image(np.zeros((5, 5)))
     image.epsf.params = {}
     seq = rp.photometry_sequence(
@@ -57,7 +58,6 @@ def test_photometry_sequence_forwards_worker_controls(tmp_path):
         [2.0],
         4.0,
         6.0,
-        n_stars_align=0,
         workers=args.workers,
         chunksize=args.chunksize,
     )

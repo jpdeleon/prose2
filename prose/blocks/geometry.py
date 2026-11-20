@@ -215,10 +215,13 @@ class ComputeTransformTwirl(Block):
         self._parallel_friendly = True
 
         # twirl
-        self.quads_ref, self.asterisms_ref = quads.hashes(ref_coords[0:n])
-        self.tree_ref = cKDTree(self.quads_ref)
         self.rtol = rtol
-        self.worker_shared_arrays = (self.ref, self.quads_ref, self.asterisms_ref)
+        self.tree_ref = None
+        self.worker_shared_arrays = (self.ref,)
+        if len(self.ref) >= 4:
+            self.quads_ref, self.asterisms_ref = quads.hashes(self.ref)
+            self.tree_ref = cKDTree(self.quads_ref)
+            self.worker_shared_arrays += (self.quads_ref, self.asterisms_ref)
 
     def run(self, image):
         success = False
@@ -234,7 +237,9 @@ class ComputeTransformTwirl(Block):
         if not success:
             ref_wcs = getattr(self.reference_image, "wcs", None)
             img_wcs = getattr(image, "wcs", None)
-            if ref_wcs is not None and img_wcs is not None:
+            if getattr(ref_wcs, "has_celestial", False) and getattr(
+                img_wcs, "has_celestial", False
+            ):
                 try:
                     ny, nx = image.shape
                     grid_x, grid_y = np.meshgrid(
@@ -260,6 +265,8 @@ class ComputeTransformTwirl(Block):
 
     def solve(self, coords, tolerance=2, refine=True):
         n_stars = min(len(coords), self.n if self.n is not None else 12, 15)
+        if self.tree_ref is None or n_stars < 4:
+            return None
         quads_image, asterisms_image = quads.hashes(coords[0:n_stars])
         tree_image = cKDTree(quads_image)
         min_match = 0.7

@@ -179,8 +179,10 @@ def test_parallel_sequence_returns_frames_by_sources_peaks_outside_csv():
 def test_photometry_sequence_wires_peak_getter(monkeypatch):
     # Gaussian2D needs a fitted reference ePSF; replace it, keep the rest real.
     monkeypatch.setattr(rp.blocks, "Gaussian2D", lambda ref: rp.blocks.Trim(0))
-    ref = SimpleNamespace(telescope=SimpleNamespace(keyword_airmass="AIRMASS"))
-    seq = rp.photometry_sequence(ref, np.array([3.0]), 5.0, 8.0, n_stars_align=0)
+    from prose.core.source import Sources
+
+    ref = SimpleNamespace(sources=Sources(np.array([[2, 2], [4, 9], [10, 3]])))
+    seq = rp.photometry_sequence(ref, np.array([3.0]), 5.0, 8.0)
     assert seq.data[0].getters["_peaks"] is rp._frame_peaks
 
 

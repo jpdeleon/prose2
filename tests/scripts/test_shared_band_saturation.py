@@ -129,10 +129,13 @@ def test_run_band_replaces_shared_mask_for_auto_and_explicit_comparisons(
 
 def test_all_comparisons_saturated_is_not_relaxed(tmp_path, monkeypatch):
     path, ref = _frames(tmp_path, limit=100)
+    ref.epsf = SimpleNamespace(params={})
     monkeypatch.setattr(
         rp,
         "build_reference",
-        lambda *a, **k: dict(ref=ref, target_index=0, aper_radii=[4], scale=False),
+        lambda *a, **k: dict(
+            ref=ref, target_index=0, aper_radii=[4], rin=6, rout=9, scale=False
+        ),
     )
     with pytest.raises(ValueError, match="no usable comparison stars"):
         rp.run_band(
