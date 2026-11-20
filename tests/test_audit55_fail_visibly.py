@@ -309,3 +309,50 @@ def test_shared_sparse_reference_replacement_is_used_for_all_bands(
         ("gp", "gp-20250416-0001-e91.fits"),
         ("rp", "gp-20250416-0001-e91.fits"),
     ]
+
+
+@pytest.mark.parametrize("n,code", [(4, 0), (3, rp.EXIT_PARTIAL_FAILURE), (0, 1)])
+def test_requested_band_outcomes(tmp_path, monkeypatch, n, code):
+    import json
+
+    from prose import Fluxes
+
+    bands = ["gp", "rp", "ip", "zs"]
+    for band in bands[:n]:
+        _write_sinistro_frame(tmp_path / f"{band}.fits", band)
+
+    def reduce(band, files, *args, outcome, **kwargs):
+        outcome.update(
+            identification_method="explicit_index",
+            comparison_stars=[1],
+            aperture_index=0,
+            aperture_radius_px=3.0,
+        )
+        diff = Fluxes(np.ones(3), time=np.arange(3.0), errors=np.ones(3))
+        return dict(
+            target_index=0, diff=diff, ref=rp.SimpleNamespace(header={}), files=files
+        )
+
+    monkeypatch.setattr(rp, "run_band", reduce)
+    monkeypatch.setattr(rp, "resolve_target_at_epoch", lambda coord, _: coord)
+    monkeypatch.setattr(rp, "compute_bjd_tdb", lambda diff, *a: diff.time)
+    monkeypatch.setattr(rp, "save_all_bands_npz", lambda *a, **kw: None)
+    argv = _argv(tmp_path)
+    argv[argv.index("gp") : argv.index("gp") + 1] = bands
+    assert rp.main([*argv, "--tID", "0", "--plots", "none"]) == code
+    records = json.loads((tmp_path / "out" / "band_outcomes.json").read_text())["bands"]
+    assert list(records) == bands
+    for band in bands[:n]:
+        assert records[band] == dict(
+            outcome="usable",
+            target_index=0,
+            identification_method="explicit_index",
+            comparison_stars=[1],
+            aperture_index=0,
+            aperture_radius_px=3.0,
+            failure_reason=None,
+        )
+    for band in bands[n:]:
+        assert records[band]["outcome"] == "failed"
+        assert records[band]["failure_reason"]
+        assert records[band]["target_index"] is None

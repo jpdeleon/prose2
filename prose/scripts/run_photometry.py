@@ -58,6 +58,7 @@ from __future__ import annotations
 import argparse
 
 import csv
+import json
 import logging
 import os
 import functools
@@ -2492,14 +2493,23 @@ def build_reference(
                     "fallback from other bands. Use --tID to override."
                 )
 
+    method = "wcs_match"
     if target_index_override is not None:
         if target_index_override == len(ref.sources) and target_coord is not None:
+            method = (
+                "force_added_coordinate"
+                if _finite_world_to_pixel(getattr(ref, "wcs", None), target_coord)
+                is not None
+                else "force_added_image_center"
+            )
             ref, target_index = _append_target_source(
                 ref, target_coord, cutout_size, centroid_method
             )
         else:
+            method = "explicit_index"
             target_index = target_index_override
     elif target_pixel_override is not None:
+        method = "other_band_pixel"
         target_index, target_pixel_distance = _nearest_source_index(
             ref, target_pixel_override
         )
@@ -2517,6 +2527,7 @@ def build_reference(
             logger.warning(f"target pixel fallback also unusable ({exc})")
             target_index = find_target_index(ref, target_coord)
         else:
+            method = "other_band_pixel"
             logger.info(
                 f"own WCS-based match missed the target; inferred target idx "
                 f"{target_index} instead from other bands' pixel position "
@@ -2616,6 +2627,7 @@ def build_reference(
     return dict(
         ref=ref,
         target_index=target_index,
+        identification_method=method,
         aper_radii=aper_radii,
         rin=rin,
         rout=rout,
@@ -3112,6 +3124,7 @@ def run_band(
     shared_reference: bool = False,
     keep_datacube: bool = False,
     precision: PrecisionOptions | None = None,
+    outcome: dict | None = None,
 ):
     """Full reduction for a single band. Returns a result dict or ``None``.
     PIXSCALE and saturation are read from the reference image header
@@ -3186,6 +3199,15 @@ def run_band(
                     f"maps {target_dist:.1f} px away in this band (> {_CROSSMATCH_TOLERANCE_PX} px); "
                     "using reference-band index"
                 )
+
+    if outcome is not None:
+        method = reference.get("identification_method")
+        if ref_source_positions is not None and method:
+            method = f"shared_reference_{method}"
+        outcome.update(
+            target_index=int(target_index),
+            identification_method=method,
+        )
 
     # Cross-match avoid_cids from ref-band index space -> this band's indices
     # via nearest-neighbor KDTree (ref_source_positions is pre-populated from
@@ -3376,6 +3398,8 @@ def run_band(
             f"[{band}] no valid frames (all discarded); skipping "
             f"(alignment/source matching likely failed)"
         )
+        if outcome is not None:
+            outcome["failure_reason"] = "all frames discarded"
         return None
     fluxes.target = target_index
 
@@ -3397,7 +3421,25 @@ def run_band(
     )
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
+        if outcome is not None:
+            outcome["failure_reason"] = "no valid frames after cleaning"
         return None
+    if outcome is not None:
+        comparisons = diff.comparisons
+        radius = _chosen_radius_pix(diff)
+        outcome.update(
+            comparison_stars=None
+            if comparisons is None
+            else [int(c) for c in comparisons],
+            aperture_index=int(diff.aperture),
+            aperture_radius_px=radius if np.isfinite(radius) else None,
+        )
+        valid = np.isfinite(diff.flux) & np.isfinite(diff.error) & (diff.error > 0)
+        if not np.any(valid):
+            outcome["failure_reason"] = (
+                "no finite differential flux with positive uncertainty"
+            )
+            return None
     budget = _band_noise_budget(band, diff, ref, reference)
 
     # Map the selected comparison star IDs back to the chosen band's index space for consistent logging
@@ -6638,11 +6680,54 @@ def main(argv=None) -> int:
 
     logger.info(f"args: {vars(args)}")
 
+    explicit_bands = args.bands is not None
     if args.bands is None:
         args.bands = _detect_narrow_bands(args.data_dir, args.target_name)
         logger.info(f"bands: {args.bands}")
     else:
         logger.info(f"bands: {args.bands} (explicit)")
+
+    records = {
+        band: dict(
+            outcome="failed",
+            target_index=None,
+            identification_method=None,
+            comparison_stars=None,
+            aperture_index=None,
+            aperture_radius_px=None,
+            failure_reason=None,
+        )
+        for band in args.bands
+    }
+    failure_reason = "reduction interrupted"
+    path = args.results_dir / "band_outcomes.json"
+    path.unlink(missing_ok=True)
+    try:
+        return _reduce(args, records, t0, explicit_bands)
+    except Exception as exc:
+        failure_reason = str(exc) or type(exc).__name__
+        raise
+    finally:
+        for record in records.values():
+            if record["outcome"] == "failed" and not record["failure_reason"]:
+                record["failure_reason"] = failure_reason
+        report = dict(
+            version=1, target=args.target_name, test_run=args.test_run, bands=records
+        )
+        temporary = path.with_suffix(f".{os.getpid()}.tmp")
+        try:
+            temporary.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _reduce(args, records, t0, explicit_bands):
+    def abort(reason):
+        logger.error(reason)
+        for record in records.values():
+            record["failure_reason"] = reason
+        return 1
 
     sciences = {}
     filepath_to_obslog = {}
@@ -6679,8 +6764,7 @@ def main(argv=None) -> int:
             files = sorted(args.data_dir.rglob(args.glob))
         logger.info(f"found {len(files)} FITS files in {args.data_dir}")
         if not files:
-            logger.error("no FITS files found; aborting")
-            return 1
+            return abort("no FITS files found; aborting")
         instrume = inst_obslog if inst_obslog in INSTRUMENT_FILTER_ALIASES else ""
         inst_aliases = INSTRUMENT_FILTER_ALIASES.get(instrume)
         sciences = read_filename_per_band(
@@ -6689,42 +6773,43 @@ def main(argv=None) -> int:
 
     active_bands = [b for b in args.bands if sciences.get(b)]
     if not active_bands:
-        logger.error(f"no frames for target={args.target_name}; aborting")
-        return 1
+        return abort(f"no frames for target={args.target_name}; aborting")
+
+    if not explicit_bands:
+        # Auto-detection supplies a search list (e.g. for a single-filter camera).
+        for band in list(records):
+            if band not in active_bands:
+                del records[band]
 
     # header metadata for naming, time conversion
     probe = FITSImage(sciences[active_bands[0]][0]).header
     instrument = get_instrument(probe)
 
     if args.site is not None and instrument not in MULTISITE_INSTRUMENTS:
-        logger.error(
+        return abort(
             f"--site can only be specified when instrument is one of "
             f"{sorted(MULTISITE_INSTRUMENTS)} (found '{instrument}')"
         )
-        return 1
 
     if args.mode is not None and instrument not in MULTISITE_MODES:
-        logger.error(
+        return abort(
             f"--mode can only be specified when instrument is one of "
             f"{sorted(MULTISITE_MODES)} (found '{instrument}')"
         )
-        return 1
 
     if args.telescope is not None and instrument not in MULTISITE_INSTRUMENTS:
-        logger.error(
+        return abort(
             f"--telescope can only be specified when instrument is one of "
             f"{sorted(MULTISITE_INSTRUMENTS)} (found '{instrument}')"
         )
-        return 1
 
     if instrument in MULTISITE_INSTRUMENTS and args.site:
         site_to_match = args.site.lower()
         allowed_sites = MULTISITE_SITES.get(instrument, ())
         if site_to_match not in allowed_sites:
-            logger.error(
+            return abort(
                 f"Invalid site '{args.site}' for {instrument}. Must be one of {allowed_sites}"
             )
-            return 1
 
         filtered_sciences = {}
         for b, fs in sciences.items():
@@ -6801,10 +6886,9 @@ def main(argv=None) -> int:
         mode_to_match = args.mode.lower()
         allowed_modes = MULTISITE_MODES[instrument]
         if mode_to_match not in allowed_modes:
-            logger.error(
+            return abort(
                 f"Invalid mode '{args.mode}' for {instrument}. Must be one of {allowed_modes}"
             )
-            return 1
 
         filtered_sciences = {}
         for b, fs in sciences.items():
@@ -6865,11 +6949,10 @@ def main(argv=None) -> int:
                 before=args.exclude_before_jd,
             )
             if not active_bands:
-                logger.error(
+                return abort(
                     f"no frames remain for target={args.target_name} after "
                     "--exclude_after_jd/--exclude_before_jd; aborting"
                 )
-                return 1
 
     # --ref_select time: resolved once from the full frame span (before any
     # --test_run windowing narrows it) so a clock time lands on the same day.
@@ -6881,8 +6964,7 @@ def main(argv=None) -> int:
                 time_ref_jd = _ref_jd_from_spec(args.ref_time, sciences)
             sciences = _test_run_window(sciences, args.refid, nrf, ref_jd=time_ref_jd)
         except ValueError as e:
-            logger.error(str(e))
-            return 1
+            return abort(str(e))
         logger.info(f"test-run: limiting to {nrf} frames per band (refid={args.refid})")
 
     active_bands = [b for b in args.bands if sciences.get(b)]
@@ -6896,13 +6978,11 @@ def main(argv=None) -> int:
             if args.mode:
                 details.append(f"mode={args.mode}")
             details_str = " and ".join(details)
-            logger.error(
-                f"no frames for target={args.target_name} at {details_str}; aborting"
-            )
+            abort(f"no frames for target={args.target_name} at {details_str}; aborting")
             if args.mode:
                 raise SystemExit(1)
         else:
-            logger.error(f"no frames for target={args.target_name}; aborting")
+            return abort(f"no frames for target={args.target_name}; aborting")
         return 1
 
     probe = FITSImage(sciences[active_bands[0]][0]).header
@@ -7017,13 +7097,12 @@ def main(argv=None) -> int:
                 args.wcs_method == "astrometry.net"
                 and not os.environ.get("ASTROMETRY_NET_API_KEY", "").strip()
             ):
-                logger.error(
+                return abort(
                     f"{calib_label}: --wcs_method astrometry.net requires the "
                     "ASTROMETRY_NET_API_KEY environment variable, which is not "
                     "set. Either export ASTROMETRY_NET_API_KEY, or re-run with "
                     "--wcs_method twirl (twirl+Gaia, no API key needed)."
                 )
-                return 1
             logger.info(f"{calib_label}: running calibration")
             calibration_bands = (
                 list(args.bands) if set(args.bands).issubset(default_bands) else None
@@ -7039,15 +7118,12 @@ def main(argv=None) -> int:
             try:
                 ret = calib_mod.main(calib_args)
             except ValueError as e:  # e.g. --refid absent from the raw frames
-                logger.error(f"{calib_label} calibration failed: {e}")
-                return 1
+                return abort(f"{calib_label} calibration failed: {e}")
             if ret != 0:
-                logger.error(f"{calib_label} calibration failed")
-                return 1
+                return abort(f"{calib_label} calibration failed")
             calibrated_files = sorted(calib_dir.glob("*_calibrated.fits"))
         if not calibrated_files:
-            logger.error(f"{calib_label}: no calibrated frames found")
-            return 1
+            return abort(f"{calib_label}: no calibrated frames found")
         logger.info(f"{calib_label}: {len(calibrated_files)} calibrated frames")
         sciences = read_filename_per_band(
             calibrated_files,
@@ -7069,12 +7145,11 @@ def main(argv=None) -> int:
                 before=args.exclude_before_jd,
             )
             if not active_bands:
-                logger.error(
+                return abort(
                     f"{calib_label}: no frames remain for target="
                     f"{args.target_name} after --exclude_after_jd/"
                     "--exclude_before_jd; aborting"
                 )
-                return 1
         if args.test_run:
             nrf = args.test_run_frames
             try:
@@ -7084,16 +7159,14 @@ def main(argv=None) -> int:
                     sciences, args.refid, nrf, ref_jd=time_ref_jd
                 )
             except ValueError as e:
-                logger.error(str(e))
-                return 1
+                return abort(str(e))
         counts = {b: len(sciences.get(b, [])) for b in args.bands}
         logger.info(f"frames per band: {counts}")
         active_bands = [b for b in args.bands if sciences.get(b)]
         if not active_bands:
-            logger.error(
+            return abort(
                 f"{calib_label}: no calibrated frames for target={args.target_name}; aborting"
             )
-            return 1
         probe = FITSImage(sciences[active_bands[0]][0]).header
         instrument = get_instrument(probe)
     date = date_from_header(probe)
@@ -7180,7 +7253,9 @@ def main(argv=None) -> int:
             ordered_bands.insert(0, ref_band)
 
     band_results = {}
-    failures: dict[str, str] = {}  # band -> short reason
+    failures = {
+        band: "no matching frames" for band in records if band not in active_bands
+    }
     ref_source_positions: np.ndarray | None = None
     inferred_target_positions: list[np.ndarray] = []
     inferred_target_bands: list[str] = []
@@ -7217,8 +7292,7 @@ def main(argv=None) -> int:
                     args.ref_time, {b: sciences[b] for b in ordered_bands}
                 )
         except ValueError as e:
-            logger.error(str(e))
-            return 1
+            return abort(str(e))
         logger.info(
             f"ref_select=time: reference time {Time(time_ref_jd, format='jd').isot} "
             f"UT (JD {time_ref_jd:.6f})"
@@ -7234,8 +7308,7 @@ def main(argv=None) -> int:
             try:
                 refid, offset_s = _closest_frame_by_jd(ref_files, time_ref_jd)
             except ValueError as e:
-                logger.error(f"[{band}] ref_select=time: {e}")
-                return 1
+                return abort(f"[{band}] ref_select=time: {e}")
             chosen = Path(ref_files[refid])
             logger.info(
                 f"[{band}] ref_select=time: chose {chosen.name} "
@@ -7313,8 +7386,7 @@ def main(argv=None) -> int:
         try:
             _check_refid_exptime_consistency(selected_ref_files)
         except ValueError as e:
-            logger.error(str(e))
-            return 1
+            return abort(str(e))
 
     ref_wcs_ok_by_band: dict[str, bool] = {}
     if self_reference and args.tID is None and target_coord is not None:
@@ -7444,6 +7516,7 @@ def main(argv=None) -> int:
                 shared_reference=not self_reference,
                 keep_datacube=args.save_flux_datacube and not args.test_run,
                 precision=precision_options_from_args(args),
+                outcome=records[band],
             )
         except SparseReferenceError as exc:
             owner = band if self_reference else ref_band
@@ -7503,11 +7576,11 @@ def main(argv=None) -> int:
             continue
         except Exception as exc:  # noqa: BLE001 - one bad band must not kill the run
             logger.exception(f"[{band}] reduction failed: {exc}")
-            failures[band] = f"{type(exc).__name__}"
+            failures[band] = f"{type(exc).__name__}: {exc}"
             continue
         if res is None:
             logger.error(f"[{band}] reduction produced no output; marking band failed")
-            failures[band] = "no output"
+            failures[band] = records[band]["failure_reason"] or "no output"
             continue
         unmatched_paths[band].unlink(missing_ok=True)
         band_results[band] = res
@@ -7547,10 +7620,12 @@ def main(argv=None) -> int:
 
     # Retried bands finish last; restore the requested band order for outputs.
     band_results = {b: band_results[b] for b in ordered_bands if b in band_results}
+    for band, reason in failures.items():
+        records[band]["failure_reason"] = reason
     elapsed = time_module.time() - t0
     if not band_results:
         logger.error(
-            f"photometry FAILED: 0/{len(ordered_bands)} bands reduced "
+            f"photometry FAILED: 0/{len(records)} bands reduced "
             f"({elapsed:.0f}s elapsed); {_format_failures(failures)}"
         )
         return 1
@@ -7592,6 +7667,9 @@ def main(argv=None) -> int:
                 csv_path, index=False
             )
             logger.info(f"wrote {csv_path}")
+        records[band].update(
+            outcome="usable", target_index=int(r["target_index"]), failure_reason=None
+        )
 
         if args.plots in ("all", "reference"):
             plot_ref_image(
@@ -7906,7 +7984,7 @@ def main(argv=None) -> int:
     except Exception as e:
         logger.warning(f"could not write reference selection report: {e}")
 
-    return _final_status(band_results, failures, len(ordered_bands), elapsed)
+    return _final_status(band_results, failures, len(records), elapsed)
 
 
 def _format_failures(failures: dict[str, str]) -> str:
