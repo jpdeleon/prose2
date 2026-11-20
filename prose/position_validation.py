@@ -39,17 +39,70 @@ def _field_shift(reference, detections, tolerance):
     return np.median(det[ids[winner, ok]] - ref[ok], axis=0)
 
 
+def _associations(predicted, detections, tolerance):
+    distances, ids = cKDTree(detections).query(predicted, k=2)
+    reverse, _ = cKDTree(predicted).query(detections, k=2)
+    close = distances[:, 0] <= tolerance
+    unique = close & (distances[:, 1] > tolerance) & (reverse[ids[:, 0], 1] > tolerance)
+    return distances[:, 0], ids[:, 0], close, unique
+
+
+# Stored alongside the two separations and their respective tolerances.
+POSITION_REASONS = np.array(
+    [
+        "verified",
+        "unregistered_field",
+        "missing_detection",
+        "ambiguous_identity",
+        "missing_center",
+        "center_on_other_detection",
+        "center_too_far",
+    ]
+)
+
+
 class MatchExposureSources(Block):
     """Record independently identified detections before alignment replaces them."""
 
-    def __init__(self, ref):
+    def __init__(self, ref, coords=None, coordinate_image=None):
         super().__init__()
         self._parallel_friendly = True
-        self.reference = np.array(ref.sources.coords, dtype=float)
+        self.reference = np.array(
+            ref.sources.coords if coords is None else coords, dtype=float
+        )
         self.worker_shared_arrays = (self.reference,)
         self.reference_fwhm = getattr(ref, "fwhm", np.nan)
-        wcs = _celestial_wcs(ref)
+        wcs = _celestial_wcs(ref if coordinate_image is None else coordinate_image)
         self.sky = wcs.pixel_to_world(*self.reference.T) if wcs is not None else None
+
+    @classmethod
+    def from_native_frame(cls, ref, image, required):
+        """Transfer shared IDs once using a registered, unresampled native image."""
+        if image.discard or getattr(image, "transform", None) is None:
+            return None
+        predicted = image.transform.inverse(ref.sources.coords)
+        det = image.sources.coords
+        if (
+            not len(det)
+            or not np.isfinite(predicted).all()
+            or not np.isfinite(det).all()
+        ):
+            return None
+        width = getattr(ref, "fwhm", np.nan)
+        tolerance = max(3.0, width) if np.isfinite(width) else 3.0
+        distances, ids, _, unique = _associations(predicted, det, tolerance)
+        # Demand independent detections at three well-aligned reference positions
+        # before transferring IDs, and a unique association for required sources.
+        if (
+            np.count_nonzero(unique & (distances <= max(3.0, tolerance / 2))) < 3
+            or not unique[required].all()
+        ):
+            return None
+        # Off-chip and undetected IDs retain their geometric predictions. Every
+        # exposure must still supply an independent detection for a used ID.
+        coords = predicted.copy()
+        coords[unique] = det[ids[unique]]
+        return cls(ref, coords=coords, coordinate_image=image)
 
     def run(self, image):
         det = np.asarray(image.sources.coords, dtype=float).reshape(-1, 2)
@@ -69,6 +122,11 @@ class MatchExposureSources(Block):
         image.set("position_matches", matched)
         image.set("position_detections", det)
         image.set("position_tolerance", max(3.0, width))
+        checks = np.full((len(expected), 5), np.nan)
+        checks[:, 0] = 1 if len(det) else 2
+        checks[:, 3:] = [tolerance, image.position_tolerance]
+        image.set("position_checks", checks)
+        image.set("position_candidates", np.full_like(expected, np.nan))
         if not finite.any() or not len(det):
             return
         predicted = expected[finite]
@@ -81,29 +139,34 @@ class MatchExposureSources(Block):
 
         # Reject blends and competing IDs. A detection within tolerance of
         # two reference positions cannot establish either star's identity.
-        distances, indices = cKDTree(det).query(predicted, k=2)
-        close = distances[:, 0] <= tolerance
-        reverse, _ = cKDTree(predicted).query(det, k=2)
-        unique = (
-            close
-            & (distances[:, 1] > tolerance)
-            & (reverse[indices[:, 0], 1] > tolerance)
+        distance, indices, close, unique = _associations(predicted, det, tolerance)
+        checks[finite, 0] = np.where(unique, 0, np.where(close, 3, 2))
+        checks[finite, 1] = distance
+        image.position_candidates[finite] = det[indices]
+        matched[np.flatnonzero(finite)[unique]] = det[indices[unique]]
+
+
+def position_checks(image):
+    """Finalize one diagnostic row per source using the actual aperture centers."""
+    checks = image.position_checks.copy()
+    centers = image.sources.coords
+    checks[:, 2] = np.linalg.norm(centers - image.position_candidates, axis=1)
+    matched = checks[:, 0] == 0
+    finite = np.isfinite(centers).all(axis=1)
+    checks[matched & ~finite, 0] = 4
+    compare = matched & finite
+    if compare.any():
+        distances, nearest = cKDTree(image.position_detections).query(
+            centers[compare], k=2
         )
-        matched[np.flatnonzero(finite)[unique]] = det[indices[unique, 0]]
+        same = (distances[:, 0] < distances[:, 1]) & (
+            image.position_detections[nearest[:, 0]] == image.position_matches[compare]
+        ).all(axis=1)
+        checks[compare, 0] = np.where(
+            ~same, 5, np.where(distances[:, 0] > image.position_tolerance, 6, 0)
+        )
+    return checks
 
 
 def verified_positions(image):
-    """Compare the final photometry centers with independent frame detections."""
-    centers = image.sources.coords
-    matches = image.position_matches
-    valid = np.isfinite(centers).all(axis=1) & np.isfinite(matches).all(axis=1)
-    if valid.any():
-        # Refining a centroid must not move the aperture onto another detection.
-        tree = cKDTree(image.position_detections)
-        distances, nearest = tree.query(centers[valid], k=2)
-        valid[valid] = (
-            (distances[:, 0] <= image.position_tolerance)
-            & (distances[:, 0] < distances[:, 1])
-            & (image.position_detections[nearest[:, 0]] == matches[valid]).all(axis=1)
-        )
-    return valid
+    return position_checks(image)[:, 0] == 0

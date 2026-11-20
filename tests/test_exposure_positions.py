@@ -96,3 +96,64 @@ def test_bad_selected_positions_cannot_be_imputed_or_exported(explicit):
     np.testing.assert_allclose(
         datacube.default_lightcurve(cube)[0], result.flux, rtol=1e-6
     )
+
+
+def test_native_anchor_preserves_shared_ids_and_rejects_switched_centers():
+    from skimage.transform import AffineTransform
+
+    shared = image_with([[16, 20], [62, 22], [35, 65], [95, 83], [11, 100]])
+    native = shared.sources.coords.copy()
+    native[0] += [5, 0]  # color-dependent centroid outside the 3-pixel match radius
+    anchor = image_with(native[[3, 1, 2, 0, 4]])
+    anchor.transform = AffineTransform()
+    matcher = MatchExposureSources.from_native_frame(shared, anchor, [0, 1])
+    assert matcher is not None
+    frame = image_with(native[[4, 1, 3, 2, 0]] + [19, -11])
+    matcher.run(frame)
+    frame.sources = native + [19, -11]
+    assert verified_positions(frame).all()
+    frame.sources = frame.sources.coords[[1, 0, 2, 3, 4]]
+    np.testing.assert_equal(verified_positions(frame), [False, False, True, True, True])
+
+    blended = image_with(np.vstack([native, native[1] + [1, 0]]))
+    blended.transform = AffineTransform()
+    assert MatchExposureSources.from_native_frame(shared, blended, [0, 1]) is None
+
+
+def test_report_names_rejected_frame_and_distinguishes_failed_checks(tmp_path):
+    import pandas as pd
+    from prose.position_validation import position_checks
+
+    coords = np.array([[15, 20], [50, 20], [30, 70], [90, 70], [95, 105]], float)
+    ref = image_with(coords)
+    im = image_with(coords[[0, 2, 3, 4]])
+    MatchExposureSources(ref).run(im)
+    centers = coords.copy()
+    centers[0] += [0, 7]
+    im.sources = centers
+    path = tmp_path / "positions.csv"
+    rp._write_position_checks(
+        path,
+        ["a.fits", "discarded.fits", "c.fits"],
+        [2],
+        position_checks(im)[None, ...],
+        0,
+        [1],
+        [9, 4, 3, 2, 1],
+    )
+    rows = pd.read_csv(path)
+    assert rows.frame.tolist() == ["c.fits", "c.fits"]
+    assert rows.source_id.tolist() == [9, 4]
+    assert rows.reason.tolist() == ["center_too_far", "missing_detection"]
+    assert rows.role.tolist() == ["target", "comparison"]
+    np.testing.assert_allclose(
+        rows.iloc[0][
+            [
+                "prediction_distance_px",
+                "center_distance_px",
+                "match_tolerance_px",
+                "center_tolerance_px",
+            ]
+        ].astype(float),
+        [0, 7, 3, 6],
+    )

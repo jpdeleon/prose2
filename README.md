@@ -272,12 +272,23 @@ account for rotation when both frames have usable solutions. With missing or
 flagged WCS, the check requires at least two stars supporting a unique field
 translation. Blends, missing detections and ambiguous identities can therefore
 reduce the number of retained exposures.
+When bands share a reference, the pipeline registers a native science exposure
+to the shared catalog and uses its measured detection positions for subsequent
+checks in that band. Source IDs stay in the shared catalog. If registration
+cannot establish the required identities, it retries other native exposures
+and falls back to checking against the original reference.
 
 After centroiding, each aperture center must still be closest to its identified
 detection and within one FWHM (three-pixel floor, using the narrower measured
 PSF). The log reports rejected exposures. Automatic selection can interpolate
 a comparison gap to estimate ensemble weights, but a selected star with an
 unverified position excludes that exposure from the final curve and datacube.
+The per-band `*_positions.csv` includes rejected and retained measurements for
+the target and selected comparisons. Each row gives the input filename, shared
+and local source IDs, the check result, and the prediction and aperture-center
+distances to the candidate detection with their respective pixel tolerances.
+An empty distance means the check could not identify a candidate or center.
+Frames discarded before photometry have no aperture measurement or row.
 
 `--gif` is off by default because GIF rendering is the slowest stage; throttle
 it with `--gif_stride`. `--test_run` reduces each band to `--test_run_frames`
