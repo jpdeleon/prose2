@@ -1,5 +1,27 @@
 # Changelog
 
+## [3.9.0](https://github.com/jpdeleon/prose2/compare/v3.8.0...v3.9.0) (2026-11-20)
+
+
+### Features
+
+* **benchmark:** compare each release with the previous one on real data ([aa980a6](https://github.com/jpdeleon/prose2/commit/aa980a6645c5042edfd101315fad62c30a934de3))
+* **benchmark:** compare each release with the previous one on real data ([eddc126](https://github.com/jpdeleon/prose2/commit/eddc126bae5514db0ba74681623f5e751de7b0f5)), closes [#74](https://github.com/jpdeleon/prose2/issues/74)
+* **rediff:** let the caller set the preview's vertical offset ([38312bc](https://github.com/jpdeleon/prose2/commit/38312bc08047e95eb89a8c4794439204479313cf))
+* **rediff:** let the caller set the preview's vertical offset ([bdea24b](https://github.com/jpdeleon/prose2/commit/bdea24b7a810540fc40cf84f7e5b8f5e606c8358))
+
+
+### Bug Fixes
+
+* parse legacy SIMBAD coordinates in target fallback ([f3ef6e2](https://github.com/jpdeleon/prose2/commit/f3ef6e2a49f7dab3330ccdffbfae4086795a8788))
+* require frame alignment to preserve photometry source IDs ([4e08fbf](https://github.com/jpdeleon/prose2/commit/4e08fbf09b183dfe01b10ddb75aba73a4176cfec))
+* require frame registration for photometry ([d8431da](https://github.com/jpdeleon/prose2/commit/d8431dad8672e8acbd756157e5d3436eb866b0e2))
+* retry automatic references with insufficient alignment sources ([55a30f6](https://github.com/jpdeleon/prose2/commit/55a30f64f5c93ea6ee5cd8bbff89f3f66637d368))
+* retry sparse automatic photometry references ([af656c2](https://github.com/jpdeleon/prose2/commit/af656c20928833dac52f23ea5b453129338bea51))
+* save numbered reference charts for unmatched targets ([9265222](https://github.com/jpdeleon/prose2/commit/9265222ebc14d9715f390975f1992ffe171a809c))
+* **scripts:** save numbered reference charts for unmatched targets ([1b330a0](https://github.com/jpdeleon/prose2/commit/1b330a029e5dc1941d62a427d6ecb08a58e8f474))
+* support legacy SIMBAD coordinates in target name resolution ([57f5239](https://github.com/jpdeleon/prose2/commit/57f52394a33448383f2a5a485fcd8dfeadca3581))
+
 ## [3.8.0](https://github.com/jpdeleon/prose2/compare/v3.7.0...v3.8.0) (2026-11-17)
 
 
