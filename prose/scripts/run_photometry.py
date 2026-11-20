@@ -2738,7 +2738,6 @@ def photometry_sequence(
                 # (#55 A10); "_" keeps it out of the CSV columns.
                 _peaks=_frame_peaks,
                 _position_checks=position_checks,
-                _frame_index=lambda im: im.i,
             ),
         ],
     )
@@ -3107,12 +3106,17 @@ def _native_position_matcher(files, ref, required, **detection):
 
 
 def _write_position_checks(
-    path, files, frame_indices, checks, target, comparisons, shared_ids
+    path, files, discards, checks, target, comparisons, shared_ids
 ):
     # Preserve diagnostics for discarded measurements, including all-failed bands.
     ids = list(dict.fromkeys([target, *comparisons]))
     selected = checks[:, ids]
-    frame_names = [Path(files[int(i)]).name for i in frame_indices]
+    # SequenceParallel collects surviving frames in input order. The data-block
+    # sequence resets image.i when it handles each returned image individually.
+    discarded = {int(i) for indices in discards.values() for i in indices}
+    frame_names = [Path(f).name for i, f in enumerate(files) if i not in discarded]
+    if len(frame_names) != len(checks):
+        raise ValueError("position diagnostics do not match the measured frame count")
     table = pd.DataFrame(
         {
             "frame": np.repeat(frame_names, len(ids)),
@@ -3489,7 +3493,7 @@ def run_band(
         _write_position_checks(
             position_report_path,
             files,
-            measurements["_frame_index"],
+            phot.discards,
             checks,
             target_index,
             comps,

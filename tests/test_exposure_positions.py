@@ -135,17 +135,17 @@ def test_report_names_rejected_frame_and_distinguishes_failed_checks(tmp_path):
     rp._write_position_checks(
         path,
         ["a.fits", "discarded.fits", "c.fits"],
-        [2],
-        position_checks(im)[None, ...],
+        {"alignment": ["1"]},
+        np.stack([position_checks(im), position_checks(im)]),
         0,
         [1],
         [9, 4, 3, 2, 1],
     )
     rows = pd.read_csv(path)
-    assert rows.frame.tolist() == ["c.fits", "c.fits"]
-    assert rows.source_id.tolist() == [9, 4]
-    assert rows.reason.tolist() == ["center_too_far", "missing_detection"]
-    assert rows.role.tolist() == ["target", "comparison"]
+    assert rows.frame.tolist() == ["a.fits", "a.fits", "c.fits", "c.fits"]
+    assert rows.source_id.tolist() == [9, 4, 9, 4]
+    assert rows.reason.tolist() == ["center_too_far", "missing_detection"] * 2
+    assert rows.role.tolist() == ["target", "comparison"] * 2
     np.testing.assert_allclose(
         rows.iloc[0][
             [
