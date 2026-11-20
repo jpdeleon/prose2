@@ -89,6 +89,8 @@ from rich.progress import track
 
 from prose import FITSImage, Fluxes, Image, Sequence, blocks, datacube
 from prose import __version__ as _PROSE_VERSION
+from prose.fluxes import diff as weighted_diff
+from prose.position_validation import MatchExposureSources, verified_positions
 from prose.blocks import catalogs
 from prose.core.block import Block
 from prose.core.source import PointSource, Sources
@@ -2681,6 +2683,7 @@ def photometry_sequence(
         blocks.Cutouts(shape=cutout_size),
         blocks.MedianEPSF(),
         blocks.Gaussian2D(ref),
+        MatchExposureSources(ref),
         blocks.ComputeTransformTwirl(ref, n=n_stars_align),
         blocks.AlignReferenceSources(ref, discard_tolerance=ALIGN_DISCARD_TOLERANCE),
         _centroid_block(centroid_method),
@@ -2729,6 +2732,7 @@ def photometry_sequence(
                 # every source's peak, for per-frame saturation screening
                 # (#55 A10); "_" keeps it out of the CSV columns.
                 _peaks=_frame_peaks,
+                _position_valid=verified_positions,
             ),
         ],
     )
@@ -3386,6 +3390,7 @@ def run_band(
     )
     saturated_cids = sorted(set(saturated_cids) | set(saturated_over_time))
 
+    measurements = getattr(phot.data[0], "values", None) or {}
     diff = differential_photometry(
         fluxes,
         target_index,
@@ -3394,6 +3399,7 @@ def run_band(
         nan_imputation_method=nan_imputation_method,
         keep_datacube=keep_datacube,
         precision=precision,
+        position_valid=measurements.get("_position_valid"),
     )
     if diff is None:
         logger.warning(f"[{band}] no valid frames after cleaning; skipping")
@@ -3578,6 +3584,7 @@ def differential_photometry(
     nan_imputation_method: str = "linear",
     keep_datacube: bool = False,
     precision: PrecisionOptions | None = None,
+    position_valid: np.ndarray | None = None,
 ):
     """Clean NaN comparison stars, sigma-clip, and run differential photometry.
 
@@ -3595,6 +3602,8 @@ def differential_photometry(
     keep_datacube : bool, optional
         Attach the flux cube differencing ran on, with every star intact, as
         ``diff.metadata["flux_datacube"]`` (see :mod:`prose.datacube`).
+    position_valid : np.ndarray, optional
+        Boolean exposure-by-source flags from the independent position check.
     precision : PrecisionOptions, optional
         Comparison ensemble, aperture criterion and per-star clipping (see
         :mod:`prose.precision`). ``None`` keeps prose's own behaviour.
@@ -3608,6 +3617,38 @@ def differential_photometry(
 
     fluxes = fluxes.copy()
     fluxes.target = target_index
+    if position_valid is not None:
+        positions = np.asarray(position_valid)
+        if positions.dtype != np.bool_ or positions.shape != (
+            len(fluxes.time),
+            fluxes.fluxes.shape[1],
+        ):
+            raise ValueError(
+                "position flags must be boolean with shape (frames, sources)"
+            )
+        fluxes.data["_position_valid"] = positions
+        required = [target_index]
+        if cids:
+            required.extend(
+                c
+                for c in cids
+                if 0 <= c < positions.shape[1] and c not in (avoid_cids or [])
+            )
+        verified = positions[:, required].all(axis=1)
+        if not verified.all():
+            logger.warning(
+                "discarding %d exposures with unverified positions for IDs %s",
+                int((~verified).sum()),
+                required,
+            )
+            if not verified.any():
+                return None
+            fluxes = fluxes.mask(verified)
+        invalid = ~fluxes.data["_position_valid"].T
+        if invalid.any():
+            fluxes.fluxes = np.where(invalid, np.nan, fluxes.fluxes)
+            if fluxes.errors is not None:
+                fluxes.errors = np.where(invalid, np.nan, fluxes.errors)
     # A missing target sample is not an observation. Drop its frame across
     # every aperture and covariate before any comparison interpolation.
     valid_target = np.all(np.isfinite(fluxes.fluxes[:, target_index, :]), axis=0)
@@ -3629,6 +3670,9 @@ def differential_photometry(
     pool = np.all(np.isfinite(fluxes.fluxes), axis=(0, 2)) & ~too_sparse
     pool[[a for a in (avoid_cids or []) if 0 <= a < n_sources]] = False
     pool[target_index] = False
+    if position_valid is not None and not pool.any():
+        logger.warning("no usable comparison stars after exposure position checks")
+        return None
     if precision.clip_sigma is not None:
         fluxes = _clip_comparison_outliers(fluxes, pool, precision)
     imputed = fluxes
@@ -3723,11 +3767,43 @@ def differential_photometry(
     else:
         diff = _precision_autodiff(fluxes, target_index, precision)
         _log_auto_comparisons(diff, keep, target_index)
+    if position_valid is not None:
+        # Selection can interpolate a short gap while estimating weights.
+        # Never publish that exposure with an unverified contributing star.
+        positions = fluxes.data["_position_valid"]
+        comparisons = diff.comparisons
+        if comparisons is None or not len(comparisons):
+            logger.warning("no verified comparison ensemble; skipping band")
+            return None
+        verified = positions[:, comparisons].all(axis=1)
+        if not verified.all():
+            logger.warning(
+                "discarding %d exposures with unverified selected comparison positions",
+                int((~verified).sum()),
+            )
+            if not verified.any():
+                return None
+            fluxes = fluxes.mask(verified)
+            diff = diff.mask(verified)
+            # Normalize using only the retained samples, preserving the selected
+            # aperture and ensemble. This also keeps datacube rediff consistent.
+            diff.fluxes, diff.errors = weighted_diff(
+                fluxes.fluxes, diff.weights, fluxes.errors
+            )
+        pool &= fluxes.data["_position_valid"].all(axis=0)
+        diff.data.pop("_position_valid")
     diff.metadata["target_raw_flux"] = np.nanmedian(
         fluxes.fluxes[:, target_index], axis=-1
     )
     if keep_datacube:
-        diff.metadata["flux_datacube"] = datacube.capture(imputed, fluxes, pool)
+        cube = datacube.capture(imputed, fluxes, pool)
+        if position_valid is not None:
+            invalid = ~fluxes.data["_position_valid"].T
+            if invalid.any():
+                cube["fluxes"] = np.where(invalid, np.nan, cube["fluxes"])
+                if cube["errors"] is not None:
+                    cube["errors"] = np.where(invalid, np.nan, cube["errors"])
+        diff.metadata["flux_datacube"] = cube
     return diff
 
 
