@@ -746,3 +746,13 @@ When target identification fails, each affected band writes
 with `--tID` and pin its selected frame with `--refid`. Shared-reference runs
 show the shared frame. Each run first removes failure charts left by earlier
 runs, and a successful retry removes that band's failure chart.
+
+Each completed reduction writes `band_outcomes.json` in its results directory,
+including runs where every band failed. Version 1 records the target, test-run
+flag, and one entry per requested band in request order. With automatic band
+discovery, the denominator uses filters found for the target. Each entry gives
+the outcome (`usable` or `failed`), zero-based target and comparison IDs in
+that band's reference catalog, identification method, zero-based aperture
+index, median aperture radius in pixels, and failure reason. Unknown values
+are JSON null. An explicitly requested band with no matching frames counts as
+failed. A partial reduction exits with code 3 and keeps its usable products.

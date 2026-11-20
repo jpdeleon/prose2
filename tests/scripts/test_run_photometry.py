@@ -881,6 +881,7 @@ def test_build_reference_target_index_override_bypasses_gaia(tmp_path, monkeypat
         rout=12.0,
         target_index_override=1,
     )
+    assert result["identification_method"] == "explicit_index"
     assert result["target_index"] == 1
     assert not called, "find_target_index should not have been called"
 
@@ -903,6 +904,7 @@ def test_build_reference_target_override_appends_target_at_next_index(
         target_index_override=2,
     )
 
+    assert result["identification_method"] == "force_added_coordinate"
     assert result["target_index"] == 2
     assert len(result["ref"].sources) == 3
 
@@ -947,6 +949,7 @@ def test_build_reference_target_index_override_None_still_calls_find(
         rout=12.0,
         target_index_override=None,
     )
+    assert result["identification_method"] == "wcs_match"
     assert result["target_index"] == 1
 
 
@@ -1712,6 +1715,7 @@ def test_build_reference_target_pixel_override_uses_nearest_source(
         target_pixel_override=np.array([9.7, 10.2]),
     )
 
+    assert result["identification_method"] == "other_band_pixel"
     assert result["target_index"] == 1
     assert not called
 
@@ -1765,6 +1769,7 @@ def test_build_reference_uses_pixel_fallback_when_own_wcs_match_fails(
         target_pixel_fallback=np.array([9.7, 10.2]),  # near source 1
     )
 
+    assert result["identification_method"] == "other_band_pixel"
     assert result["target_index"] == 1
     assert not called
 
@@ -1906,6 +1911,7 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
     reference = {
         "ref": FakeImage(),
         "target_index": 0,
+        "identification_method": "wcs_match",
         "aper_radii": np.array([3.0]),
         "rin": 8.0,
         "rout": 12.0,
@@ -1951,13 +1957,20 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
             def __init__(self):
                 self.time = np.arange(4, dtype=float)
                 self.target = target_index
+                self.comparisons = np.array([0])
+                self.aperture = 0
+                self.apertures = np.array([[2.0], [4.0]])
+                self.flux = np.ones(4)
+                self.error = np.full(4, 0.01)
 
         return FakeDiff()
 
     monkeypatch.setattr(rp, "photometry_sequence", mock_photometry_sequence)
     monkeypatch.setattr(rp, "differential_photometry", mock_diff)
 
+    outcome = {}
     result = rp.run_band(
+        outcome=outcome,
         band="gp",
         files=[str(_write_minimal_fits(tmp_path, "science.fits"))],
         ref_file=str(_write_minimal_fits(tmp_path, "reference.fits")),
@@ -1965,6 +1978,13 @@ def test_run_band_remaps_target_index_from_reference_band(tmp_path, monkeypatch)
         ref_source_positions=ref_band_positions,
     )
 
+    assert outcome == dict(
+        identification_method="shared_reference_wcs_match",
+        target_index=1,
+        comparison_stars=[0],
+        aperture_index=0,
+        aperture_radius_px=3.0,
+    )
     assert result is not None
     assert captured["sequence_target_index"] == 1
     assert captured["diff_target_index"] == 1
