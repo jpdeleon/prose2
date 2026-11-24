@@ -130,3 +130,28 @@ def test_gaia_field_query_is_cached_per_run(monkeypatch, tmp_path):
     # 1.5 frame diagonals across, centred on the target
     expected_fov = 1.5 * np.hypot(*SHAPE) * SCALE_DEG
     assert calls[0][1] == pytest.approx(expected_fov)
+
+
+@pytest.mark.parametrize("fallback", [None, (200, 200), (5, 5)])
+def test_rejected_header_cannot_identify_a_neighbour(tmp_path, monkeypatch, fallback):
+    from astropy.coordinates import SkyCoord
+    from astropy.io import fits
+    from tests.scripts.test_run_photometry import _patch_ref_seq, _write_minimal_fits
+
+    _patch_ref_seq(monkeypatch)
+    path = _write_minimal_fits(tmp_path)
+    # Source 1 coincides with the target only under the contradicted header.
+    target = WCS(fits.getheader(path)).pixel_to_world(10, 10)
+    gaia = SkyCoord([50, 51], [20, 21], unit="deg")
+    monkeypatch.setattr(rp, "_gaia_field_coords", lambda *args: gaia)
+    kwargs = dict(
+        aper_radii=np.array([3.0]), rin=8, rout=12, target_pixel_fallback=fallback
+    )
+    if fallback == (5, 5):
+        result = rp.build_reference(path, target, **kwargs)
+        assert result["identification_method"] == "other_band_pixel"
+        assert result["target_index"] == 0
+    else:
+        with pytest.raises(rp.TargetNotFoundError, match="header 0/2") as error:
+            rp.build_reference(path, target, **kwargs)
+        assert len(error.value.ref.sources) == 2

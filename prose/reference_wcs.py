@@ -303,7 +303,16 @@ def verify_reference_wcs(
             header_check,
             notes=("too few detections to check",),
         )
-    solved = solve_wcs(pixel_coords, gaia, center, pixel_scale_deg, shape)
+    try:
+        solved = solve_wcs(pixel_coords, gaia, center, pixel_scale_deg, shape)
+    except Exception as exc:  # noqa: BLE001 - preserve the completed header check
+        return WcsVerdict(
+            header_wcs,
+            "header",
+            False,
+            header_check,
+            notes=(f"Gaia refit failed: {exc}",),
+        )
     if solved is None:
         return WcsVerdict(
             header_wcs, "header", False, header_check, notes=("Gaia refit failed",)

@@ -2535,48 +2535,24 @@ def build_reference(
         require_alignment=require_alignment,
     ).run(ref, show_progress=False)
 
+    rejected_wcs = None
     if (
         target_index_override is None
         and target_pixel_override is None
         and target_coord is not None
     ):
-        # The WCS must describe this frame before the target is matched (#95).
-        check_reference_wcs(ref, target_coord, pixel_scale, Path(ref_file).name)
-
-    match_found = False
-    if (
-        target_index_override is None
-        and target_pixel_override is None
-        and target_coord is not None
-        and ref.wcs is not None
-    ):
-        coords = np.array([s.coords for s in ref.sources])
-        if len(coords) > 0:
-            try:
-                stars_radec = ref.wcs.pixel_to_world(*coords.T)
-            except Exception as e:
-                stars_radec = None
-                logger.warning(
-                    f"WCS-based source projection failed ({e}); "
-                    "skipping astrometric match"
-                )
-            if _skycoord_has_finite_data(stars_radec):
-                idx, d2d, _ = target_coord.match_to_catalog_sky(stars_radec)
-                if float(np.atleast_1d(d2d.arcsec)[0]) < 5.0:
-                    match_found = True
-            else:
-                logger.warning(
-                    f"WCS returned non-SkyCoord from pixel_to_world "
-                    f"(type={type(stars_radec).__name__}); skipping astrometric match"
-                )
-
-        if not match_found:
-            if target_pixel_fallback is not None:
-                logger.warning(
-                    "Target not found in detected sources (separation > 5 arcsec) "
-                    "and WCS-based localization failed; trying a pixel-position "
-                    "fallback from other bands. Use --tID to override."
-                )
+        verdict = check_reference_wcs(
+            ref, target_coord, pixel_scale, Path(ref_file).name
+        )
+        if (
+            verdict.header_check
+            and verdict.header_check.is_verifiable
+            and not verdict.trusted
+        ):
+            rejected_wcs = TargetNotFoundError(
+                f"target not located: {verdict.summary()}. Set the target index with --tID."
+            )
+            rejected_wcs.ref = ref
 
     method = "wcs_match"
     if target_index_override is not None:
@@ -2603,13 +2579,17 @@ def build_reference(
             f"({float(target_pixel_override[0]):.1f}, {float(target_pixel_override[1]):.1f}); "
             f"nearest source distance {target_pixel_distance:.1f} px"
         )
-    elif not match_found and target_pixel_fallback is not None:
+    elif target_pixel_fallback is not None and (
+        rejected_wcs or not _target_wcs_match_found(ref, target_coord)
+    ):
         try:
             target_index, fallback_distance = _nearest_source_index(
                 ref, target_pixel_fallback
             )
         except ValueError as exc:
             logger.warning(f"target pixel fallback also unusable ({exc})")
+            if rejected_wcs:
+                raise rejected_wcs from exc
             target_index = find_target_index(ref, target_coord)
         else:
             method = "other_band_pixel"
@@ -2620,6 +2600,8 @@ def build_reference(
                 f"{float(target_pixel_fallback[1]):.1f}); nearest source "
                 f"distance {fallback_distance:.1f} px"
             )
+    elif rejected_wcs:
+        raise rejected_wcs
     else:
         target_index = find_target_index(ref, target_coord)
     # Validate against the actual number of kept sources (which may be fewer

@@ -408,8 +408,10 @@ python -m prose.scripts.run_photometry ... \
   same check. A passing solution replaces the WCS for target matching, Gaia
   aperture sizing and plots. The log names the WCS used and its match counts
   (`reference WCS gaia_refit (trusted); Gaia matches: header 0/22, refit
-  22/22`). If Gaia is unreachable or the refit fails, the header WCS is used
-  as before.
+  22/22`). If Gaia is unreachable or there are too few detections to check,
+  target matching can still use the header. If Gaia contradicts the header
+  and the refit fails, the band needs an independent target pixel from
+  another band or an explicit `--tID`.
 - **Unlocated target.** If no detected source lies within 5 arcsec of the
   target coordinate, a self-referenced band is retried once after the other
   bands, using the target pixel position they found. If that also fails, or
