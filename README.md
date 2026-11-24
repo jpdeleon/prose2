@@ -147,6 +147,13 @@ while allowing normal telescope drift. The WCS-matched target and an explicit
 `--tID` are always retained; explicit target indices are remapped after the
 catalog is filtered.
 
+Under persistence filtering `--tID` is read in the numbered chart's labels,
+which are the anchor frame's detection indices and can skip the dropped
+detections. A label that was dropped is rejected. The value one past the last
+anchor detection (22 when the anchor detected 22 sources, whatever number
+were kept) adds the target at `--target_coord`; it can never select a
+detected star.
+
 The `*_ref_selection.txt` product records every candidate, registration
 success, the persistence threshold, and the number of retained sources. If
 fewer than two catalogs register successfully, persistence filtering is
