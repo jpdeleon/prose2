@@ -431,11 +431,14 @@ python -m prose.scripts.run_photometry ... \
   aperture sizing and plots. The log names the WCS used and its match counts
   (`reference WCS gaia_refit (trusted); Gaia matches: header 0/22, refit
   22/22`). If Gaia is unreachable or there are too few detections to check,
-  target matching can still use the header. If Gaia contradicts the header
+  target matching can still use a celestial header WCS if BANZAI has not flagged it as failed. If Gaia contradicts the header
   and the refit fails, the band needs an independent target pixel from
   another band or an explicit `--tID`.
 - **Unlocated target.** If no detected source lies within 5 arcsec of the
-  target coordinate, a self-referenced band is retried once after the other
+  target coordinate and a trusted WCS places it on the detector, the pipeline
+  adds a source at that pixel and records `added_at_trusted_wcs`. A Gaia-verified
+  solution or a solved BANZAI header qualifies, unless Gaia contradicts it.
+  Without a trusted on-chip position, a self-referenced band is retried after the other
   bands, using a target pixel they independently matched with their header
   WCS or a Gaia refit. A successful refit can supply that pixel even on a
   night where all reference headers lack WCS. If that also fails, or

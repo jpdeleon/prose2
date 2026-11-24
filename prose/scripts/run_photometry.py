@@ -2283,30 +2283,7 @@ def _target_pixel_or_center(
 
 
 def _append_target_source(
-    ref: FITSImage, target_coord: SkyCoord, cutout_size: int
-) -> tuple[FITSImage, int]:
-    """Append the coordinate-selected target and return its source index."""
-    tx, ty = _target_pixel_or_center(ref, target_coord)
-    target_index = len(ref.sources)
-    logger.info(
-        f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f}) "
-        f"as source {target_index}"
-    )
-    from prose.core.source import PointSource, Sources
-
-    new_source = PointSource(coords=np.array([tx, ty]), i=target_index)
-    ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
-
-    try:
-        ref = blocks.Cutouts(shape=cutout_size)(ref)
-        ref = blocks.CentroidQuadratic()(ref)
-    except Exception as e:
-        logger.warning(f"Failed to refine centroid of force-added target source: {e}")
-    return ref, target_index
-
-
-def _append_target_source(
-    ref: FITSImage, target_coord: SkyCoord, cutout_size: int, centroid_method: str
+    ref: FITSImage, target_coord: SkyCoord, cutout_size: int, centroid_method: str | None
 ) -> tuple[FITSImage, int]:
     """Append the coordinate-selected target and return its source index."""
     tx, ty = _target_pixel_or_center(ref, target_coord)
@@ -2319,10 +2296,23 @@ def _append_target_source(
     ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
     try:
         ref = blocks.Cutouts(shape=cutout_size)(ref)
-        ref = _centroid_block(centroid_method)(ref)
+        if centroid_method is not None:
+            ref = _centroid_block(centroid_method)(ref)
     except Exception as e:
         logger.warning(f"Failed to refine centroid of force-added target source: {e}")
     return ref, target_index
+
+
+def trusted_target_pixel(ref, target_coord, verdict):
+    """Return the on-chip target pixel when BANZAI or Gaia established the WCS."""
+    if verdict is None:
+        return None
+    if not verdict.trusted:
+        if banzai_wcs_solved(ref.header) is not True:
+            return None
+        if verdict.header_check and verdict.header_check.is_verifiable:
+            return None  # Gaia contradicted this header.
+    return _on_chip_target_pixel(ref.wcs, target_coord, ref.data.shape)
 
 
 def _skycoord_has_finite_data(coord) -> bool:
@@ -2588,6 +2578,7 @@ def build_reference(
     ).run(ref, show_progress=False)
 
     rejected_wcs = None
+    verdict = None
     if (
         target_index_override is None
         and target_pixel_override is None
@@ -2633,6 +2624,17 @@ def build_reference(
             f"({float(target_pixel_override[0]):.1f}, {float(target_pixel_override[1]):.1f}); "
             f"nearest source distance {target_pixel_distance:.1f} px"
         )
+    elif (
+        (pixel := trusted_target_pixel(ref, target_coord, verdict)) is not None
+        and not _target_wcs_match_found(ref, target_coord)
+    ):
+        method = "added_at_trusted_wcs"
+        logger.info(
+            f"undetected target added at trusted WCS pixel "
+            f"({pixel[0]:.2f}, {pixel[1]:.2f})"
+        )
+        # No target was detected here to centroid. Keep the sky position.
+        ref, target_index = _append_target_source(ref, target_coord, cutout_size, None)
     elif target_pixel_fallback is not None and (
         rejected_wcs or not _target_wcs_match_found(ref, target_coord)
     ):
@@ -7743,7 +7745,10 @@ def _reduce(args, records, t0, explicit_bands):
         band_results[band] = res
         # A WCS match uses the final reference solution, including a Gaia
         # refit. A position borrowed from another band is not a new measurement.
-        if self_reference and records[band]["identification_method"] == "wcs_match":
+        if self_reference and records[band]["identification_method"] in (
+            "wcs_match",
+            "added_at_trusted_wcs",
+        ):
             target_pos = np.asarray(
                 res["ref"].sources[int(res["target_index"])].coords, dtype=float
             )
