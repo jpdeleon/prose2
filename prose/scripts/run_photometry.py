@@ -106,6 +106,7 @@ from prose.precision import (
     precision_diff,
 )
 from prose.scripts.plot_labels import LabelPoint, place_labels
+from prose.reference_wcs import WcsVerdict, has_celestial_wcs, verify_reference_wcs
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
 from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
 from prose.target_epoch import (
@@ -1940,6 +1941,82 @@ def _aperture_radii_pix(fwhm: float, rin: float) -> np.ndarray:
     return radii
 
 
+#: Gaia field query radius for reference-WCS checks, in frame diagonals
+#: around the target; covers the frame when the target is within a quarter
+#: diagonal of its centre.
+REFERENCE_WCS_QUERY_RADIUS_DIAGONALS = 0.75
+REFERENCE_WCS_GAIA_LIMIT = 3000
+_gaia_field_cache: dict = {}
+
+
+def _gaia_field_coords(ref, target_coord: SkyCoord, pixel_scale: float):
+    """Gaia stars covering the frame around the target, brightest first, at
+    the observation epoch. Cached in memory and on disk; ``None`` when neither
+    Gaia nor a cache is available."""
+    height, width = ref.data.shape
+    fov_deg = (
+        2
+        * REFERENCE_WCS_QUERY_RADIUS_DIAGONALS
+        * math.hypot(height, width)
+        * float(pixel_scale)
+        / 3600.0
+    )
+    obs_time = _observation_time(ref)
+    epoch_key = f"ep{obs_time.jyear:.1f}" if obs_time is not None else "epNA"
+    cache_path = coord_cache_path(
+        "gaia_field", target_coord, f"fov{fov_deg * 60:.1f}", epoch_key
+    )
+    if cache_path in _gaia_field_cache:
+        return _gaia_field_cache[cache_path]
+    df = load_cached_df(cache_path)
+    if df is None:
+        try:
+            table = gaia_query(
+                target_coord, fov_deg, "*", limit=REFERENCE_WCS_GAIA_LIMIT
+            )
+            df = _gaia_df_at_epoch(table.to_pandas(), obs_time)
+        except Exception as exc:  # noqa: BLE001 - the check degrades to unverified
+            logger.warning(
+                f"Gaia field query for the reference WCS check failed ({exc})"
+            )
+            _gaia_field_cache[cache_path] = None
+            return None
+        save_cached_df(cache_path, df)
+    coords = SkyCoord(df.ra.to_numpy(), df.dec.to_numpy(), unit="deg")
+    _gaia_field_cache[cache_path] = coords
+    return coords
+
+
+def check_reference_wcs(ref, target_coord: SkyCoord, pixel_scale: float, label: str):
+    """Check the reference WCS against Gaia, refitting it when Gaia disagrees.
+
+    A refit replaces ``ref.wcs`` so target identification, Gaia aperture
+    sizing and plots all use it (#95). Never raises: any failure leaves the
+    header WCS in place, marked as not trusted.
+    """
+    header_wcs = ref.wcs if has_celestial_wcs(ref.wcs) else None
+    try:
+        coords = np.array([s.coords for s in ref.sources], dtype=float).reshape(-1, 2)
+        verdict = verify_reference_wcs(
+            header_wcs,
+            coords,
+            _gaia_field_coords(ref, target_coord, pixel_scale),
+            target_coord,
+            float(pixel_scale) / 3600.0,
+            tuple(int(v) for v in ref.data.shape),
+        )
+    except Exception as exc:  # noqa: BLE001 - the check must not fail the band
+        verdict = WcsVerdict(
+            header_wcs, "unverified", False, notes=(f"check failed: {exc}",)
+        )
+    (logger.info if verdict.trusted else logger.warning)(
+        f"{label}: {verdict.summary()}"
+    )
+    if verdict.source == "gaia_refit":
+        ref.wcs = verdict.wcs
+    return verdict
+
+
 # in-memory Gaia cache: query once per run, reuse across the run's bands
 _gaia_cache: dict = {}
 
@@ -2485,40 +2562,24 @@ def build_reference(
         require_alignment=require_alignment,
     ).run(ref, show_progress=False)
 
-    match_found = False
+    rejected_wcs = None
     if (
         target_index_override is None
         and target_pixel_override is None
         and target_coord is not None
-        and ref.wcs is not None
     ):
-        coords = np.array([s.coords for s in ref.sources])
-        if len(coords) > 0:
-            try:
-                stars_radec = ref.wcs.pixel_to_world(*coords.T)
-            except Exception as e:
-                stars_radec = None
-                logger.warning(
-                    f"WCS-based source projection failed ({e}); "
-                    "skipping astrometric match"
-                )
-            if _skycoord_has_finite_data(stars_radec):
-                idx, d2d, _ = target_coord.match_to_catalog_sky(stars_radec)
-                if float(np.atleast_1d(d2d.arcsec)[0]) < 5.0:
-                    match_found = True
-            else:
-                logger.warning(
-                    f"WCS returned non-SkyCoord from pixel_to_world "
-                    f"(type={type(stars_radec).__name__}); skipping astrometric match"
-                )
-
-        if not match_found:
-            if target_pixel_fallback is not None:
-                logger.warning(
-                    "Target not found in detected sources (separation > 5 arcsec) "
-                    "and WCS-based localization failed; trying a pixel-position "
-                    "fallback from other bands. Use --tID to override."
-                )
+        verdict = check_reference_wcs(
+            ref, target_coord, pixel_scale, Path(ref_file).name
+        )
+        if (
+            verdict.header_check
+            and verdict.header_check.is_verifiable
+            and not verdict.trusted
+        ):
+            rejected_wcs = TargetNotFoundError(
+                f"target not located: {verdict.summary()}. Set the target index with --tID."
+            )
+            rejected_wcs.ref = ref
 
     method = "wcs_match"
     if target_index_override == "append":
@@ -2547,13 +2608,17 @@ def build_reference(
             f"({float(target_pixel_override[0]):.1f}, {float(target_pixel_override[1]):.1f}); "
             f"nearest source distance {target_pixel_distance:.1f} px"
         )
-    elif not match_found and target_pixel_fallback is not None:
+    elif target_pixel_fallback is not None and (
+        rejected_wcs or not _target_wcs_match_found(ref, target_coord)
+    ):
         try:
             target_index, fallback_distance = _nearest_source_index(
                 ref, target_pixel_fallback
             )
         except ValueError as exc:
             logger.warning(f"target pixel fallback also unusable ({exc})")
+            if rejected_wcs:
+                raise rejected_wcs from exc
             target_index = find_target_index(ref, target_coord)
         else:
             method = "other_band_pixel"
@@ -2564,6 +2629,8 @@ def build_reference(
                 f"{float(target_pixel_fallback[1]):.1f}); nearest source "
                 f"distance {fallback_distance:.1f} px"
             )
+    elif rejected_wcs:
+        raise rejected_wcs
     else:
         target_index = find_target_index(ref, target_coord)
     # Validate against the actual number of kept sources (which may be fewer
@@ -7625,7 +7692,9 @@ def _reduce(args, records, t0, explicit_bands):
             continue
         unmatched_paths[band].unlink(missing_ok=True)
         band_results[band] = res
-        if args.tID is None and self_reference and ref_wcs_ok_by_band.get(band, False):
+        # A WCS match uses the final reference solution, including a Gaia
+        # refit. A position borrowed from another band is not a new measurement.
+        if self_reference and records[band]["identification_method"] == "wcs_match":
             target_pos = np.asarray(
                 res["ref"].sources[int(res["target_index"])].coords, dtype=float
             )

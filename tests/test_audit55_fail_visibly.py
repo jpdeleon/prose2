@@ -147,8 +147,9 @@ def _run_two_band_main(tmp_path, monkeypatch, run_band):
     return [*argv, "--plots", "none"]
 
 
+@pytest.mark.parametrize("header_has_wcs", [True, False], ids=["header", "gaia_refit"])
 def test_band_missing_target_is_retried_with_later_band_position(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, header_has_wcs
 ):
     calls = []
 
@@ -156,9 +157,13 @@ def test_band_missing_target_is_retried_with_later_band_position(
         calls.append((band, kw.get("target_pixel_fallback")))
         if band == "gp" and kw.get("target_pixel_fallback") is None:
             rp.find_target_index(_Ref(), None)
+        kw["outcome"]["identification_method"] = (
+            "wcs_match" if band == "ip" else "other_band_pixel"
+        )
         return {"ref": _Ref(), "target_index": 0}
 
     argv = _run_two_band_main(tmp_path, monkeypatch, run_band)
+    monkeypatch.setattr(rp, "_reference_file_has_usable_wcs", lambda *a: header_has_wcs)
     with caplog.at_level(logging.INFO, logger="prose_run_photometry"):
         with pytest.raises(_Stop):  # reached the export step: no band failed
             rp.main(argv)

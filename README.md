@@ -405,9 +405,28 @@ python -m prose.scripts.run_photometry ... \
   (`tID=g:5 r:7`) when self-referenced bands number their sources differently.
 - **Avoided stars.** With `--ref_band`, IDs passed to `--avoid_cids` are
   excluded from comparison-star selection and omitted from each `…_ref.png`.
+- **Reference WCS check.** Before matching the target, the reference frame's
+  WCS is checked against Gaia: the brightest Gaia stars it projects into the
+  frame must land within 3 px of at least half of the detected sources. This
+  catches a WCS copied from another frame of a drifting night (MuSCAT2 writes
+  one astrometry.net solution into every frame), BANZAI's approximate
+  `WCSERR != 0` solutions, and frames with no WCS at all. When the check
+  fails, the frame is solved against Gaia from the detections alone: every
+  pair of bright detections is matched with every Gaia pair of the same
+  length (the pixel scale is known), in both parities, and the solution must
+  match at least four stars and pass the same check. Equally supported
+  fits that disagree by more than 6 px at any frame corner are ambiguous. A passing solution replaces the WCS for target matching, Gaia
+  aperture sizing and plots. The log names the WCS used and its match counts
+  (`reference WCS gaia_refit (trusted); Gaia matches: header 0/22, refit
+  22/22`). If Gaia is unreachable or there are too few detections to check,
+  target matching can still use the header. If Gaia contradicts the header
+  and the refit fails, the band needs an independent target pixel from
+  another band or an explicit `--tID`.
 - **Unlocated target.** If no detected source lies within 5 arcsec of the
   target coordinate, a self-referenced band is retried once after the other
-  bands, using the target pixel position they found. If that also fails, or
+  bands, using a target pixel they independently matched with their header
+  WCS or a Gaia refit. A successful refit can supply that pixel even on a
+  night where all reference headers lack WCS. If that also fails, or
   no band located the target, the band fails with an error naming the nearest
   source and its separation. The pipeline no longer reduces the brightest
   source in its place. Pass `--tID` to choose the target.

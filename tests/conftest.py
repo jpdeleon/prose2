@@ -15,7 +15,23 @@ def _no_gaia_target_resolution(request, monkeypatch):
     monkeypatch.setattr(rp, "resolve_target_at_epoch", lambda coord, _time: coord)
 
 
+@pytest.fixture(autouse=True)
+def _no_gaia_reference_wcs_check(request, monkeypatch):
+    """Keep the reference WCS check offline (#95): without a Gaia field the
+    header WCS is used unverified, as before the check existed. Tests that
+    supply a field patch ``_gaia_field_coords`` themselves; tests of the real
+    query opt out with ``@pytest.mark.gaia_field``."""
+    if request.node.get_closest_marker("gaia_field"):
+        return
+    from prose.scripts import run_photometry as rp
+
+    monkeypatch.setattr(rp, "_gaia_field_coords", lambda *args, **kwargs: None)
+
+
 def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "gaia_field: run the real reference-WCS Gaia field query"
+    )
     config.addinivalue_line(
         "markers", "gaia_resolution: run the real resolve_target_at_epoch"
     )
