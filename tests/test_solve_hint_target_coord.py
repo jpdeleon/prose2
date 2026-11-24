@@ -78,6 +78,22 @@ class TestSolveHints:
         assert source == "header"
         assert hints["center_dec"] == pytest.approx(28.2867, abs=1e-3)
 
+    @pytest.mark.parametrize(("ra", "dec"), [("50", "-999"), ("nan", "-42.5")])
+    def test_invalid_header_position_preserves_scale_and_target(
+        self, tmp_path, ra, dec
+    ):
+        fp = _fits(tmp_path / "invalid.fits", ra, dec)
+        scale, source = swa.solve_hints(fp)
+        assert source is None
+        assert {"center_ra", "center_dec", "radius"}.isdisjoint(scale)
+        assert scale["scale_est"] == pytest.approx(0.44)
+
+        hints, source = swa.solve_hints(fp, TARGET)
+        assert source == "target_coord"
+        assert hints == dict(
+            scale, center_ra=TARGET[0], center_dec=TARGET[1], radius=swa.HINT_RADIUS_DEG
+        )
+
     def test_no_position_hint_at_all(self, tmp_path):
         hints, source = swa.solve_hints(_fits(tmp_path / "a.fits"))
         assert source is None

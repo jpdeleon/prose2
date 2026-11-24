@@ -194,11 +194,9 @@ def _header_hint(fits_path: Path) -> dict:
     if ra is not None and ra <= 24 and ":" in str(ra_raw):
         ra = ra * 15.0
 
-    if ra is not None:
-        hints["center_ra"] = float(ra)
-    if dec is not None:
-        hints["center_dec"] = float(dec)
-    if ra is not None and dec is not None:
+    if ra is not None and dec is not None and 0 <= ra <= 360 and -90 <= dec <= 90:
+        hints["center_ra"] = ra
+        hints["center_dec"] = dec
         hints["radius"] = HINT_RADIUS_DEG
 
     instrume = str(hdr.get("INSTRUME", "")).lower()
