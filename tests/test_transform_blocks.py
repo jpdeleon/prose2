@@ -7,7 +7,9 @@ from prose.core import Sources
 
 
 @pytest.mark.parametrize("use_wcs", [True, False])
-def test_three_star_alignment_preserves_reference_order_or_discards(use_wcs):
+def test_three_star_alignment_preserves_reference_order(use_wcs):
+    """Three stars cannot form a twirl quad: celestial WCS aligns the frame when
+    both images have it, and a verified translation aligns it otherwise."""
     from astropy.wcs import WCS
 
     coords = np.array([[12.0, 13.0], [24.0, 28.0], [32.0, 16.0]])
@@ -24,9 +26,8 @@ def test_three_star_alignment_preserves_reference_order_or_discards(use_wcs):
 
     blocks.ComputeTransformTwirl(ref, n=3).run(frame)
     blocks.AlignReferenceSources(ref).run(frame)
-    assert frame.discard == (not use_wcs)
-    if use_wcs:
-        np.testing.assert_allclose(frame.sources.coords, coords + offset, atol=1e-6)
+    assert not frame.discard
+    np.testing.assert_allclose(frame.sources.coords, coords + offset, atol=1e-6)
 
 
 def test_transform_twirl_block(n=30):

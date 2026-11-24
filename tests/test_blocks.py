@@ -416,15 +416,27 @@ def test_VideoPlot(tmp_path):
 
 
 def test_ComputeTransformTwirl_graceful_failure():
+    """A raising twirl solve is caught; the frame then falls back to the
+    translation check, which aligns an identical frame and discards one whose
+    stars do not agree on any shift."""
     from prose.blocks.geometry import ComputeTransformTwirl
+    from prose.core import Sources
 
     im1 = image.copy()
-    im2 = image.copy()
     block = ComputeTransformTwirl(im1)
 
     def mock_solve(*args, **kwargs):
         raise np.linalg.LinAlgError("Singular matrix")
 
     block.solve = mock_solve
-    block.run(im2)
-    assert im2.discard is True
+
+    identical = image.copy()
+    block.run(identical)
+    assert not identical.discard
+    np.testing.assert_allclose(identical.transform.translation, [0.0, 0.0])
+
+    scrambled = image.copy()
+    rng = np.random.default_rng(0)
+    scrambled.sources = Sources(rng.uniform(0, 1, (len(image.sources), 2)) * 1e5)
+    block.run(scrambled)
+    assert scrambled.discard is True
