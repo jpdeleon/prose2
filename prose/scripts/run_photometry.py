@@ -7651,7 +7651,9 @@ def _reduce(args, records, t0, explicit_bands):
             continue
         unmatched_paths[band].unlink(missing_ok=True)
         band_results[band] = res
-        if args.tID is None and self_reference and ref_wcs_ok_by_band.get(band, False):
+        # A WCS match uses the final reference solution, including a Gaia
+        # refit. A position borrowed from another band is not a new measurement.
+        if self_reference and records[band]["identification_method"] == "wcs_match":
             target_pos = np.asarray(
                 res["ref"].sources[int(res["target_index"])].coords, dtype=float
             )

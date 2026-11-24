@@ -414,7 +414,9 @@ python -m prose.scripts.run_photometry ... \
   another band or an explicit `--tID`.
 - **Unlocated target.** If no detected source lies within 5 arcsec of the
   target coordinate, a self-referenced band is retried once after the other
-  bands, using the target pixel position they found. If that also fails, or
+  bands, using a target pixel they independently matched with their header
+  WCS or a Gaia refit. A successful refit can supply that pixel even on a
+  night where all reference headers lack WCS. If that also fails, or
   no band located the target, the band fails with an error naming the nearest
   source and its separation. The pipeline no longer reduces the brightest
   source in its place. Pass `--tID` to choose the target.
