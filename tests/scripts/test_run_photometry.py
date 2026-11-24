@@ -886,8 +886,9 @@ def test_build_reference_target_index_override_bypasses_gaia(tmp_path, monkeypat
     assert not called, "find_target_index should not have been called"
 
 
+@pytest.mark.parametrize("override", [2, "append"])
 def test_build_reference_target_override_appends_target_at_next_index(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, override
 ):
     """A manual ID immediately after detected sources denotes a forced target."""
     _patch_ref_seq(monkeypatch)
@@ -901,7 +902,7 @@ def test_build_reference_target_override_appends_target_at_next_index(
         aper_radii=np.array([3.0, 4.0, 5.0]),
         rin=8.0,
         rout=12.0,
-        target_index_override=2,
+        target_index_override=override,
     )
 
     assert result["identification_method"] == "force_added_coordinate"
@@ -3423,22 +3424,29 @@ def test_persistent_reference_sources_rejects_transient_with_telescope_drift():
     assert diagnostics["kept"] == 5
 
 
-def test_persistent_reference_sources_protects_explicit_target_index():
+def test_quality_selection_restores_and_maps_explicit_target_label(monkeypatch):
     stars = np.array(
         [[10.0, 10.0], [30.0, 12.0], [15.0, 35.0], [42.0, 38.0], [55.0, 20.0]]
     )
     tier2 = [
         rp.FramePixelQuality(
             path=Path("anchor.fits"),
-            source_coords=np.vstack([stars, [100.0, 100.0]]),
+            source_coords=np.vstack([stars, [85.0, 80.0], [100.0, 100.0]]),
         ),
         rp.FramePixelQuality(path=Path("f1.fits"), source_coords=stars + [2.0, 1.0]),
         rp.FramePixelQuality(path=Path("f2.fits"), source_coords=stars + [-1.0, 2.0]),
     ]
 
-    keep, _ = rp.persistent_reference_sources(tier2, 0, protected_source_index=5)
+    monkeypatch.setattr(rp, "pixel_validate_candidates", lambda *args: tier2)
+    files = [candidate.path for candidate in tier2]
+    options = dict(instrument="muscat2", top_k=3, target_coord=None)
+    _, original = rp.select_reference_frame(files, **options)
+    assert original["persistent_source_indices"] == [0, 1, 2, 3, 4]
 
-    assert keep == [0, 1, 2, 3, 4, 5]
+    _, rerun = rp.select_reference_frame(files, protected_source_index=6, **options)
+    kept = rerun["persistent_source_indices"]
+    assert kept == [0, 1, 2, 3, 4, 6]
+    assert rp.map_tid_to_kept(6, kept, rerun["persistence"]["detected"], False) == 5
 
 
 def test_select_source_indices_filters_and_renumbers_sources():

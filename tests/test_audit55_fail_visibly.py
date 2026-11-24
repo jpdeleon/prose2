@@ -356,3 +356,50 @@ def test_requested_band_outcomes(tmp_path, monkeypatch, n, code):
         assert records[band]["outcome"] == "failed"
         assert records[band]["failure_reason"]
         assert records[band]["target_index"] is None
+
+
+def test_shared_quality_reference_preserves_force_add_on_retry(tmp_path, monkeypatch):
+    for band in ("gp", "rp"):
+        for number in (1, 2):
+            _write_sinistro_frame(
+                tmp_path / f"{band}-20250416-{number:04}-e91.fits", band
+            )
+
+    def select(files, **kwargs):
+        return 0, {
+            "method": "quality",
+            "chosen_path": files[0],
+            "persistent_source_indices": [1, 3],
+            "persistence": {"enabled": True, "kept": 2, "detected": 4},
+        }
+
+    attempts = []
+
+    def reduce_band(band, files, ref_file, *args, target_index_override, **kwargs):
+        number = rp._fits_file_number(ref_file)
+        attempts.append((band, number, target_index_override))
+        if number == 1:
+            raise rp.SparseReferenceError("reference has 2 sources")
+
+    monkeypatch.setattr(rp, "select_reference_frame", select)
+    monkeypatch.setattr(rp, "run_band", reduce_band)
+    monkeypatch.setattr(rp, "resolve_target_at_epoch", lambda coord, _: coord)
+    rp.main(
+        _argv(tmp_path)
+        + [
+            "--bands",
+            "gp",
+            "rp",
+            "--ref_band",
+            "gp",
+            "--ref_select",
+            "quality",
+            "--tID",
+            "4",
+        ]
+    )
+    assert attempts == [
+        ("gp", 1, "append"),
+        ("gp", 2, "append"),
+        ("rp", 2, "append"),
+    ]

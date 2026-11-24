@@ -70,7 +70,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterable
+from typing import Iterable, Literal
 
 import matplotlib
 
@@ -1591,6 +1591,42 @@ def persistent_reference_sources(
     }
 
 
+def map_tid_to_kept(
+    tid: int,
+    kept_indices: list[int],
+    n_detected: int,
+    has_target_coord: bool,
+) -> int | Literal["append"]:
+    """Translate a ``--tID`` read from the numbered chart into a kept index.
+
+    The chart labels each kept source with its anchor index, so labels can
+    skip the detections that persistence filtering dropped. Labels map to
+    their position in *kept_indices*. The label one past the last anchor
+    detection (*n_detected*) asks to add the target at ``--target_coord``
+    and returns ``"append"`` so a retry can resolve the slot on its own catalog.
+    """
+    if tid in kept_indices:
+        return kept_indices.index(tid)
+    add_hint = (
+        f", or --tID {n_detected} to add the target at --target_coord"
+        if has_target_coord
+        else ""
+    )
+    if tid == n_detected:
+        if has_target_coord:
+            return "append"
+        raise ValueError(f"--tID {tid} adds the target, which needs --target_coord")
+    if 0 <= tid < n_detected:
+        raise ValueError(
+            f"--tID {tid} was dropped by reference persistence filtering and "
+            f"is not on the numbered chart; pick a labelled source{add_hint}"
+        )
+    raise ValueError(
+        f"--tID {tid} out of range: the numbered chart labels sources "
+        f"0..{n_detected - 1}{add_hint}"
+    )
+
+
 def _tier2_sort_key(fpq: FramePixelQuality, median_n_sources: float) -> tuple:
     if fpq.error is not None:
         return (2, 0, 0, float("inf"))
@@ -1646,14 +1682,6 @@ def select_reference_frame(
         protected_source_index=protected_source_index,
     )
 
-    protected_new_index = protected_source_index
-    if (
-        source_indices is not None
-        and protected_source_index is not None
-        and protected_source_index in source_indices
-    ):
-        protected_new_index = source_indices.index(protected_source_index)
-
     diagnostics = {
         "method": "quality",
         "instrument": instrument,
@@ -1664,7 +1692,6 @@ def select_reference_frame(
         "chosen_path": Path(band_files[refid]),
         "persistent_source_indices": source_indices,
         "persistence": persistence,
-        "protected_source_new_index": protected_new_index,
     }
     return refid, diagnostics
 
@@ -2372,7 +2399,7 @@ def build_reference(
     max_num_stars: int = MAX_NUM_STARS,
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
-    target_index_override: int | None = None,
+    target_index_override: int | Literal["append"] | None = None,
     target_pixel_override: np.ndarray | tuple[float, float] | None = None,
     target_pixel_fallback: np.ndarray | tuple[float, float] | None = None,
     min_area: int = MIN_STAR_AREA,
@@ -2494,6 +2521,8 @@ def build_reference(
                 )
 
     method = "wcs_match"
+    if target_index_override == "append":
+        target_index_override = len(ref.sources)
     if target_index_override is not None:
         if target_index_override == len(ref.sources) and target_coord is not None:
             method = (
@@ -3103,7 +3132,7 @@ def run_band(
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
     n_stars_align: int | None = None,
-    target_index_override: int | None = None,
+    target_index_override: int | Literal["append"] | None = None,
     target_pixel_override: np.ndarray | tuple[float, float] | None = None,
     target_pixel_fallback: np.ndarray | tuple[float, float] | None = None,
     cids: list[int] | None = None,
@@ -7457,11 +7486,20 @@ def _reduce(args, records, t0, explicit_bands):
         band_files = sciences[band]
         selection_diag = ref_selection_diagnostics.get(band, {})
         reference_source_indices = selection_diag.get("persistent_source_indices")
-        target_index_override = args.tID
+        target_index_override = selection_diag.get("target_index_override", args.tID)
         if args.tID is not None and reference_source_indices is not None:
-            target_index_override = selection_diag.get(
-                "protected_source_new_index", args.tID
-            )
+            # --tID is read in the numbered chart's anchor labels (#93).
+            try:
+                target_index_override = map_tid_to_kept(
+                    args.tID,
+                    reference_source_indices,
+                    selection_diag["persistence"]["detected"],
+                    has_target_coord=target_coord is not None,
+                )
+            except ValueError as exc:
+                logger.error(f"[{band}] {exc}")
+                failures[band] = str(exc)
+                continue
         target_pixel_override = _target_pixel_override_for_band(
             args.tID,
             self_reference,
@@ -7540,6 +7578,9 @@ def _reduce(args, records, t0, explicit_bands):
                 ref_selection_diagnostics[affected] = {
                     "method": "alternate after sparse reference",
                     "chosen_path": alternate,
+                    "target_index_override": (
+                        "append" if target_index_override == "append" else args.tID
+                    ),
                 }
             if band in ref_wcs_ok_by_band:
                 ref_wcs_ok_by_band[band] = _reference_file_has_usable_wcs(
