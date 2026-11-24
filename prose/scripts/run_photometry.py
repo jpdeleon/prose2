@@ -7527,7 +7527,7 @@ def _reduce(args, records, t0, explicit_bands):
                 )
         refid = min(refid, len(ref_files) - 1)
         selected_ref_files[band] = ref_files[refid]
-        ref_selection_diagnostics[band] = diag
+        ref_selection_diagnostics[band] = {**diag, "chosen_path": ref_files[refid]}
 
     if self_reference and args.refid is not None and args.ref_select != "time":
         try:
