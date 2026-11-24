@@ -34,6 +34,35 @@ TRANSLATION_TOLERANCE = 2.0
 MAX_TRANSLATION_CANDIDATES = 50
 
 
+def _matched_pairs(points: np.ndarray, tree: cKDTree, tolerance: float) -> frozenset:
+    """``(point index, tree index)`` pairs within *tolerance*, one per tree point."""
+    dist, idx = tree.query(points, distance_upper_bound=tolerance)
+    matched = np.flatnonzero(np.isfinite(dist))
+    _, first = np.unique(idx[matched], return_index=True)
+    return frozenset(zip(matched[first].tolist(), idx[matched][first].tolist()))
+
+
+def transform_agrees_with_stars(
+    transform: AffineTransform,
+    ref_coords: np.ndarray,
+    image_coords: np.ndarray,
+    tolerance: float = TRANSLATION_TOLERANCE,
+    min_matches: int = MIN_TRANSLATION_MATCHES,
+) -> bool:
+    """Whether *transform* (frame to reference pixels) puts the frame's stars on
+    reference stars.
+
+    A frame with fewer than ``min_matches`` detections, or a reference with fewer
+    stars, cannot contradict the transform, so it is accepted unchecked.
+    """
+    ref = np.asarray(ref_coords, dtype=float).reshape(-1, 2)
+    img = np.asarray(image_coords, dtype=float).reshape(-1, 2)
+    if len(ref) < min_matches or len(img) < min_matches:
+        return True
+    moved = transform(img)
+    return len(_matched_pairs(moved, cKDTree(ref), tolerance)) >= min_matches
+
+
 def match_translation(
     ref_coords: np.ndarray,
     image_coords: np.ndarray,
@@ -60,10 +89,7 @@ def match_translation(
     tree = cKDTree(img)
     best_count, best_pairs = 0, set()
     for offset in (img[None, :, :] - ref[:, None, :]).reshape(-1, 2):
-        dist, idx = tree.query(ref + offset, distance_upper_bound=tolerance)
-        matched = np.flatnonzero(np.isfinite(dist))
-        _, first = np.unique(idx[matched], return_index=True)
-        pairs = frozenset(zip(matched[first].tolist(), idx[matched][first].tolist()))
+        pairs = _matched_pairs(ref + offset, tree, tolerance)
         if len(pairs) > best_count:
             best_count, best_pairs = len(pairs), {pairs}
         elif len(pairs) == best_count:
@@ -243,7 +269,10 @@ class ComputeTransformTwirl(Block):
     Three strategies are tried in order, and the frame is discarded if all fail:
 
     1. twirl quad matching (needs four reference stars and five detections);
-    2. the celestial WCS of both images;
+    2. the celestial WCS of both images, unless the detected stars contradict
+       it (:func:`transform_agrees_with_stars`). MuSCAT/MuSCAT2 calibration
+       copies one WCS into every frame of a band, which is stale once the
+       pointing drifts;
     3. a translation that at least two stars agree on (:func:`match_translation`),
        for sparse fields without celestial WCS. It cannot express rotation or
        scale, which is adequate for equatorially tracked frames of one night.
@@ -331,10 +360,17 @@ class ComputeTransformTwirl(Block):
             src_x, src_y = ref_wcs.world_to_pixel(sky_coords)
             src_pts = np.column_stack([src_x, src_y])
             t = AffineTransform()
-            return t if t.estimate(dst_pts, src_pts) else None
+            if not t.estimate(dst_pts, src_pts):
+                return None
         except Exception:
             logger.debug("WCS transform failed", exc_info=True)
             return None
+        # MuSCAT/MuSCAT2 calibration writes one WCS into every frame of a band,
+        # so a WCS can be stale for a drifted frame. Use it only if the stars agree.
+        if not transform_agrees_with_stars(t, self.ref, image.sources.coords):
+            logger.debug("WCS transform contradicts the detected stars; ignoring it")
+            return None
+        return t
 
     def _translation_transform(self, image) -> Optional[AffineTransform]:
         shift = match_translation(self.ref, image.sources.coords)

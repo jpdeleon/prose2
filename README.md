@@ -262,7 +262,12 @@ first of these that succeeds:
 
 1. Twirl quad matching, which needs at least four alignment stars and five
    detections in the frame.
-2. Celestial WCS, when both the reference and the frame have one.
+2. Celestial WCS, when both the reference and the frame have one and the
+   frame's stars agree with it (at least two within 2 px of reference stars).
+   MuSCAT and MuSCAT2 calibration solves one WCS per band and writes it into
+   every frame, so it goes stale as the pointing drifts. Such a WCS is
+   rejected and the frame goes to the next step. A frame with fewer than two
+   detections cannot be checked and keeps its WCS.
 3. A translation-only shift that at least two stars agree on, for sparse
    fields without WCS (for example MuSCAT2 frames that astrometry could not
    solve). A shift is rejected when only one star matches or when two

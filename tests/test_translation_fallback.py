@@ -148,15 +148,18 @@ def test_failing_twirl_and_wcs_fall_through_to_translation(monkeypatch):
 def test_celestial_wcs_takes_precedence_over_translation():
     from astropy.wcs import WCS
 
-    ref = _image(REF_COORDS)
-    frame = _image((REF_COORDS + OFFSET)[::-1])
     wcs = WCS(naxis=2)
     wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
     wcs.wcs.cdelt = [-0.001, 0.001]
-    ref.wcs = wcs
-    frame.wcs = wcs.deepcopy()
+    frame_wcs = wcs.deepcopy()
     # The WCS says the frame is rotated, which a pure translation cannot express.
-    frame.wcs.wcs.pc = [[np.cos(0.01), -np.sin(0.01)], [np.sin(0.01), np.cos(0.01)]]
+    frame_wcs.wcs.pc = [[np.cos(0.01), -np.sin(0.01)], [np.sin(0.01), np.cos(0.01)]]
+    # Place the frame's stars where its WCS says they are.
+    sky = wcs.pixel_to_world(REF_COORDS[:, 0], REF_COORDS[:, 1])
+    ref = _image(REF_COORDS)
+    frame = _image(np.column_stack(frame_wcs.world_to_pixel(sky))[::-1])
+    ref.wcs = wcs
+    frame.wcs = frame_wcs
 
     blocks.ComputeTransformTwirl(ref, n=3).run(frame)
 
