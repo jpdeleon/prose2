@@ -23,6 +23,57 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+# Translation-only fallback (sparse fields without celestial WCS). A shift is
+# accepted only when this many reference stars land on frame stars: two points
+# over-determine a 2-parameter translation, so the match checks itself.
+MIN_TRANSLATION_MATCHES = 2
+# Same pixel tolerance as the twirl solve and its refinement.
+TRANSLATION_TOLERANCE = 2.0
+# Brightest frame detections tried as offset candidates; bounds the cost on
+# rich frames, where this fallback only runs after twirl has failed.
+MAX_TRANSLATION_CANDIDATES = 50
+
+
+def match_translation(
+    ref_coords: np.ndarray,
+    image_coords: np.ndarray,
+    tolerance: float = TRANSLATION_TOLERANCE,
+    min_matches: int = MIN_TRANSLATION_MATCHES,
+) -> Optional[np.ndarray]:
+    """Shift mapping frame pixels onto reference pixels, or ``None``.
+
+    Every reference/frame pair proposes an offset; an offset scores the number of
+    reference stars that then land within ``tolerance`` of a distinct frame star.
+    The best-scoring set of matched pairs must have at least ``min_matches``
+    stars and be unique: if two different sets tie, the shift is ambiguous and
+    no shift is returned. The result is the mean offset of the matched pairs.
+
+    Unlike :meth:`ComputeTransformXYShift.xyshift`, this never returns a
+    zero shift for frames that do not match.
+    """
+    ref = np.asarray(ref_coords, dtype=float).reshape(-1, 2)
+    img = np.asarray(image_coords, dtype=float).reshape(-1, 2)
+    img = img[:MAX_TRANSLATION_CANDIDATES]
+    if len(ref) < min_matches or len(img) < min_matches:
+        return None
+
+    tree = cKDTree(img)
+    best_count, best_pairs = 0, set()
+    for offset in (img[None, :, :] - ref[:, None, :]).reshape(-1, 2):
+        dist, idx = tree.query(ref + offset, distance_upper_bound=tolerance)
+        matched = np.flatnonzero(np.isfinite(dist))
+        _, first = np.unique(idx[matched], return_index=True)
+        pairs = frozenset(zip(matched[first].tolist(), idx[matched][first].tolist()))
+        if len(pairs) > best_count:
+            best_count, best_pairs = len(pairs), {pairs}
+        elif len(pairs) == best_count:
+            best_pairs.add(pairs)
+
+    if best_count < min_matches or len(best_pairs) != 1:
+        return None
+    ref_idx, img_idx = map(list, zip(*sorted(next(iter(best_pairs)))))
+    return (ref[ref_idx] - img[img_idx]).mean(axis=0)
+
 
 class Trim(Block):
     """Image trimming
@@ -189,6 +240,14 @@ class ComputeTransformTwirl(Block):
 
     |write| :code:`Image.transform`
 
+    Three strategies are tried in order, and the frame is discarded if all fail:
+
+    1. twirl quad matching (needs four reference stars and five detections);
+    2. the celestial WCS of both images;
+    3. a translation that at least two stars agree on (:func:`match_translation`),
+       for sparse fields without celestial WCS. It cannot express rotation or
+       scale, which is adequate for equatorially tracked frames of one night.
+
     Parameters
     ----------
     ref : Image
@@ -222,46 +281,67 @@ class ComputeTransformTwirl(Block):
             self.quads_ref, self.asterisms_ref = quads.hashes(self.ref)
             self.tree_ref = cKDTree(self.quads_ref)
             self.worker_shared_arrays += (self.quads_ref, self.asterisms_ref)
+        elif not getattr(self.reference_image.wcs, "has_celestial", False):
+            logger.info(
+                f"{len(self.ref)} alignment stars cannot form twirl quads and the "
+                "reference has no celestial WCS; frames without one are aligned "
+                "by translation only"
+            )
 
     def run(self, image):
-        success = False
-        if len(image.sources.coords) >= 5:
-            try:
-                result = self.solve(image.sources.coords)
-                if result is not None:
-                    image.transform = AffineTransform(result).inverse
-                    success = True
-            except Exception:
-                pass
+        for strategy in (
+            self._twirl_transform,
+            self._wcs_transform,
+            self._translation_transform,
+        ):
+            transform = strategy(image)
+            if transform is not None:
+                image.transform = transform
+                return
+        logger.warning(
+            "ComputeTransformTwirl failed to solve a transform; discarding image"
+        )
+        image.discard = True
 
-        if not success:
-            ref_wcs = getattr(self.reference_image, "wcs", None)
-            img_wcs = getattr(image, "wcs", None)
-            if getattr(ref_wcs, "has_celestial", False) and getattr(
-                img_wcs, "has_celestial", False
-            ):
-                try:
-                    ny, nx = image.shape
-                    grid_x, grid_y = np.meshgrid(
-                        np.linspace(0, nx - 1, 3), np.linspace(0, ny - 1, 3)
-                    )
-                    dst_pts = np.column_stack([grid_x.ravel(), grid_y.ravel()])
-                    sky_coords = img_wcs.pixel_to_world(dst_pts[:, 0], dst_pts[:, 1])
-                    src_x, src_y = ref_wcs.world_to_pixel(sky_coords)
-                    src_pts = np.column_stack([src_x, src_y])
-                    
-                    t = AffineTransform()
-                    if t.estimate(dst_pts, src_pts):
-                        image.transform = t
-                        success = True
-                except Exception:
-                    pass
+    def _twirl_transform(self, image) -> Optional[AffineTransform]:
+        if len(image.sources.coords) < 5:
+            return None
+        try:
+            result = self.solve(image.sources.coords)
+        except Exception:
+            logger.debug("twirl solve raised", exc_info=True)
+            return None
+        return None if result is None else AffineTransform(result).inverse
 
-        if not success:
-            logger.warning(
-                "ComputeTransformTwirl failed to solve a transform; discarding image"
+    def _wcs_transform(self, image) -> Optional[AffineTransform]:
+        ref_wcs = getattr(self.reference_image, "wcs", None)
+        img_wcs = getattr(image, "wcs", None)
+        if not (
+            getattr(ref_wcs, "has_celestial", False)
+            and getattr(img_wcs, "has_celestial", False)
+        ):
+            return None
+        try:
+            ny, nx = image.shape
+            grid_x, grid_y = np.meshgrid(
+                np.linspace(0, nx - 1, 3), np.linspace(0, ny - 1, 3)
             )
-            image.discard = True
+            dst_pts = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+            sky_coords = img_wcs.pixel_to_world(dst_pts[:, 0], dst_pts[:, 1])
+            src_x, src_y = ref_wcs.world_to_pixel(sky_coords)
+            src_pts = np.column_stack([src_x, src_y])
+            t = AffineTransform()
+            return t if t.estimate(dst_pts, src_pts) else None
+        except Exception:
+            logger.debug("WCS transform failed", exc_info=True)
+            return None
+
+    def _translation_transform(self, image) -> Optional[AffineTransform]:
+        shift = match_translation(self.ref, image.sources.coords)
+        if shift is None:
+            return None
+        logger.debug(f"aligned by translation only: shift {shift}")
+        return AffineTransform(translation=shift)
 
     def solve(self, coords, tolerance=2, refine=True):
         n_stars = min(len(coords), self.n if self.n is not None else 12, 15)

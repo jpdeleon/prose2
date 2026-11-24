@@ -257,9 +257,19 @@ existing text such as star IDs, and the panel edge
 | Run control | `--test_run`, `--test_run_frames`, `--verbose` |
 
 Frame alignment requires at least three reference sources. Both `--n_stars_align`
-and `--max_num_stars` must allow at least three. With exactly three alignment
-stars, registration relies on celestial WCS. Frames that cannot be registered
-are discarded so each flux column keeps the same reference star.
+and `--max_num_stars` must allow at least three. Each frame is registered by the
+first of these that succeeds:
+
+1. Twirl quad matching, which needs at least four alignment stars and five
+   detections in the frame.
+2. Celestial WCS, when both the reference and the frame have one.
+3. A translation-only shift that at least two stars agree on, for sparse
+   fields without WCS (for example MuSCAT2 frames that astrometry could not
+   solve). A shift is rejected when only one star matches or when two
+   different shifts fit equally well. It cannot correct rotation or scale.
+
+Frames that cannot be registered are discarded so each flux column keeps the
+same reference star.
 If an automatically selected reference contains fewer than three detections,
 the pipeline tries nearby frames from the same reference band and logs each
 substitution. Source IDs refer to the chosen catalog. Set `--refid` to pin a
