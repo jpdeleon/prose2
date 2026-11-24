@@ -264,7 +264,7 @@ class TestCalibrateBand:
         injected = []
         monkeypatch.setattr(swa, "_api_key", lambda: "key")
         monkeypatch.setattr(
-            swa, "upload_and_solve", lambda path, key: uploaded.append(path) or wcs
+            swa, "upload_and_solve", lambda path, key, **_: uploaded.append(path) or wcs
         )
         monkeypatch.setattr(swa, "validate_wcs", lambda value, name: True)
         monkeypatch.setattr(

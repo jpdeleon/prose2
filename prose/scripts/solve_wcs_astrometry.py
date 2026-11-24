@@ -54,6 +54,7 @@ from typing import Sequence
 
 import warnings
 
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.utils.decorators import AstropyDeprecationWarning
 from astropy.wcs import WCS
@@ -123,6 +124,12 @@ _PROTECTED_TIME_KEYS = frozenset(
 
 DEFAULT_TIMEOUT_S = 300
 
+#: Astrometry.net search radius around the position hint, in degrees.
+HINT_RADIUS_DEG = 0.5
+#: A header pointing this far from the target coordinate is reported as wrong.
+HEADER_POINTING_MAX_OFFSET_DEG = 1.0
+_POSITION_HINT_KEYS = ("center_ra", "center_dec", "radius")
+
 
 # ---------------------------------------------------------------------------
 # Core helpers
@@ -166,7 +173,6 @@ def _header_hint(fits_path: Path) -> dict:
         if isinstance(val, (int, float)):
             return float(val)
         val = str(val).strip()
-        parts = val.replace("+", "").replace("-", " ").split()
         sign = -1 if val.startswith("-") else 1
         try:
             if ":" in val:
@@ -175,7 +181,7 @@ def _header_hint(fits_path: Path) -> dict:
                 m = float(segs[1]) if len(segs) > 1 else 0
                 s = float(segs[2]) if len(segs) > 2 else 0
                 return sign * (d + m / 60 + s / 3600)
-            return float(parts[0])
+            return float(val)
         except (ValueError, IndexError):
             return None
 
@@ -188,12 +194,10 @@ def _header_hint(fits_path: Path) -> dict:
     if ra is not None and ra <= 24 and ":" in str(ra_raw):
         ra = ra * 15.0
 
-    if ra is not None:
-        hints["center_ra"] = float(ra)
-    if dec is not None:
-        hints["center_dec"] = float(dec)
-    if ra is not None and dec is not None:
-        hints["radius"] = 0.5  # search radius in degrees
+    if ra is not None and dec is not None and 0 <= ra <= 360 and -90 <= dec <= 90:
+        hints["center_ra"] = ra
+        hints["center_dec"] = dec
+        hints["radius"] = HINT_RADIUS_DEG
 
     instrume = str(hdr.get("INSTRUME", "")).lower()
     from prose.utils import PIXSCALES
@@ -206,6 +210,49 @@ def _header_hint(fits_path: Path) -> dict:
         hints["scale_units"] = "arcsecperpix"
 
     return hints
+
+
+def without_position(hints: dict) -> dict:
+    """*hints* without the sky-position keys, keeping the scale hints."""
+    return {k: v for k, v in hints.items() if k not in _POSITION_HINT_KEYS}
+
+
+def solve_hints(
+    fits_path: Path, target_radec: tuple[float, float] | None = None
+) -> tuple[dict, str | None]:
+    """Astrometry.net hints for *fits_path* and where the position came from.
+
+    A supplied target coordinate (RA, Dec in degrees) is the position hint:
+    the target is in the field, while the header pointing can be a fixed
+    placeholder (MuSCAT2 records Dec +28:17, the site latitude, when the
+    telescope link is down; #99). Returns ``(hints, source)`` with *source*
+    ``"target_coord"``, ``"header"`` or ``None`` when there is no position.
+    """
+    header = _header_hint(fits_path)
+    if target_radec is None:
+        source = "header" if "center_ra" in header and "center_dec" in header else None
+        return header, source
+
+    ra, dec = (float(v) for v in target_radec)
+    if "center_ra" in header and "center_dec" in header:
+        offset = (
+            SkyCoord(header["center_ra"], header["center_dec"], unit="deg")
+            .separation(SkyCoord(ra, dec, unit="deg"))
+            .deg
+        )
+        if offset > HEADER_POINTING_MAX_OFFSET_DEG:
+            logger.warning(
+                f"{fits_path.name}: header pointing ({header['center_ra']:.4f}, "
+                f"{header['center_dec']:.4f}) is {offset:.1f} deg from the target "
+                f"coordinate; solving around the target instead"
+            )
+    hints = {
+        **without_position(header),
+        "center_ra": ra,
+        "center_dec": dec,
+        "radius": HINT_RADIUS_DEG,
+    }
+    return hints, "target_coord"
 
 
 NOVA_STATUS_URL = "https://nova.astrometry.net/status/{}"
@@ -235,21 +282,39 @@ def candidate_frames(files: Sequence[Path], n: int = MAX_SOLVE_FRAMES) -> list[P
 
 
 def solve_first_valid(
-    files: Sequence[Path], api_key: str, instrument: str | None
+    files: Sequence[Path],
+    api_key: str,
+    instrument: str | None,
+    target_radec: tuple[float, float] | None = None,
 ) -> WCS | None:
     """Plate-solve the first of :func:`candidate_frames` that yields a WCS
     passing :func:`validate_wcs`; ``None`` if every attempt fails.
+
+    The position hint is *target_radec* when given, else the header pointing.
+    A header pointing that already failed once is dropped for the remaining
+    frames (scale hints only), since every frame of a night carries the same
+    pointing and repeating a wrong one only repeats the timeout (#99).
 
     The returned WCS comes from whichever frame solved, which may not be the
     first; callers inject it into every frame, as they already did for the
     first-frame solution, so a small pointing drift between frames carries
     through the same way.
     """
+    drop_position = False
     for fp in candidate_frames(files):
-        wcs = upload_and_solve(fp, api_key)
+        hints, source = solve_hints(fp, target_radec)
+        if drop_position:
+            hints = without_position(hints)
+        wcs = upload_and_solve(fp, api_key, hints=hints)
         if wcs is not None and validate_wcs(wcs, instrument):
             return wcs
         logger.warning(f"Plate solve did not succeed on {fp.name}; trying next frame.")
+        if source == "header" and not drop_position:
+            drop_position = True
+            logger.warning(
+                "Dropping the header pointing hint for the remaining frames "
+                "(it may be wrong; pass --target_coord to give the position)."
+            )
     return None
 
 
@@ -260,6 +325,7 @@ def upload_and_solve(
     timeout: float = DEFAULT_TIMEOUT_S,
     publicly_visible: str = "y",
     allow_commercial_use: str = "n",
+    hints: dict | None = None,
 ) -> WCS | None:
     """Upload *fits_path* to nova.astrometry.net and return the solved WCS.
 
@@ -269,6 +335,8 @@ def upload_and_solve(
         Path to the FITS file to solve.
     api_key:
         Your nova.astrometry.net API key.
+    hints:
+        Astrometry.net solve hints; read from the FITS header when ``None``.
     timeout:
         Maximum seconds to wait for the solve to complete.
     publicly_visible:
@@ -284,7 +352,8 @@ def upload_and_solve(
     an = AstrometryNet()
     an.api_key = api_key
 
-    hints = _header_hint(fits_path)
+    if hints is None:
+        hints = _header_hint(fits_path)
     logger.info(f"Uploading {fits_path.name} to nova.astrometry.net …")
     if hints:
         logger.info(f"  hints: {hints}")

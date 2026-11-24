@@ -5944,6 +5944,13 @@ def resolve_target_at_epoch(target_coord: SkyCoord, obs_time: Time | None) -> Sk
     return coord
 
 
+def parse_target_coord(values) -> SkyCoord:
+    """``--target_coord RA Dec``: sexagesimal (RA in hours) or decimal degrees."""
+    ra_str, dec_str = values
+    unit = (u.hourangle, u.deg) if ":" in str(ra_str) else u.deg
+    return SkyCoord(ra_str, dec_str, frame="icrs", unit=unit)
+
+
 def _calibration_args(
     args: argparse.Namespace, calib_dir: Path, bands: list[str] | None
 ) -> list[str]:
@@ -5958,6 +5965,13 @@ def _calibration_args(
     if bands:
         calib_args.extend(["--bands", *bands])
     calib_args.extend(["--solve_wcs", args.wcs_method])
+    if getattr(args, "target_coord", None) is not None:
+        # The plate solve uses it as its position hint: the header pointing
+        # can be a fixed placeholder far from the field (#99).
+        coord = parse_target_coord(args.target_coord)
+        calib_args.extend(
+            ["--target_coord", f"{coord.ra.deg:.8f}", f"{coord.dec.deg:.8f}"]
+        )
     if args.test_run:
         calib_args.extend(
             ["--test_run", "--test_run_frames", str(args.test_run_frames)]
@@ -7272,13 +7286,7 @@ def _reduce(args, records, t0, explicit_bands):
     )
 
     if args.target_coord is not None:
-        ra_str, dec_str = args.target_coord
-        if ":" in ra_str:
-            target_coord = SkyCoord(
-                ra_str, dec_str, frame="icrs", unit=(u.hourangle, u.deg)
-            )
-        else:
-            target_coord = SkyCoord(ra_str, dec_str, frame="icrs", unit=u.deg)
+        target_coord = parse_target_coord(args.target_coord)
         logger.info(f"target_coord from --target_coord: {target_coord}")
     else:
         mast_name = _normalize_toi_name(args.target_name)
