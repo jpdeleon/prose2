@@ -886,8 +886,9 @@ def test_build_reference_target_index_override_bypasses_gaia(tmp_path, monkeypat
     assert not called, "find_target_index should not have been called"
 
 
+@pytest.mark.parametrize("override", [2, "append"])
 def test_build_reference_target_override_appends_target_at_next_index(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, override
 ):
     """A manual ID immediately after detected sources denotes a forced target."""
     _patch_ref_seq(monkeypatch)
@@ -901,7 +902,7 @@ def test_build_reference_target_override_appends_target_at_next_index(
         aper_radii=np.array([3.0, 4.0, 5.0]),
         rin=8.0,
         rout=12.0,
-        target_index_override=2,
+        target_index_override=override,
     )
 
     assert result["identification_method"] == "force_added_coordinate"

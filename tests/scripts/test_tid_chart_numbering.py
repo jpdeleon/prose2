@@ -22,14 +22,13 @@ def test_kept_label_maps_to_its_position_in_the_kept_list():
 
 
 def test_detected_count_force_adds_the_target():
-    # The kept list has 21 entries, so index 21 is the force-add slot.
-    assert map_tid_to_kept(DETECTED, KEPT, DETECTED, has_target_coord=True) == len(KEPT)
+    assert map_tid_to_kept(DETECTED, KEPT, DETECTED, has_target_coord=True) == "append"
 
 
 def test_issue_93_force_add_value_is_never_a_detected_star():
     """The run in #93 used --tID 21 to add the target and measured label 21."""
     for tid in KEPT:
-        assert map_tid_to_kept(tid, KEPT, DETECTED, True) != len(KEPT)
+        assert map_tid_to_kept(tid, KEPT, DETECTED, True) != "append"
 
 
 def test_dropped_label_is_rejected_with_a_message_in_chart_numbering():

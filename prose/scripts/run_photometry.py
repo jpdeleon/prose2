@@ -70,7 +70,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Iterable
+from typing import Iterable, Literal
 
 import matplotlib
 
@@ -1596,15 +1596,14 @@ def map_tid_to_kept(
     kept_indices: list[int],
     n_detected: int,
     has_target_coord: bool,
-) -> int:
+) -> int | Literal["append"]:
     """Translate a ``--tID`` read from the numbered chart into a kept index.
 
     The chart labels each kept source with its anchor index, so labels can
     skip the detections that persistence filtering dropped. Labels map to
     their position in *kept_indices*. The label one past the last anchor
     detection (*n_detected*) asks to add the target at ``--target_coord``
-    and maps to ``len(kept_indices)``, the slot ``build_reference`` appends
-    it to. That value can never name a detected star.
+    and returns ``"append"`` so a retry can resolve the slot on its own catalog.
     """
     if tid in kept_indices:
         return kept_indices.index(tid)
@@ -1615,7 +1614,7 @@ def map_tid_to_kept(
     )
     if tid == n_detected:
         if has_target_coord:
-            return len(kept_indices)
+            return "append"
         raise ValueError(f"--tID {tid} adds the target, which needs --target_coord")
     if 0 <= tid < n_detected:
         raise ValueError(
@@ -2400,7 +2399,7 @@ def build_reference(
     max_num_stars: int = MAX_NUM_STARS,
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
-    target_index_override: int | None = None,
+    target_index_override: int | Literal["append"] | None = None,
     target_pixel_override: np.ndarray | tuple[float, float] | None = None,
     target_pixel_fallback: np.ndarray | tuple[float, float] | None = None,
     min_area: int = MIN_STAR_AREA,
@@ -2522,6 +2521,8 @@ def build_reference(
                 )
 
     method = "wcs_match"
+    if target_index_override == "append":
+        target_index_override = len(ref.sources)
     if target_index_override is not None:
         if target_index_override == len(ref.sources) and target_coord is not None:
             method = (
@@ -3131,7 +3132,7 @@ def run_band(
     min_star_separation: float = MIN_STAR_SEPARATION,
     cutout_size: int = CUTOUT_SIZE,
     n_stars_align: int | None = None,
-    target_index_override: int | None = None,
+    target_index_override: int | Literal["append"] | None = None,
     target_pixel_override: np.ndarray | tuple[float, float] | None = None,
     target_pixel_fallback: np.ndarray | tuple[float, float] | None = None,
     cids: list[int] | None = None,
@@ -7485,7 +7486,7 @@ def _reduce(args, records, t0, explicit_bands):
         band_files = sciences[band]
         selection_diag = ref_selection_diagnostics.get(band, {})
         reference_source_indices = selection_diag.get("persistent_source_indices")
-        target_index_override = args.tID
+        target_index_override = selection_diag.get("target_index_override", args.tID)
         if args.tID is not None and reference_source_indices is not None:
             # --tID is read in the numbered chart's anchor labels (#93).
             try:
@@ -7577,6 +7578,9 @@ def _reduce(args, records, t0, explicit_bands):
                 ref_selection_diagnostics[affected] = {
                     "method": "alternate after sparse reference",
                     "chosen_path": alternate,
+                    "target_index_override": (
+                        "append" if target_index_override == "append" else args.tID
+                    ),
                 }
             if band in ref_wcs_ok_by_band:
                 ref_wcs_ok_by_band[band] = _reference_file_has_usable_wcs(
