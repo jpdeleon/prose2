@@ -92,6 +92,7 @@ from prose import FITSImage, Fluxes, Image, Sequence, blocks, datacube
 from prose import __version__ as _PROSE_VERSION
 from prose.blocks import catalogs
 from prose.core.block import Block
+from prose.core.image import banzai_wcs_solved
 from prose.core.source import PointSource, Sources
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
@@ -2164,6 +2165,30 @@ def _reference_file_has_usable_wcs(ref_file, target_coord: SkyCoord | None) -> b
     except Exception as exc:  # noqa: BLE001 - WCS preflight must not fail the run
         logger.warning(f"{Path(ref_file).name}: WCS preflight failed ({exc})")
         return False
+
+
+def _on_chip_target_pixel(wcs, target_coord, shape):
+    pixel = _finite_world_to_pixel(wcs, target_coord)
+    if pixel is not None:
+        x, y = pixel
+        height, width = shape
+        if -0.5 <= x < width - 0.5 and -0.5 <= y < height - 0.5:
+            return pixel
+    return None
+
+
+def _solved_positional_reference(files, default_index, target_coord):
+    """Nearest eligible BANZAI solution to the normal first/middle frame."""
+    for i in sorted(range(len(files)), key=lambda i: (abs(i - default_index), i)):
+        try:
+            header = _read_quality_header(files[i])
+            if banzai_wcs_solved(header):
+                shape = (header["NAXIS2"], header["NAXIS1"])
+                if _on_chip_target_pixel(WCS(header), target_coord, shape) is not None:
+                    return i
+        except (OSError, ValueError, KeyError):
+            continue
+    return default_index
 
 
 def _order_bands_for_target_id_inference(
@@ -5508,7 +5533,7 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
 def _header_has_usable_wcs(header) -> bool:
     """Return True when a FITS header carries celestial WCS axes."""
     try:
-        return bool(getattr(WCS(header), "has_celestial", False))
+        return banzai_wcs_solved(header) is not False and has_celestial_wcs(WCS(header))
     except Exception:
         return False
 
@@ -7380,6 +7405,7 @@ def _reduce(args, records, t0, explicit_bands):
                 )
         bad_pixel_map = load_bad_pixel_map(args.bad_pixel_map, ref_image=ref_image)
 
+    positional_indices = {}
     selected_ref_files = {}
     ref_selection_diagnostics: dict[str, dict] = {}
     # Memoized by file-list identity (not per output band): with --ref_band,
@@ -7482,6 +7508,21 @@ def _reduce(args, records, t0, explicit_bands):
             refid = default_refid
             diag = {"method": "position"}
 
+        if (
+            diag.get("method", "").startswith("position")
+            and instrument in BANZAI_QUALITY_INSTRUMENTS
+            and target_coord is not None
+        ):
+            owner = band if self_reference else ref_band
+            if owner not in positional_indices:
+                positional_indices[owner] = _solved_positional_reference(
+                    ref_files, refid, target_coord
+                )
+            refid = positional_indices[owner]
+            if refid != default_refid:
+                logger.info(
+                    f"[{band}] using solved BANZAI reference {Path(ref_files[refid]).name}"
+                )
         refid = min(refid, len(ref_files) - 1)
         selected_ref_files[band] = ref_files[refid]
         ref_selection_diagnostics[band] = diag

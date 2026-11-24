@@ -746,6 +746,16 @@ def _header_positive_float(header, keyword, default):
     return value if np.isfinite(value) and value > 0 else default
 
 
+def banzai_wcs_solved(header):
+    """Return the BANZAI solve flag, or None for a camera without WCSERR."""
+    if "WCSERR" not in header:
+        return None
+    try:
+        return float(header["WCSERR"]) == 0
+    except (TypeError, ValueError):
+        return False
+
+
 def FITSImage(
     filepath_or_hdu: Union[str, Path, _BaseHDU],
     verbose: bool = False,
@@ -847,7 +857,7 @@ def FITSImage(
         else:
             image.metadata["jd"] = Time(obs_date).jd
     image.header = header
-    if not skip_wcs:
+    if not skip_wcs and banzai_wcs_solved(header) is not False:
         image.wcs = WCS(header)
     image.telescope = telescope
 

@@ -138,7 +138,10 @@ align all bands to one band's frame.
 #### Reference selection and transient rejection
 
 `--ref_select position` is the default and preserves the fast, deterministic
-single-frame behavior. `--ref_select quality --ref_select_top_k 5` uses the
+single-frame behavior. For BANZAI data it chooses the nearest frame to the
+normal first or middle exposure with `WCSERR=0` and an on-detector target projection.
+Explicit frame and time selections retain their requested reference. A nonzero
+`WCSERR` disables the header transform even when it projects onto a detection. `--ref_select quality --ref_select_top_k 5` uses the
 existing header and pixel-quality ranking to choose a local top-K candidate
 window, registers the candidate source catalogs to the selected frame, and
 keeps sources detected in at least 60% of the registered candidates. This
