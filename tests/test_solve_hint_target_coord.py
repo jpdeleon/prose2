@@ -65,6 +65,14 @@ class TestSolveHints:
         assert source == "target_coord"
         assert hints["center_dec"] == pytest.approx(TARGET[1])
 
+    def test_negative_decimal_header_matches_target(self, tmp_path, caplog):
+        fp = _fits(tmp_path / "south.fits", "50", "-42.5")
+        header, _ = swa.solve_hints(fp)
+        assert header["center_dec"] == -42.5
+        with caplog.at_level(logging.WARNING, logger="solve_wcs_astrometry"):
+            swa.solve_hints(fp, (50.0, -42.5))
+        assert caplog.text == ""
+
     def test_header_pointing_without_target_coord(self, tmp_path):
         hints, source = swa.solve_hints(_fits(tmp_path / "a.fits", *WRONG_HEADER))
         assert source == "header"

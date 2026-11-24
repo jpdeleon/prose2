@@ -173,7 +173,6 @@ def _header_hint(fits_path: Path) -> dict:
         if isinstance(val, (int, float)):
             return float(val)
         val = str(val).strip()
-        parts = val.replace("+", "").replace("-", " ").split()
         sign = -1 if val.startswith("-") else 1
         try:
             if ":" in val:
@@ -182,7 +181,7 @@ def _header_hint(fits_path: Path) -> dict:
                 m = float(segs[1]) if len(segs) > 1 else 0
                 s = float(segs[2]) if len(segs) > 2 else 0
                 return sign * (d + m / 60 + s / 3600)
-            return float(parts[0])
+            return float(val)
         except (ValueError, IndexError):
             return None
 
