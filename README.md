@@ -149,7 +149,9 @@ catalog is filtered.
 
 Under persistence filtering `--tID` is read in the numbered chart's labels,
 which are the anchor frame's detection indices and can skip the dropped
-detections. A label that was dropped is rejected. The value one past the last
+detections. On a rerun using the same anchor, an explicit `--tID` protects
+that detection before filtering, even if it was absent from the previous
+chart. This can select a transient detection. The value one past the last
 anchor detection (22 when the anchor detected 22 sources, whatever number
 were kept) adds the target at `--target_coord`; it can never select a
 detected star. If a sparse reference is replaced, the pipeline appends the
