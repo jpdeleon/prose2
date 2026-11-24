@@ -610,12 +610,18 @@ def _calibrate_science_group(
 
 
 def _solve_astrometry_net(
-    band: str, output_dir: Path, calibrated_paths: list[Path]
+    band: str,
+    output_dir: Path,
+    calibrated_paths: list[Path],
+    target_radec: tuple[float, float] | None = None,
 ) -> None:
     """Solve WCS once via astrometry.net (retrying on the middle and last frame
     if the first fails) and inject it into every calibrated frame for *band* (pointing is shared
-    across exposure groups)."""
-    info(f"[{band}] solving WCS via astrometry.net (first, middle, last frame as needed)")
+    across exposure groups). *target_radec* (degrees), when given, is the
+    position hint in place of the header pointing (#99)."""
+    info(
+        f"[{band}] solving WCS via astrometry.net (first, middle, last frame as needed)"
+    )
     from prose.scripts.solve_wcs_astrometry import (
         _api_key,
         inject_wcs_into_file,
@@ -633,7 +639,9 @@ def _solve_astrometry_net(
         logger.warning(f"[{band}] no calibrated files found; skipping WCS")
         return
 
-    wcs = solve_first_valid(calibrated_files, api_key, "muscat2")
+    wcs = solve_first_valid(
+        calibrated_files, api_key, "muscat2", target_radec=target_radec
+    )
     if wcs is None:
         info(
             f"[{band}] WCS solving failed via astrometry.net; continuing without astrometry"
@@ -664,6 +672,7 @@ def calibrate_band(
     test_run_center: int | None = None,
     data_dir: Path | None = None,
     fallback_calib_days: int = 30,
+    target_radec: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Build master dark + flat and calibrate all science frames for one band.
 
@@ -760,7 +769,9 @@ def calibrate_band(
             calib.cleanup_shared()
 
     if solve_wcs == "astrometry.net" and calibrated_paths:
-        _solve_astrometry_net(band, output_dir, calibrated_paths)
+        _solve_astrometry_net(
+            band, output_dir, calibrated_paths, target_radec=target_radec
+        )
 
     info(f"[{band}] done  ({len(sciences)} frames -> {output_dir})")
 
@@ -832,6 +843,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "to all calibrated frames. Omit the flag entirely to skip WCS solving.",
     )
     ap.add_argument(
+        "--target_coord",
+        "--target-coord",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("RA_DEG", "DEC_DEG"),
+        help="Target RA Dec in degrees. Used as the astrometry.net position "
+        "hint instead of the header pointing, which can be wrong.",
+    )
+    ap.add_argument(
         "--fallback_calib_days",
         "--fallback-calib-days",
         type=int,
@@ -891,6 +912,7 @@ def main(argv: list[str] | None = None) -> int:
             test_run_center=args.test_run_center,
             data_dir=args.data_dir,
             fallback_calib_days=args.fallback_calib_days,
+            target_radec=args.target_coord,
         )
         if md is not None and mf is not None:
             master_darks.append((band, md))

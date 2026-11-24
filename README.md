@@ -388,6 +388,12 @@ python -m prose.scripts.run_photometry ... \
   and status URL, and says whether the solver failed or timed out. If the first
   calibrated frame of a band does not solve, the middle and last frames are
   tried before the band continues without astrometry.
+  With `--target_coord`, the solve searches 0.5 deg around the target, not
+  around the header pointing. On some MuSCAT2 nights every frame records the
+  same placeholder pointing at Dec +28:17 (the site latitude), so a header hint
+  sends each solve to the wrong sky; a header pointing more than 1 deg from the
+  target is logged. Without `--target_coord`, a header pointing that fails once
+  is dropped for the remaining frames, which are solved with scale hints only.
 - **Comparison-star bounds.** Out-of-range `--cID` values are dropped with a
   warning and fall back to automatic selection rather than crashing.
   `--tID`, `--cID` and `--avoid_cids` are zero-based and reject negative

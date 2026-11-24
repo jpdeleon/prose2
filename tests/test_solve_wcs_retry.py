@@ -49,7 +49,7 @@ class TestSolveFirstValid:
     def _patch(self, monkeypatch, results, valid=True):
         calls = []
 
-        def fake_upload(path, key):
+        def fake_upload(path, key, **_):
             calls.append(path)
             return results[len(calls) - 1]
 
@@ -149,7 +149,7 @@ def test_calibrate_scripts_fall_back_to_another_frame(
     monkeypatch.setattr(
         swa,
         "upload_and_solve",
-        lambda path, key: uploaded.append(path) or next(results),
+        lambda path, key, **_: uploaded.append(path) or next(results),
     )
     monkeypatch.setattr(swa, "validate_wcs", lambda value, name: True)
     monkeypatch.setattr(
