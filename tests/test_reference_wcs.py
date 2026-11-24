@@ -210,3 +210,19 @@ def test_single_detection_cannot_verify_the_wcs():
 
     assert verdict.source == "unverified"
     assert not verdict.trusted
+
+
+@pytest.mark.parametrize(
+    "offsets",
+    [
+        [(100, 20), (-100, 20), (37, -90), (-37, -90)],  # mirror symmetry
+        [(80, 20), (-80, -20), (37, -90), (-37, 90)],  # half-turn symmetry
+    ],
+)
+def test_tied_orientations_about_the_same_target_are_ambiguous(offsets):
+    wcs = _true_wcs()
+    detected = np.asarray(offsets) + _target_pixel(wcs)
+    gaia = wcs.pixel_to_world(*detected.T)
+    verdict = _verify(None, detected, gaia)
+    assert not verdict.trusted
+    assert verdict.wcs is None

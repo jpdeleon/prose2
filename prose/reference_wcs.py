@@ -245,12 +245,21 @@ def solve_wcs(
         return None
     solutions.sort(key=lambda item: -item[0])
     best_count, best_matrix, best_translation = solutions[0]
-    for count, _, translation in solutions[1:]:
-        distinct = np.hypot(*(translation - best_translation)) > 2 * tolerance
-        if distinct and count >= best_count:
-            return None  # two different fields fit equally well
     if best_count < MIN_SOLVE_MATCHES:
         return None
+    # Map the winning field's corners back to tangent-plane coordinates.
+    # Corners bound the displacement of two affine transforms over the frame.
+    height, width = shape
+    corners = np.array(
+        [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1]]
+    )
+    sky_corners = np.linalg.solve(best_matrix, (corners - best_translation).T).T
+    for count, matrix, translation in solutions[1:]:
+        if count < best_count:
+            break
+        projected = sky_corners @ matrix.T + translation
+        if np.any(np.linalg.norm(projected - corners, axis=1) > 2 * tolerance):
+            return None  # equally supported solutions disagree on the sky
     # best_matrix maps nominal-pixel offsets to pixels; CD maps pixels to degrees.
     cd = np.linalg.inv(best_matrix / pixel_scale_deg)
     return _tan_wcs(center, crpix=best_translation + 1.0, cd=cd)

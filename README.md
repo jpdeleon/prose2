@@ -404,8 +404,8 @@ python -m prose.scripts.run_photometry ... \
   fails, the frame is solved against Gaia from the detections alone: every
   pair of bright detections is matched with every Gaia pair of the same
   length (the pixel scale is known), in both parities, and the solution must
-  match at least four stars, beat every distinct alternative, and pass the
-  same check. A passing solution replaces the WCS for target matching, Gaia
+  match at least four stars and pass the same check. Equally supported
+  fits that disagree by more than 6 px at any frame corner are ambiguous. A passing solution replaces the WCS for target matching, Gaia
   aperture sizing and plots. The log names the WCS used and its match counts
   (`reference WCS gaia_refit (trusted); Gaia matches: header 0/22, refit
   22/22`). If Gaia is unreachable or there are too few detections to check,
