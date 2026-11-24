@@ -106,6 +106,7 @@ from prose.precision import (
     precision_diff,
 )
 from prose.scripts.plot_labels import LabelPoint, place_labels
+from prose.reference_wcs import WcsVerdict, has_celestial_wcs, verify_reference_wcs
 from prose.scripts.solve_wcs_astrometry import logger as _wcs_logger
 from prose.scripts.solve_wcs_astrometry import inject_wcs_into_file, load_wcs_fits
 from prose.target_epoch import (
@@ -1913,6 +1914,82 @@ def _aperture_radii_pix(fwhm: float, rin: float) -> np.ndarray:
     return radii
 
 
+#: Gaia field query radius for reference-WCS checks, in frame diagonals
+#: around the target; covers the frame when the target is within a quarter
+#: diagonal of its centre.
+REFERENCE_WCS_QUERY_RADIUS_DIAGONALS = 0.75
+REFERENCE_WCS_GAIA_LIMIT = 3000
+_gaia_field_cache: dict = {}
+
+
+def _gaia_field_coords(ref, target_coord: SkyCoord, pixel_scale: float):
+    """Gaia stars covering the frame around the target, brightest first, at
+    the observation epoch. Cached in memory and on disk; ``None`` when neither
+    Gaia nor a cache is available."""
+    height, width = ref.data.shape
+    fov_deg = (
+        2
+        * REFERENCE_WCS_QUERY_RADIUS_DIAGONALS
+        * math.hypot(height, width)
+        * float(pixel_scale)
+        / 3600.0
+    )
+    obs_time = _observation_time(ref)
+    epoch_key = f"ep{obs_time.jyear:.1f}" if obs_time is not None else "epNA"
+    cache_path = coord_cache_path(
+        "gaia_field", target_coord, f"fov{fov_deg * 60:.1f}", epoch_key
+    )
+    if cache_path in _gaia_field_cache:
+        return _gaia_field_cache[cache_path]
+    df = load_cached_df(cache_path)
+    if df is None:
+        try:
+            table = gaia_query(
+                target_coord, fov_deg, "*", limit=REFERENCE_WCS_GAIA_LIMIT
+            )
+            df = _gaia_df_at_epoch(table.to_pandas(), obs_time)
+        except Exception as exc:  # noqa: BLE001 - the check degrades to unverified
+            logger.warning(
+                f"Gaia field query for the reference WCS check failed ({exc})"
+            )
+            _gaia_field_cache[cache_path] = None
+            return None
+        save_cached_df(cache_path, df)
+    coords = SkyCoord(df.ra.to_numpy(), df.dec.to_numpy(), unit="deg")
+    _gaia_field_cache[cache_path] = coords
+    return coords
+
+
+def check_reference_wcs(ref, target_coord: SkyCoord, pixel_scale: float, label: str):
+    """Check the reference WCS against Gaia, refitting it when Gaia disagrees.
+
+    A refit replaces ``ref.wcs`` so target identification, Gaia aperture
+    sizing and plots all use it (#95). Never raises: any failure leaves the
+    header WCS in place, marked as not trusted.
+    """
+    header_wcs = ref.wcs if has_celestial_wcs(ref.wcs) else None
+    try:
+        coords = np.array([s.coords for s in ref.sources], dtype=float).reshape(-1, 2)
+        verdict = verify_reference_wcs(
+            header_wcs,
+            coords,
+            _gaia_field_coords(ref, target_coord, pixel_scale),
+            target_coord,
+            float(pixel_scale) / 3600.0,
+            tuple(int(v) for v in ref.data.shape),
+        )
+    except Exception as exc:  # noqa: BLE001 - the check must not fail the band
+        verdict = WcsVerdict(
+            header_wcs, "unverified", False, notes=(f"check failed: {exc}",)
+        )
+    (logger.info if verdict.trusted else logger.warning)(
+        f"{label}: {verdict.summary()}"
+    )
+    if verdict.source == "gaia_refit":
+        ref.wcs = verdict.wcs
+    return verdict
+
+
 # in-memory Gaia cache: query once per run, reuse across the run's bands
 _gaia_cache: dict = {}
 
@@ -2457,6 +2534,14 @@ def build_reference(
         source_indices=source_indices,
         require_alignment=require_alignment,
     ).run(ref, show_progress=False)
+
+    if (
+        target_index_override is None
+        and target_pixel_override is None
+        and target_coord is not None
+    ):
+        # The WCS must describe this frame before the target is matched (#95).
+        check_reference_wcs(ref, target_coord, pixel_scale, Path(ref_file).name)
 
     match_found = False
     if (
