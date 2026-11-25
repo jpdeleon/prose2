@@ -92,6 +92,7 @@ from prose import FITSImage, Fluxes, Image, Sequence, blocks, datacube
 from prose import __version__ as _PROSE_VERSION
 from prose.blocks import catalogs
 from prose.core.block import Block
+from prose.core.image import banzai_wcs_solved
 from prose.core.source import PointSource, Sources
 from prose.core.sequence import SequenceParallel
 from prose.scripts import calibrate_muscat, calibrate_muscat2
@@ -2166,6 +2167,30 @@ def _reference_file_has_usable_wcs(ref_file, target_coord: SkyCoord | None) -> b
         return False
 
 
+def _on_chip_target_pixel(wcs, target_coord, shape):
+    pixel = _finite_world_to_pixel(wcs, target_coord)
+    if pixel is not None:
+        x, y = pixel
+        height, width = shape
+        if -0.5 <= x < width - 0.5 and -0.5 <= y < height - 0.5:
+            return pixel
+    return None
+
+
+def _solved_positional_reference(files, default_index, target_coord):
+    """Nearest eligible BANZAI solution to the normal first/middle frame."""
+    for i in sorted(range(len(files)), key=lambda i: (abs(i - default_index), i)):
+        try:
+            header = _read_quality_header(files[i])
+            if banzai_wcs_solved(header):
+                shape = (header["NAXIS2"], header["NAXIS1"])
+                if _on_chip_target_pixel(WCS(header), target_coord, shape) is not None:
+                    return i
+        except (OSError, ValueError, KeyError):
+            continue
+    return default_index
+
+
 def _order_bands_for_target_id_inference(
     ordered_bands: list[str], ref_wcs_ok_by_band: dict[str, bool]
 ) -> list[str]:
@@ -2258,30 +2283,7 @@ def _target_pixel_or_center(
 
 
 def _append_target_source(
-    ref: FITSImage, target_coord: SkyCoord, cutout_size: int
-) -> tuple[FITSImage, int]:
-    """Append the coordinate-selected target and return its source index."""
-    tx, ty = _target_pixel_or_center(ref, target_coord)
-    target_index = len(ref.sources)
-    logger.info(
-        f"Forcing addition of target source at pixel coord ({tx:.2f}, {ty:.2f}) "
-        f"as source {target_index}"
-    )
-    from prose.core.source import PointSource, Sources
-
-    new_source = PointSource(coords=np.array([tx, ty]), i=target_index)
-    ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
-
-    try:
-        ref = blocks.Cutouts(shape=cutout_size)(ref)
-        ref = blocks.CentroidQuadratic()(ref)
-    except Exception as e:
-        logger.warning(f"Failed to refine centroid of force-added target source: {e}")
-    return ref, target_index
-
-
-def _append_target_source(
-    ref: FITSImage, target_coord: SkyCoord, cutout_size: int, centroid_method: str
+    ref: FITSImage, target_coord: SkyCoord, cutout_size: int, centroid_method: str | None
 ) -> tuple[FITSImage, int]:
     """Append the coordinate-selected target and return its source index."""
     tx, ty = _target_pixel_or_center(ref, target_coord)
@@ -2294,10 +2296,23 @@ def _append_target_source(
     ref._sources = Sources(list(ref.sources) + [new_source], type="PointSource")
     try:
         ref = blocks.Cutouts(shape=cutout_size)(ref)
-        ref = _centroid_block(centroid_method)(ref)
+        if centroid_method is not None:
+            ref = _centroid_block(centroid_method)(ref)
     except Exception as e:
         logger.warning(f"Failed to refine centroid of force-added target source: {e}")
     return ref, target_index
+
+
+def trusted_target_pixel(ref, target_coord, verdict):
+    """Return the on-chip target pixel when BANZAI or Gaia established the WCS."""
+    if verdict is None:
+        return None
+    if not verdict.trusted:
+        if banzai_wcs_solved(ref.header) is not True:
+            return None
+        if verdict.header_check and verdict.header_check.is_verifiable:
+            return None  # Gaia contradicted this header.
+    return _on_chip_target_pixel(ref.wcs, target_coord, ref.data.shape)
 
 
 def _skycoord_has_finite_data(coord) -> bool:
@@ -2563,6 +2578,7 @@ def build_reference(
     ).run(ref, show_progress=False)
 
     rejected_wcs = None
+    verdict = None
     if (
         target_index_override is None
         and target_pixel_override is None
@@ -2608,6 +2624,17 @@ def build_reference(
             f"({float(target_pixel_override[0]):.1f}, {float(target_pixel_override[1]):.1f}); "
             f"nearest source distance {target_pixel_distance:.1f} px"
         )
+    elif (
+        (pixel := trusted_target_pixel(ref, target_coord, verdict)) is not None
+        and not _target_wcs_match_found(ref, target_coord)
+    ):
+        method = "added_at_trusted_wcs"
+        logger.info(
+            f"undetected target added at trusted WCS pixel "
+            f"({pixel[0]:.2f}, {pixel[1]:.2f})"
+        )
+        # No target was detected here to centroid. Keep the sky position.
+        ref, target_index = _append_target_source(ref, target_coord, cutout_size, None)
     elif target_pixel_fallback is not None and (
         rejected_wcs or not _target_wcs_match_found(ref, target_coord)
     ):
@@ -5508,7 +5535,7 @@ def _detect_narrow_bands(data_dir: Path, target_name: str) -> list[str]:
 def _header_has_usable_wcs(header) -> bool:
     """Return True when a FITS header carries celestial WCS axes."""
     try:
-        return bool(getattr(WCS(header), "has_celestial", False))
+        return banzai_wcs_solved(header) is not False and has_celestial_wcs(WCS(header))
     except Exception:
         return False
 
@@ -7380,6 +7407,7 @@ def _reduce(args, records, t0, explicit_bands):
                 )
         bad_pixel_map = load_bad_pixel_map(args.bad_pixel_map, ref_image=ref_image)
 
+    positional_indices = {}
     selected_ref_files = {}
     ref_selection_diagnostics: dict[str, dict] = {}
     # Memoized by file-list identity (not per output band): with --ref_band,
@@ -7482,9 +7510,24 @@ def _reduce(args, records, t0, explicit_bands):
             refid = default_refid
             diag = {"method": "position"}
 
+        if (
+            diag.get("method", "").startswith("position")
+            and instrument in BANZAI_QUALITY_INSTRUMENTS
+            and target_coord is not None
+        ):
+            owner = band if self_reference else ref_band
+            if owner not in positional_indices:
+                positional_indices[owner] = _solved_positional_reference(
+                    ref_files, refid, target_coord
+                )
+            refid = positional_indices[owner]
+            if refid != default_refid:
+                logger.info(
+                    f"[{band}] using solved BANZAI reference {Path(ref_files[refid]).name}"
+                )
         refid = min(refid, len(ref_files) - 1)
         selected_ref_files[band] = ref_files[refid]
-        ref_selection_diagnostics[band] = diag
+        ref_selection_diagnostics[band] = {**diag, "chosen_path": ref_files[refid]}
 
     if self_reference and args.refid is not None and args.ref_select != "time":
         try:
@@ -7702,7 +7745,10 @@ def _reduce(args, records, t0, explicit_bands):
         band_results[band] = res
         # A WCS match uses the final reference solution, including a Gaia
         # refit. A position borrowed from another band is not a new measurement.
-        if self_reference and records[band]["identification_method"] == "wcs_match":
+        if self_reference and records[band]["identification_method"] in (
+            "wcs_match",
+            "added_at_trusted_wcs",
+        ):
             target_pos = np.asarray(
                 res["ref"].sources[int(res["target_index"])].coords, dtype=float
             )

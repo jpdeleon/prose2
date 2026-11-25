@@ -138,7 +138,10 @@ align all bands to one band's frame.
 #### Reference selection and transient rejection
 
 `--ref_select position` is the default and preserves the fast, deterministic
-single-frame behavior. `--ref_select quality --ref_select_top_k 5` uses the
+single-frame behavior. For BANZAI data it chooses the nearest frame to the
+normal first or middle exposure with `WCSERR=0` and an on-detector target projection.
+Explicit frame and time selections retain their requested reference. A nonzero
+`WCSERR` disables the header transform even when it projects onto a detection. `--ref_select quality --ref_select_top_k 5` uses the
 existing header and pixel-quality ranking to choose a local top-K candidate
 window, registers the candidate source catalogs to the selected frame, and
 keeps sources detected in at least 60% of the registered candidates. This
@@ -428,11 +431,14 @@ python -m prose.scripts.run_photometry ... \
   aperture sizing and plots. The log names the WCS used and its match counts
   (`reference WCS gaia_refit (trusted); Gaia matches: header 0/22, refit
   22/22`). If Gaia is unreachable or there are too few detections to check,
-  target matching can still use the header. If Gaia contradicts the header
+  target matching can still use a celestial header WCS if BANZAI has not flagged it as failed. If Gaia contradicts the header
   and the refit fails, the band needs an independent target pixel from
   another band or an explicit `--tID`.
 - **Unlocated target.** If no detected source lies within 5 arcsec of the
-  target coordinate, a self-referenced band is retried once after the other
+  target coordinate and a trusted WCS places it on the detector, the pipeline
+  adds a source at that pixel and records `added_at_trusted_wcs`. A Gaia-verified
+  solution or a solved BANZAI header qualifies, unless Gaia contradicts it.
+  Without a trusted on-chip position, a self-referenced band is retried after the other
   bands, using a target pixel they independently matched with their header
   WCS or a Gaia refit. A successful refit can supply that pixel even on a
   night where all reference headers lack WCS. If that also fails, or
