@@ -1,5 +1,43 @@
 # Changelog
 
+## [3.10.0](https://github.com/jpdeleon/prose2/compare/v3.9.0...v3.10.0) (2026-11-26)
+
+
+### Features
+
+* add an undetected target at its trusted WCS position ([fc0bc5d](https://github.com/jpdeleon/prose2/commit/fc0bc5dd8a6ca3bf3f44642d84ee917e0f691a5b))
+* report per-band photometry outcomes ([082e0a2](https://github.com/jpdeleon/prose2/commit/082e0a281f24839ccfdea9a6019fa8b10204f7c0))
+
+
+### Bug Fixes
+
+* add the ARI Gaia mirror and use the indexable cone query ([a7fdcd0](https://github.com/jpdeleon/prose2/commit/a7fdcd04885c9509c9b49dbfcba5d41e3b8ce07a))
+* add the ARI Gaia mirror and use the indexable cone query ([ab8bc40](https://github.com/jpdeleon/prose2/commit/ab8bc40b9a32f8eb80ca60ddbe48c0603faa797c)), closes [#102](https://github.com/jpdeleon/prose2/issues/102)
+* align sparse frames without WCS by a verified translation ([ae8fe49](https://github.com/jpdeleon/prose2/commit/ae8fe49bac0eea9583998ba12450561e8c390f17))
+* align sparse frames without WCS by a verified translation ([2c01412](https://github.com/jpdeleon/prose2/commit/2c01412364cf580eeb0d4e1f1edcdef0550e060d))
+* exclude Gaia-rejected headers from target matching ([0158897](https://github.com/jpdeleon/prose2/commit/0158897bac5212acf5ce02330f7cfc80c15a84f2))
+* ignore invalid FITS positions when building solve hints ([66bbc83](https://github.com/jpdeleon/prose2/commit/66bbc83af0943041247739d0d223562fa1e230d0))
+* name the selected positional reference in the selection report ([c02876c](https://github.com/jpdeleon/prose2/commit/c02876cb34fc81c42088d5f7c505eaff35074396))
+* prefer solved BANZAI positional references ([7b41f9b](https://github.com/jpdeleon/prose2/commit/7b41f9bd80e579f592b1f434833760a185b72da5))
+* preserve coordinate append requests on sparse reference retries ([6212b2e](https://github.com/jpdeleon/prose2/commit/6212b2e2756e561ca623fa174db0ef4b58d138d8))
+* preserve signed decimal FITS pointing coordinates ([9111fbf](https://github.com/jpdeleon/prose2/commit/9111fbf2b6ec39aa4dc748ca4fdb529d652510a1))
+* query VizieR Gaia DR2 using its native column names ([76e167d](https://github.com/jpdeleon/prose2/commit/76e167d52ec9cbdb4921c1d98550341e306dd8a4))
+* read --tID force-add value in the numbered chart's labels ([0b5a11a](https://github.com/jpdeleon/prose2/commit/0b5a11a75ec4dc2d2510559dcf1c3bca62b77653))
+* read --tID force-add value in the numbered chart's labels ([3f06844](https://github.com/jpdeleon/prose2/commit/3f0684440f756706862e16506ede7fbc2d49684c)), closes [#93](https://github.com/jpdeleon/prose2/issues/93)
+* reject tied astrometric fits that diverge across the frame ([d86a4af](https://github.com/jpdeleon/prose2/commit/d86a4af9a03045a4e101b8d560222cdd5bb69f80))
+* reject WCS frame transforms that the detected stars contradict ([c5b2610](https://github.com/jpdeleon/prose2/commit/c5b26106d6431fa3ba293d68f1202fc58f5bd575))
+* reject WCS frame transforms that the detected stars contradict ([e455ea6](https://github.com/jpdeleon/prose2/commit/e455ea6a0b9aa762eb6362b73d3a8ecbda5baada))
+* share target positions recovered by a Gaia refit ([4a09ab0](https://github.com/jpdeleon/prose2/commit/4a09ab0012a97d2db9ad0da8bad48a971b4128d0))
+* use --target_coord as the plate-solve hint instead of the header pointing ([83af690](https://github.com/jpdeleon/prose2/commit/83af690cef53cdf171f86f9b5275c6844bcc8bec))
+* use --target_coord as the plate-solve hint instead of the header pointing ([b0be6a1](https://github.com/jpdeleon/prose2/commit/b0be6a1d9cf0cf0fa69bb468056b2b98f566d3ba)), closes [#99](https://github.com/jpdeleon/prose2/issues/99)
+* verify the reference WCS against Gaia and refit it before target matching ([e098d27](https://github.com/jpdeleon/prose2/commit/e098d27b7546545f44a664d76b6944eb21744ea3))
+* verify the reference WCS against Gaia and refit it before target matching ([5716c00](https://github.com/jpdeleon/prose2/commit/5716c005b2a4a106f641db3ebaf1d7da99a7bdd1)), closes [#94](https://github.com/jpdeleon/prose2/issues/94) [#95](https://github.com/jpdeleon/prose2/issues/95) [#77](https://github.com/jpdeleon/prose2/issues/77)
+
+
+### Documentation
+
+* explain explicit target protection during persistence filtering ([41f3221](https://github.com/jpdeleon/prose2/commit/41f32210f7eb0043813df83268c9ba06843c35ca))
+
 ## [3.9.0](https://github.com/jpdeleon/prose2/compare/v3.8.0...v3.9.0) (2026-11-20)
 
 
