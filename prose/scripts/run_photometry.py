@@ -334,6 +334,8 @@ def get_plot_colors(cmap: str = "Greys") -> dict:
 
 # Gaia aperture-radii / sky-annulus heuristic
 APER_STEP_PIX = 2  # spacing of aperture radii [pix]
+# minimum separation between the largest aperture and the inner sky annulus [pix]
+ANNULUS_GAP_PIX = 5.0
 CONTAM_DMAG = 2.5  # neighbour contaminates if Gmag - target < this (>=10% target flux)
 CONTAM_MARGIN_PIX = 2  # keep annulus/aperture this far inside a contaminant [pix]
 GAIA_CUTOUT = (200, 200)  # cutout around target for the Gaia query [pix]
@@ -764,6 +766,21 @@ def parse_pair(s: str) -> tuple[float, float]:
             f"--annulus ROUT ({rout}) must be > RIN ({rin})"
         )
     return rin, rout
+
+
+def parse_gap(s: str) -> float:
+    """Parse a finite, non-negative aperture-to-annulus separation in pixels."""
+    try:
+        gap = float(s)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--annulus_gap expects a number, got {s!r}"
+        ) from exc
+    if not np.isfinite(gap) or gap < 0:
+        raise argparse.ArgumentTypeError(
+            f"--annulus_gap must be finite and >= 0, got {s!r}"
+        )
+    return gap
 
 
 def parse_trim(s: str) -> tuple[int, int]:
@@ -1902,15 +1919,19 @@ def _sky_annulus_pix(
     fwhm: float,
     contam_seps: np.ndarray,
     annulus_pix: tuple[float, float] | None = None,
+    gap: float = 0.0,
 ) -> tuple[float, float]:
     """Inner/outer sky-annulus radii [pix] that avoid enclosing a contaminant.
 
-    The annulus is nominally defined by ``annulus_pix`` (defaulting to ``(20.0, 30.0)``).
-    If a contaminant falls within the nominal ring, the ring is
-    shifted inward to sit just inside the nearest such source.
+    The annulus is nominally defined by ``annulus_pix`` (defaulting to
+    ``(20.0, 30.0)`` moved outward by ``gap``). If a contaminant falls within the
+    nominal ring, the ring is shifted inward to sit just inside the nearest such
+    source. ``gap`` is the room kept between the minimum aperture (``fwhm``) and
+    the inner radius; it is reduced, down to ``APER_STEP_PIX``, when a
+    contaminant leaves too little space.
     """
     if annulus_pix is None:
-        annulus_pix = (20.0, 30.0)
+        annulus_pix = (20.0 + gap, 30.0 + gap)
     rin_nom, rout_nom = map(float, annulus_pix)
     width = rout_nom - rin_nom
     rout = rout_nom
@@ -1919,7 +1940,11 @@ def _sky_annulus_pix(
         rout = float(intruding.min()) - CONTAM_MARGIN_PIX
     rin = rout - width
     # keep the ring physical: positive inner radius above the minimum aperture
-    rin = max(rin, fwhm + APER_STEP_PIX)
+    clearance = max(gap, APER_STEP_PIX)
+    if len(intruding):
+        room = float(intruding.min()) - CONTAM_MARGIN_PIX - 2 * fwhm
+        clearance = max(min(clearance, room), APER_STEP_PIX)
+    rin = max(rin, fwhm + clearance)
     rout = max(rout, rin + fwhm)
     if len(intruding) and rout > float(intruding.min()) - CONTAM_MARGIN_PIX:
         raise ValueError(
@@ -1930,13 +1955,13 @@ def _sky_annulus_pix(
     return rin, rout
 
 
-def _aperture_radii_pix(fwhm: float, rin: float) -> np.ndarray:
-    """Aperture-radii grid [pix] from the target FWHM up to the inner annulus.
+def _aperture_radii_pix(fwhm: float, rin: float, gap: float = 0.0) -> np.ndarray:
+    """Aperture-radii grid [pix] from the target FWHM up to ``rin - gap``.
 
     Spaced by ``APER_STEP_PIX`` and always non-empty (a single ``[fwhm]`` radius
     when ``rin`` leaves no room).
     """
-    radii = np.arange(fwhm, rin, APER_STEP_PIX)
+    radii = np.arange(fwhm, rin - gap, APER_STEP_PIX)
     if len(radii) == 0:
         radii = np.array([fwhm])
     return radii
@@ -2084,11 +2109,13 @@ def gaia_aperture_radii(
     target_index: int,
     target_coord: SkyCoord,
     annulus_pix: tuple[float, float] | None = None,
+    annulus_gap: float = ANNULUS_GAP_PIX,
 ):
     """Size the sky annulus and aperture radii from Gaia contamination.
 
-    The minimum aperture is the target FWHM and the maximum is the inner
-    sky-annulus radius; the annulus is placed to exclude any Gaia source
+    The minimum aperture is the target FWHM and the maximum stays
+    ``annulus_gap`` pixels inside the inner sky-annulus radius, so that stellar
+    wings do not bias the sky estimate; the annulus is placed to exclude any Gaia source
     contributing >=10% of the target flux (``CONTAM_DMAG``). The Gaia catalog is
     fetched via ``_gaia_catalog_df`` (live query, cached to disk, with an offline
     cache fallback); when no catalog is available the helpers run with no
@@ -2123,10 +2150,18 @@ def gaia_aperture_radii(
             )
             contam = np.array([])
 
-    rin, rout = _sky_annulus_pix(fwhm, contam, annulus_pix=annulus_pix)
-    aper_radii = _aperture_radii_pix(fwhm, rin)
+    rin, rout = _sky_annulus_pix(fwhm, contam, annulus_pix=annulus_pix, gap=annulus_gap)
+    aper_radii = _aperture_radii_pix(fwhm, rin, gap=annulus_gap)
+    separation = rin - float(aper_radii.max())
+    if separation < annulus_gap:
+        logger.warning(
+            f"aperture-to-annulus separation reduced to {separation:.1f} px "
+            f"(requested {annulus_gap:g} px): not enough room outside "
+            f"FWHM={fwhm:.1f} px"
+        )
     logger.info(
-        f"apertures: {len(aper_radii)} radii in [{fwhm:.0f}, {rin:.0f}] px, "
+        f"apertures: {len(aper_radii)} radii in "
+        f"[{fwhm:.0f}, {aper_radii.max():.0f}] px, "
         f"annulus ({rin:.0f}, {rout:.0f}) px, {len(contam)} contaminants (>=10% flux)"
     )
     return aper_radii, rin, rout
@@ -2499,6 +2534,7 @@ def build_reference(
     edge_margin: int | None = EDGE_MARGIN_PIX,
     avoid_nearby_star: float | str | None = None,
     annulus_pix: tuple[float, float] | None = None,
+    annulus_gap: float = ANNULUS_GAP_PIX,
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
     source_indices: list[int] | None = None,
@@ -2680,7 +2716,11 @@ def build_reference(
         )
     else:
         aper_radii, rin, rout = gaia_aperture_radii(
-            ref, target_index, target_coord, annulus_pix=annulus_pix
+            ref,
+            target_index,
+            target_coord,
+            annulus_pix=annulus_pix,
+            annulus_gap=annulus_gap,
         )
     # The default path above already queried (and cached) Gaia; for an explicit
     # aperture grid we only query when the overlay was requested. Reusing the
@@ -3237,6 +3277,7 @@ def run_band(
     edge_margin: int | None = EDGE_MARGIN_PIX,
     avoid_nearby_star: float | str | None = None,
     annulus_pix: tuple[float, float] | None = None,
+    annulus_gap: float = ANNULUS_GAP_PIX,
     nan_imputation_method: str = "linear",
     bad_pixel_map: np.ndarray | None = None,
     centroid_method: str = CENTROID_METHOD,
@@ -3286,6 +3327,7 @@ def run_band(
         edge_margin=edge_margin,
         avoid_nearby_star=avoid_nearby_star,
         annulus_pix=annulus_pix,
+        annulus_gap=annulus_gap,
         bad_pixel_map=bad_pixel_map,
         centroid_method=centroid_method,
         source_indices=reference_source_indices,
@@ -6355,9 +6397,20 @@ def parse_args(argv=None) -> argparse.Namespace:
         dest="annulus_pix",
         type=parse_pair,
         default=None,
-        help="Custom fixed sky annulus 'RIN,ROUT' in pixels (default: 20,30). "
-        "Bypasses the default FWHM-based nominal ring but still shifts "
-        "inward to exclude contaminants.",
+        help="Custom fixed sky annulus 'RIN,ROUT' in pixels (default: 20,30 "
+        "moved outward by --annulus_gap). Still shifts inward to exclude "
+        "contaminants.",
+    )
+    ap.add_argument(
+        "--annulus_gap",
+        "--annulus-gap",
+        dest="annulus_gap",
+        type=parse_gap,
+        default=None,
+        help="Minimum separation in pixels between the largest automatic "
+        "aperture radius and the inner sky annulus, reduced with a warning when "
+        f"a neighbour leaves no room (default: {ANNULUS_GAP_PIX:g}). Not "
+        "allowed with --aper_radii.",
     )
     ap.add_argument("--glob", default="*.fits", help="FITS glob pattern.")
     ap.add_argument(
@@ -6728,6 +6781,10 @@ def parse_args(argv=None) -> argparse.Namespace:
             f"max aperture radius ({args.aper_radii.max():g}) must be <= "
             f"inner sky annulus radius ({args.annulus[0]:g})"
         )
+    if args.aper_radii is not None and args.annulus_gap is not None:
+        ap.error("--annulus_gap cannot be combined with --aper_radii/--annulus")
+    if args.annulus_gap is None:
+        args.annulus_gap = ANNULUS_GAP_PIX
     if args.ref_time is not None and args.ref_select != "time":
         ap.error("--ref_time requires --ref_select time")
     if args.ref_select == "time":
@@ -7662,6 +7719,7 @@ def _reduce(args, records, t0, explicit_bands):
                 edge_margin=args.edge_margin,
                 avoid_nearby_star=args.avoid_nearby_star,
                 annulus_pix=args.annulus_pix,
+                annulus_gap=args.annulus_gap,
                 nan_imputation_method=args.nan_imputation_method,
                 bad_pixel_map=bad_pixel_map,
                 centroid_method=args.centroid_method,
