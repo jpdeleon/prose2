@@ -389,7 +389,9 @@ python -m prose.scripts.run_photometry ... \
   a cached result or skips astrometry rather than hanging the run.
 - **Gaia mirrors.** Gaia DR2 lookups try the ESA archive, then the
   [ARI Heidelberg mirror](https://gaia.ari.uni-heidelberg.de/), then VizieR,
-  each with its own timeout. Every failed service is logged as a warning.
+  each with its own timeout. VizieR queries use the catalog's native field
+  names and return the Gaia column names used by the photometry pipeline.
+  Every failed service is logged as a warning.
 - **astrometry.net solves.** The solve log now includes the nova submission id
   and status URL, and says whether the solver failed or timed out. If the first
   calibrated frame of a band does not solve, the middle and last frames are

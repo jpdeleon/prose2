@@ -923,6 +923,17 @@ def _run_with_timeout(func, timeout):
 
 ARI_TAP_URL = "https://gaia.ari.uni-heidelberg.de/tap"
 VIZIER_TAP_URL = "https://tapvizier.u-strasbg.fr/TAPVizieR/tap"
+# Gaia archive names and their counterparts in VizieR I/345/gaia2.
+_VIZIER_GAIA_COLUMNS = {
+    "designation": "DR2Name",
+    "source_id": "Source",
+    "ra": "RA_ICRS",
+    "dec": "DE_ICRS",
+    "pmra": "pmRA",
+    "pmdec": "pmDE",
+    "parallax": "Plx",
+    "phot_g_mean_mag": "Gmag",
+}
 
 
 def _query_esa(query):
@@ -975,33 +986,41 @@ def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=NETWORK_T
 
     radius = np.min([ra_fov, dec_fov]) / 2
 
-    fields = ",".join(args) if isinstance(args, (tuple, list)) else args
+    fields = ",".join(args) or "*"
 
-    if circular:
-        # the source position goes in POINT so that servers can use their
-        # spatial index; the reversed form times out on ARI
-        condition = (
-            "1=CONTAINS("
-            "POINT('ICRS', ra, dec), "
-            f"CIRCLE('ICRS', {ra}, {dec}, {radius}))"
-        )
-    else:
-        condition = (
-            f"ra BETWEEN {ra-ra_fov/2} AND {ra+ra_fov/2} AND "
-            f"dec BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2}"
-        )
-
-    def _adql(table_name):
+    def _adql(table_name, projection, ra_col, dec_col, mag_col):
+        if circular:
+            condition = (
+                f"1=CONTAINS(POINT('ICRS', {ra_col}, {dec_col}), "
+                f"CIRCLE('ICRS', {ra}, {dec}, {radius}))"
+            )
+        else:
+            condition = (
+                f"{ra_col} BETWEEN {ra-ra_fov/2} AND {ra+ra_fov/2} AND "
+                f"{dec_col} BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2}"
+            )
         return (
-            f"select top {limit} {fields} from {table_name} where "
-            f"{condition} order by phot_g_mean_mag"
+            f"select top {limit} {projection} from {table_name} where "
+            f"{condition} order by {mag_col}"
         )
 
-    official_query = _adql("gaiadr2.gaia_source")
+    def _vizier():
+        projection = ",".join(
+            _VIZIER_GAIA_COLUMNS.get(field.strip().lower(), field)
+            for field in fields.split(",")
+        )
+        query = _adql('"I/345/gaia2"', projection, "RA_ICRS", "DE_ICRS", "Gmag")
+        table = _query_tap(VIZIER_TAP_URL, query)
+        for canonical, native in _VIZIER_GAIA_COLUMNS.items():
+            if native in table.colnames:
+                table.rename_column(native, canonical)
+        return table
+
+    official_query = _adql("gaiadr2.gaia_source", fields, "ra", "dec", "phot_g_mean_mag")
     services = (
         ("ESA", lambda: _query_esa(official_query)),
         ("ARI", lambda: _query_tap(ARI_TAP_URL, official_query)),
-        ("VizieR", lambda: _query_tap(VIZIER_TAP_URL, _adql('"I/345/gaia2"'))),
+        ("VizieR", _vizier),
     )
 
     for name, query_service in services:

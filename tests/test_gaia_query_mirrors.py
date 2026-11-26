@@ -38,7 +38,25 @@ def services(monkeypatch):
         state.calls.append((name, query))
         if name in state.fail:
             raise ConnectionError(f"{name} down")
-        return SimpleNamespace(get_results=lambda: _result(state.designation))
+        if name == "VizieR":
+            table = Table(
+                {
+                    "DR2Name": ["Gaia DR2 1"],
+                    "Source": [1],
+                    "RA_ICRS": [150.0] * u.deg,
+                    "DE_ICRS": [20.0] * u.deg,
+                    "pmRA": [1.0] * u.mas / u.yr,
+                    "pmDE": [1.0] * u.mas / u.yr,
+                    "Plx": [2.0] * u.mas,
+                    "Gmag": [12.0] * u.mag,
+                }
+            )
+            fields = query.split(" from ")[0].split(maxsplit=3)[3]
+            if fields != "*":
+                table = table[fields.split(",")]
+        else:
+            table = _result(state.designation)
+        return SimpleNamespace(get_results=lambda: table)
 
     class FakeTapPlus:
         def __init__(self, url):
@@ -47,7 +65,9 @@ def services(monkeypatch):
         def launch_job(self, query):
             return launch(self.name, query)
 
-    monkeypatch.setattr(utils, "_query_esa", lambda query: launch("ESA", query).get_results())
+    monkeypatch.setattr(
+        utils, "_query_esa", lambda query: launch("ESA", query).get_results()
+    )
     monkeypatch.setattr(tap, "TapPlus", FakeTapPlus)
     return state
 
@@ -95,10 +115,26 @@ def test_circular_query_uses_the_indexable_cone_form(services):
     utils.gaia_query(CENTER, 0.1, "*")
 
     for name, query in services.calls:
+        coords = "RA_ICRS, DE_ICRS" if name == "VizieR" else "ra, dec"
         assert (
-            "CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', 150.0, 20.0, 0.05))"
+            f"CONTAINS(POINT('ICRS', {coords}), CIRCLE('ICRS', 150.0, 20.0, 0.05))"
             in query
         ), name
+
+
+def test_vizier_box_and_selected_fields(services):
+    services.fail = {"ESA", "ARI"}
+    table = utils.gaia_query(
+        CENTER, 0.5, "source_id", "phot_g_mean_mag", circular=False, limit=2
+    )
+    assert services.calls[-1][1] == (
+        'select top 2 Source,Gmag from "I/345/gaia2" where '
+        "RA_ICRS BETWEEN 149.75 AND 150.25 AND DE_ICRS BETWEEN 19.75 AND 20.25 "
+        "order by Gmag"
+    )
+    assert table.colnames == ["source_id", "phot_g_mean_mag"]
+    assert table["source_id"][0] == 1
+    assert table["phot_g_mean_mag"].quantity[0] == 12 * u.mag
 
 
 def test_ari_runs_the_official_query(services):
@@ -121,8 +157,9 @@ def test_designation_column_has_one_spelling(services, spelling):
     assert "designation" not in table.colnames
 
 
-def test_gaia_catalog_accepts_a_lowercase_designation(services):
-    services.fail = {"ESA"}
+@pytest.mark.parametrize("down", [{"ESA"}, {"ESA", "ARI"}])
+def test_gaia_catalog_accepts_mirror_results(services, down):
+    services.fail = down
     image = SimpleNamespace(
         wcs=SimpleNamespace(pixel_to_world=lambda x, y: CENTER),
         shape=(100, 100),
