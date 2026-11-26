@@ -6,7 +6,6 @@ import astropy.units as u
 import pytest
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
-from astroquery.gaia import Gaia
 from astroquery.utils import tap
 
 from prose import utils
@@ -48,7 +47,7 @@ def services(monkeypatch):
         def launch_job(self, query):
             return launch(self.name, query)
 
-    monkeypatch.setattr(Gaia, "launch_job", lambda query: launch("ESA", query))
+    monkeypatch.setattr(utils, "_query_esa", lambda query: launch("ESA", query).get_results())
     monkeypatch.setattr(tap, "TapPlus", FakeTapPlus)
     return state
 
