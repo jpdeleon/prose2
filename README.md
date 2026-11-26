@@ -261,7 +261,7 @@ existing text such as star IDs, and the panel edge
 | Target | `--target_name` (required), `--target_coord`, `--tID`, `--cID`, `--avoid_cids` |
 | Input / output | `--data_dir`, `--results_dir`, `--glob`, `--overwrite` |
 | Bands & reference | `--bands`, `--ref_band`, `--refid`, `--ref_select`, `--ref_select_top_k` |
-| Apertures | `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
+| Apertures | `--annulus_gap`, `--annulus_pix`, `--aper_radii`, `--annulus`, `--aper_unit` (see below) |
 | Detection / PSF / alignment | `--min_star_separation`, `--min_star_area`, `--max_num_stars`, `--n_stars_align`, `--cutout_size`, `--centroid_method`, `--ccd_trim` |
 | Time & plots | `--use_barycorrpy`, `--bin_size_minutes`, `--plot_gaia_sources`, `--gif`, `--gif_stride` |
 | Light-curve cleaning | `--sig_bkg`, `--sig_fwhm`, `--sig_dx`, `--sig_dy`, `--sig_flux`, `--flux_poly_deg` |
@@ -353,13 +353,17 @@ entirely).
 
 ### Custom aperture grid
 
-By default the aperture runs from the target FWHM up to the inner sky annulus.
-The sky annulus is nominally 6–10×FWHM but is shifted inward to exclude any
-Gaia source contributing ≥10% of the target flux (Δmag < 2.5), and `rout` is
-clamped to 100 px when the FWHM is large (defocus). The Gaia result is cached
+By default the apertures start at the target FWHM and stop at least
+`--annulus_gap` pixels (default 5) inside the inner sky annulus, so that stellar
+wings do not bias the sky estimate. The annulus is nominally 20–30 px moved
+outward by the gap (25–35 px by default), or `--annulus_pix RIN,ROUT` exactly as
+given, in which case the gap only limits the largest aperture. The ring is shifted
+inward to exclude any Gaia source contributing ≥10% of the target flux
+(Δmag < 2.5); if that leaves no room for the gap, it is reduced with a warning
+(`--annulus_gap 0` lets the apertures reach the ring). The Gaia result is cached
 under `~/.cache/prose_photometry/gaia/` (keyed by target coordinates); if Gaia
 is unreachable on a later run the cached result is reused, and if no cache
-exists an FWHM-only annulus is used. To set an explicit grid (and skip the Gaia
+exists no contaminants are excluded. To set an explicit grid (and skip the Gaia
 query entirely), use `--aper_radii MIN,MAX,DR` together with
 `--annulus RIN,ROUT`. The grid is **inclusive of MAX** (`10,20,2` →
 `[10, 12, 14, 16, 18, 20]`). `--aper_unit` selects the unit for both flags:
@@ -375,7 +379,8 @@ python -m prose.scripts.run_photometry ... \
 ```
 
 `--annulus` is required whenever `--aper_radii` is given, and `--annulus` /
-`--aper_unit` only apply together with `--aper_radii`.
+`--aper_unit` only apply together with `--aper_radii`. `--annulus_gap` applies
+only to automatic apertures and cannot be combined with `--aper_radii`.
 
 ### Reliability notes
 
