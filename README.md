@@ -387,6 +387,9 @@ python -m prose.scripts.run_photometry ... \
   BJD service) is bounded by a wall-clock timeout
   (`prose.utils.NETWORK_TIMEOUT_S`, 30 s) so an unreachable service degrades to
   a cached result or skips astrometry rather than hanging the run.
+- **Gaia mirrors.** Gaia DR2 lookups try the ESA archive, then the
+  [ARI Heidelberg mirror](https://gaia.ari.uni-heidelberg.de/), then VizieR,
+  each with its own timeout. Every failed service is logged as a warning.
 - **astrometry.net solves.** The solve log now includes the nova submission id
   and status URL, and says whether the solver failed or timed out. If the first
   calibrated frame of a band does not solve, the middle and last frames are

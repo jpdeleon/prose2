@@ -33,8 +33,8 @@ __all__ = [
     "track_separation_arcsec",
 ]
 
-# ``prose.utils.gaia_query`` reads Gaia DR2 (official archive or the VizieR
-# mirror), whose reference epoch is J2015.5.
+# ``prose.utils.gaia_query`` reads Gaia DR2 (official archive, or the ARI or
+# VizieR mirror), whose reference epoch is J2015.5.
 GAIA_DR2_EPOCH = Time(2015.5, format="jyear")
 # Epoch of the positions returned by MAST/SIMBAD name resolution.
 RESOLVER_EPOCH = Time(2000.0, format="jyear")

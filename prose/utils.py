@@ -1,6 +1,7 @@
 import csv
 import pickle
 import inspect
+import logging
 import urllib
 from datetime import datetime, timedelta
 from functools import wraps
@@ -920,13 +921,40 @@ def _run_with_timeout(func, timeout):
         executor.shutdown(wait=False)
 
 
-def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=NETWORK_TIMEOUT_S):
-    """
-    https://gea.esac.esa.int/archive/documentation/GEDR3/Gaia_archive/chap_datamodel/sec_dm_main_tables/ssec_dm_gaia_source.html
-    """
+ARI_TAP_URL = "https://gaia.ari.uni-heidelberg.de/tap"
+VIZIER_TAP_URL = "https://tapvizier.u-strasbg.fr/TAPVizieR/tap"
 
+
+def _query_esa(query):
     from astroquery.gaia import Gaia
 
+    return Gaia.launch_job(query).get_results()
+
+
+def _query_tap(url, query):
+    from astroquery.utils.tap import TapPlus
+
+    return TapPlus(url=url).launch_job(query).get_results()
+
+
+def _with_designation_column(table):
+    """Spell the designation column ``DESIGNATION``, whichever service answered
+    (ARI returns it in lowercase and column names are case-sensitive)."""
+    for name in table.colnames:
+        if name.lower() == "designation" and name != "DESIGNATION":
+            table.rename_column(name, "DESIGNATION")
+    return table
+
+
+def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=NETWORK_TIMEOUT_S):
+    """Query Gaia DR2 around *center*, brightest sources first.
+
+    The ESA archive is tried first, then the ARI Heidelberg mirror, then VizieR,
+    each bounded by *timeout* seconds. The error of the last service is raised
+    when all of them fail.
+
+    https://gea.esac.esa.int/archive/documentation/GEDR3/Gaia_archive/chap_datamodel/sec_dm_main_tables/ssec_dm_gaia_source.html
+    """
     if isinstance(center, SkyCoord):
         ra = center.ra.to(u.deg).value
         dec = center.dec.to(u.deg).value
@@ -950,52 +978,41 @@ def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=NETWORK_T
     fields = ",".join(args) if isinstance(args, (tuple, list)) else args
 
     if circular:
-        official_query = (
-            f"select top {limit} {fields} from gaiadr2.gaia_source where "
+        # the source position goes in POINT so that servers can use their
+        # spatial index; the reversed form times out on ARI
+        condition = (
             "1=CONTAINS("
-            f"POINT('ICRS', {ra}, {dec}), "
-            f"CIRCLE('ICRS',ra, dec, {radius}))"
-            "order by phot_g_mean_mag"
-        )
-        vizier_query = (
-            f"select top {limit} {fields} from \"I/345/gaia2\" where "
-            "1=CONTAINS("
-            f"POINT('ICRS', {ra}, {dec}), "
-            f"CIRCLE('ICRS',ra, dec, {radius}))"
-            "order by phot_g_mean_mag"
+            "POINT('ICRS', ra, dec), "
+            f"CIRCLE('ICRS', {ra}, {dec}, {radius}))"
         )
     else:
-        official_query = (
-            f"select top {limit} {fields} from gaiadr2.gaia_source where "
+        condition = (
             f"ra BETWEEN {ra-ra_fov/2} AND {ra+ra_fov/2} AND "
-            f"dec BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2} "
-            "order by phot_g_mean_mag"
-        )
-        vizier_query = (
-            f"select top {limit} {fields} from \"I/345/gaia2\" where "
-            f"ra BETWEEN {ra-ra_fov/2} AND {ra+ra_fov/2} AND "
-            f"dec BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2} "
-            "order by phot_g_mean_mag"
+            f"dec BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2}"
         )
 
-    def _official():
-        return Gaia.launch_job(official_query).get_results()
-
-    def _vizier():
-        from astroquery.utils.tap import TapPlus
-
-        vizier_tap = TapPlus(url="https://tapvizier.u-strasbg.fr/TAPVizieR/tap")
-        return vizier_tap.launch_job(vizier_query).get_results()
-
-    try:
-        return _run_with_timeout(_official, timeout)
-    except Exception as e:
-        import logging
-
-        logging.getLogger("prose").warning(
-            f"Official Gaia TAP query failed ({e}); trying VizieR mirror"
+    def _adql(table_name):
+        return (
+            f"select top {limit} {fields} from {table_name} where "
+            f"{condition} order by phot_g_mean_mag"
         )
-        return _run_with_timeout(_vizier, timeout)
+
+    official_query = _adql("gaiadr2.gaia_source")
+    services = (
+        ("ESA", lambda: _query_esa(official_query)),
+        ("ARI", lambda: _query_tap(ARI_TAP_URL, official_query)),
+        ("VizieR", lambda: _query_tap(VIZIER_TAP_URL, _adql('"I/345/gaia2"'))),
+    )
+
+    for name, query_service in services:
+        try:
+            return _with_designation_column(_run_with_timeout(query_service, timeout))
+        except Exception as exc:  # noqa: BLE001 - try the next service
+            logging.getLogger("prose").warning(
+                f"{name} Gaia TAP query failed ({exc})"
+            )
+            last_error = exc
+    raise last_error
 
 
 def full_class_name(o):
