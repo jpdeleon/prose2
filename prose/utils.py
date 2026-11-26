@@ -1,6 +1,7 @@
 import csv
 import pickle
 import inspect
+import logging
 import urllib
 from datetime import datetime, timedelta
 from functools import wraps
@@ -920,13 +921,51 @@ def _run_with_timeout(func, timeout):
         executor.shutdown(wait=False)
 
 
-def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=NETWORK_TIMEOUT_S):
-    """
-    https://gea.esac.esa.int/archive/documentation/GEDR3/Gaia_archive/chap_datamodel/sec_dm_main_tables/ssec_dm_gaia_source.html
-    """
+ARI_TAP_URL = "https://gaia.ari.uni-heidelberg.de/tap"
+VIZIER_TAP_URL = "https://tapvizier.u-strasbg.fr/TAPVizieR/tap"
+# Gaia archive names and their counterparts in VizieR I/345/gaia2.
+_VIZIER_GAIA_COLUMNS = {
+    "designation": "DR2Name",
+    "source_id": "Source",
+    "ra": "RA_ICRS",
+    "dec": "DE_ICRS",
+    "pmra": "pmRA",
+    "pmdec": "pmDE",
+    "parallax": "Plx",
+    "phot_g_mean_mag": "Gmag",
+}
 
+
+def _query_esa(query):
     from astroquery.gaia import Gaia
 
+    return Gaia.launch_job(query).get_results()
+
+
+def _query_tap(url, query):
+    from astroquery.utils.tap import TapPlus
+
+    return TapPlus(url=url).launch_job(query).get_results()
+
+
+def _with_designation_column(table):
+    """Spell the designation column ``DESIGNATION``, whichever service answered
+    (ARI returns it in lowercase and column names are case-sensitive)."""
+    for name in table.colnames:
+        if name.lower() == "designation" and name != "DESIGNATION":
+            table.rename_column(name, "DESIGNATION")
+    return table
+
+
+def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=NETWORK_TIMEOUT_S):
+    """Query Gaia DR2 around *center*, brightest sources first.
+
+    The ESA archive is tried first, then the ARI Heidelberg mirror, then VizieR,
+    each bounded by *timeout* seconds. The error of the last service is raised
+    when all of them fail.
+
+    https://gea.esac.esa.int/archive/documentation/GEDR3/Gaia_archive/chap_datamodel/sec_dm_main_tables/ssec_dm_gaia_source.html
+    """
     if isinstance(center, SkyCoord):
         ra = center.ra.to(u.deg).value
         dec = center.dec.to(u.deg).value
@@ -947,55 +986,52 @@ def gaia_query(center, fov, *args, limit=10000, circular=True, timeout=NETWORK_T
 
     radius = np.min([ra_fov, dec_fov]) / 2
 
-    fields = ",".join(args) if isinstance(args, (tuple, list)) else args
+    fields = ",".join(args) or "*"
 
-    if circular:
-        official_query = (
-            f"select top {limit} {fields} from gaiadr2.gaia_source where "
-            "1=CONTAINS("
-            f"POINT('ICRS', {ra}, {dec}), "
-            f"CIRCLE('ICRS',ra, dec, {radius}))"
-            "order by phot_g_mean_mag"
+    def _adql(table_name, projection, ra_col, dec_col, mag_col):
+        if circular:
+            condition = (
+                f"1=CONTAINS(POINT('ICRS', {ra_col}, {dec_col}), "
+                f"CIRCLE('ICRS', {ra}, {dec}, {radius}))"
+            )
+        else:
+            condition = (
+                f"{ra_col} BETWEEN {ra-ra_fov/2} AND {ra+ra_fov/2} AND "
+                f"{dec_col} BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2}"
+            )
+        return (
+            f"select top {limit} {projection} from {table_name} where "
+            f"{condition} order by {mag_col}"
         )
-        vizier_query = (
-            f"select top {limit} {fields} from \"I/345/gaia2\" where "
-            "1=CONTAINS("
-            f"POINT('ICRS', {ra}, {dec}), "
-            f"CIRCLE('ICRS',ra, dec, {radius}))"
-            "order by phot_g_mean_mag"
-        )
-    else:
-        official_query = (
-            f"select top {limit} {fields} from gaiadr2.gaia_source where "
-            f"ra BETWEEN {ra-ra_fov/2} AND {ra+ra_fov/2} AND "
-            f"dec BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2} "
-            "order by phot_g_mean_mag"
-        )
-        vizier_query = (
-            f"select top {limit} {fields} from \"I/345/gaia2\" where "
-            f"ra BETWEEN {ra-ra_fov/2} AND {ra+ra_fov/2} AND "
-            f"dec BETWEEN {dec-dec_fov/2} AND {dec+dec_fov/2} "
-            "order by phot_g_mean_mag"
-        )
-
-    def _official():
-        return Gaia.launch_job(official_query).get_results()
 
     def _vizier():
-        from astroquery.utils.tap import TapPlus
-
-        vizier_tap = TapPlus(url="https://tapvizier.u-strasbg.fr/TAPVizieR/tap")
-        return vizier_tap.launch_job(vizier_query).get_results()
-
-    try:
-        return _run_with_timeout(_official, timeout)
-    except Exception as e:
-        import logging
-
-        logging.getLogger("prose").warning(
-            f"Official Gaia TAP query failed ({e}); trying VizieR mirror"
+        projection = ",".join(
+            _VIZIER_GAIA_COLUMNS.get(field.strip().lower(), field)
+            for field in fields.split(",")
         )
-        return _run_with_timeout(_vizier, timeout)
+        query = _adql('"I/345/gaia2"', projection, "RA_ICRS", "DE_ICRS", "Gmag")
+        table = _query_tap(VIZIER_TAP_URL, query)
+        for canonical, native in _VIZIER_GAIA_COLUMNS.items():
+            if native in table.colnames:
+                table.rename_column(native, canonical)
+        return table
+
+    official_query = _adql("gaiadr2.gaia_source", fields, "ra", "dec", "phot_g_mean_mag")
+    services = (
+        ("ESA", lambda: _query_esa(official_query)),
+        ("ARI", lambda: _query_tap(ARI_TAP_URL, official_query)),
+        ("VizieR", _vizier),
+    )
+
+    for name, query_service in services:
+        try:
+            return _with_designation_column(_run_with_timeout(query_service, timeout))
+        except Exception as exc:  # noqa: BLE001 - try the next service
+            logging.getLogger("prose").warning(
+                f"{name} Gaia TAP query failed ({exc})"
+            )
+            last_error = exc
+    raise last_error
 
 
 def full_class_name(o):
